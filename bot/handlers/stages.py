@@ -194,11 +194,12 @@ class StageTracker:
     ) -> StageResult:
         """Post the next stage, then delete the message it replaces.
 
-        ``markup_factory(message_id)`` builds a keyboard that has to carry the id
-        of the *new* message (a callback button addresses its own message), so it
-        is called once the post has an id.
+        ``reply_markup`` goes out with the new message; ``markup_factory(message_id)``
+        is for keyboards that have to carry the id of the *new* message (a
+        callback button addresses its own message), so it is called once the post
+        has an id.
         """
-        sent = await self._post_text(text)
+        sent = await self._post_text(text, reply_markup=reply_markup)
         if sent is None:
             # Posting failed: keep what the user has and put the stage into it.
             markup = reply_markup
@@ -227,7 +228,7 @@ class StageTracker:
         A photo that Telegram will not take is not a reason to lose the card:
         the caption is written into the message already on screen instead.
         """
-        sent = await self._post_photo(photo, caption)
+        sent = await self._post_photo(photo, caption, reply_markup=reply_markup)
         if sent is None:
             text = fallback_text or caption
             markup = reply_markup
