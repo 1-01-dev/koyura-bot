@@ -5,13 +5,20 @@ The bot has exactly one job per module:
 | module | responsibility |
 | --- | --- |
 | ``commands`` | the commands in Telegram's menu and the preference subcommands |
+| ``onboarding`` | first contact: the language screen, the welcome and its keyboard |
 | ``url_flow`` | intake: extract + validate links, post the preview card |
 | ``callbacks`` | route ``callback_data`` taps, guard against a second job |
 | ``download_flow`` | one job: start, poll, progress captions, deliver the file |
 | ``sessions`` | the in-memory picker sessions and their addressing scheme |
-| ``texts`` | every string the user sees |
+| ``stages`` | the replace-not-add chain (one stage, one message) |
+| ``language`` | which language one user is answered in |
+| ``keyboards`` | the inline keyboards and their callback_data |
+| ``texts`` | the builders that assemble catalogued strings |
 | ``stats`` | the counters behind ``/stats`` |
 | ``config`` | environment-driven knobs |
+
+The words themselves are in ``bot/i18n.py``; ``texts`` only decides how the
+lines are arranged (which ones ``/help`` shows, in what order).
 
 ``register_handlers`` is the only thing ``bot.py`` needs: the order and the
 filters of the handlers are part of the bot's behaviour (a command never falls
@@ -32,7 +39,11 @@ from . import (
     commands,
     config,
     download_flow,
+    keyboards,
+    language,
+    onboarding,
     sessions,
+    stages,
     stats,
     texts,
     url_flow,
@@ -40,7 +51,7 @@ from . import (
 
 # Every command Telegram shows in the menu, in the order the menu lists them.
 COMMAND_HANDLERS = (
-    ("start", commands.start_command),
+    ("start", onboarding.start_command),
     ("help", commands.help_command),
     ("platforms", commands.platforms_command),
     ("stats", commands.stats_command),
@@ -56,30 +67,48 @@ COMMAND_HANDLERS = (
 # tapping a button in an old message still works.
 CALLBACK_PATTERN = r"^(dl|fmt|qty):"
 
+# The two keyboards this release adds. They keep their own prefixes (rather than
+# extending ``CALLBACK_PATTERN``) so the card router's contract does not change:
+# a ``lang:`` tap never looks like a download.
+LANGUAGE_PATTERN = r"^lang:"
+WELCOME_PATTERN = r"^welcome:"
+
 
 def register_handlers(application) -> None:
     """Attach every handler to a ``python-telegram-bot`` application."""
     for name, handler in COMMAND_HANDLERS:
         application.add_handler(CommandHandler(name, handler))
+    application.add_handler(
+        CallbackQueryHandler(callbacks.on_format_button, pattern=CALLBACK_PATTERN)
+    )
+    application.add_handler(
+        CallbackQueryHandler(onboarding.on_language_button, pattern=LANGUAGE_PATTERN)
+    )
+    application.add_handler(
+        CallbackQueryHandler(onboarding.on_welcome_button, pattern=WELCOME_PATTERN)
+    )
     # Free text only: commands are handled above and must never reach the link
     # handler, which would fetch info for a "/help" the user just typed.
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, url_flow.url_handler)
-    )
-    application.add_handler(
-        CallbackQueryHandler(callbacks.on_format_button, pattern=CALLBACK_PATTERN)
     )
 
 
 __all__ = [
     "CALLBACK_PATTERN",
     "COMMAND_HANDLERS",
+    "LANGUAGE_PATTERN",
+    "WELCOME_PATTERN",
     "callbacks",
     "commands",
     "config",
     "download_flow",
+    "keyboards",
+    "language",
+    "onboarding",
     "register_handlers",
     "sessions",
+    "stages",
     "stats",
     "texts",
     "url_flow",

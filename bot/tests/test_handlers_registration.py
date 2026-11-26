@@ -20,7 +20,16 @@ from telegram.ext import (  # noqa: E402
     MessageHandler,
 )
 
-from handlers import callbacks, commands, register_handlers, texts, url_flow  # noqa: E402
+import i18n  # noqa: E402
+
+from handlers import (  # noqa: E402
+    callbacks,
+    commands,
+    onboarding,
+    register_handlers,
+    texts,
+    url_flow,
+)
 
 BOT_PY = Path(__file__).resolve().parent.parent / "bot.py"
 
@@ -51,6 +60,13 @@ def command_names(handler):
 
 def commands_in(handler_list):
     return [name for h in command_handlers(handler_list) for name in command_names(h)]
+
+
+def pattern_of(handler) -> Any:
+    """The compiled pattern of a ``CallbackQueryHandler`` (never ``None`` here)."""
+    pattern = getattr(handler, "pattern", None)
+    assert pattern is not None, "a callback handler without a pattern"
+    return pattern
 
 
 def message_update(text, entities=None) -> Any:
@@ -87,7 +103,7 @@ class TestRegistration:
 
     def test_commands_point_at_the_command_module(self, registered):
         expected = {
-            "start": commands.start_command,
+            "start": onboarding.start_command,
             "help": commands.help_command,
             "platforms": commands.platforms_command,
             "stats": commands.stats_command,
@@ -115,25 +131,45 @@ class TestRegistration:
         )
         assert not text_filter.check_update(message_update(None))
 
-    def test_buttons_go_to_one_handler_with_the_legacy_pattern(self, registered):
-        button_handlers = [h for h in registered if isinstance(h, CallbackQueryHandler)]
-        assert len(button_handlers) == 1
-        assert button_handlers[0].callback is callbacks.on_format_button
-        pattern: Any = getattr(button_handlers[0], "pattern", None)
-        assert pattern.pattern == r"^(dl|fmt|qty):"
+    def test_every_callback_scheme_has_exactly_one_handler(self, registered):
+        """Three keyboards, three patterns; none of them can swallow another."""
+        by_pattern = {
+            pattern_of(h).pattern: h
+            for h in registered
+            if isinstance(h, CallbackQueryHandler)
+        }
+        assert set(by_pattern) == {
+            r"^(dl|fmt|qty):", r"^lang:", r"^welcome:",
+        }
+        assert by_pattern[r"^(dl|fmt|qty):"].callback is callbacks.on_format_button
+        assert by_pattern[r"^lang:"].callback is onboarding.on_language_button
+        assert by_pattern[r"^welcome:"].callback is onboarding.on_welcome_button
+
+    def test_the_legacy_card_pattern_is_unchanged(self, registered):
+        card = [
+            h for h in registered
+            if isinstance(h, CallbackQueryHandler)
+            and pattern_of(h).pattern == r"^(dl|fmt|qty):"
+        ]
+        assert len(card) == 1
+        pattern = pattern_of(card[0])
         for data in ("dl:1:h:137", "fmt:1:h:video", "qty:1:h:best"):
             assert pattern.match(data)
         assert not pattern.match("nonsense")
+        # The language and welcome buttons are their own schemes.
+        assert not pattern.match("lang:en")
+        assert not pattern.match("welcome:help")
 
     def test_the_text_handler_runs_last(self, registered):
-        assert isinstance(registered[-1], CallbackQueryHandler)
-        assert isinstance(registered[-2], MessageHandler)
+        """Free text is the fallback: every button and command is tried first."""
+        assert isinstance(registered[-1], MessageHandler)
+        assert isinstance(registered[-2], CallbackQueryHandler)
 
     def test_cancel_is_not_registered(self, registered):
         """/cancel is documented as "coming soon"; it must stay unimplemented."""
         assert "cancel" not in commands_in(registered)
         # ...and the help text still says so, so the gap stays visible.
-        assert "/cancel \\- Cancel \\(coming soon\\)" in texts.HELP
+        assert "/cancel \\- Cancel \\(coming soon\\)" in texts.help_text("en")
 
     def test_registering_twice_does_not_duplicate(self, registered):
         application = FakeApplication()
@@ -143,20 +179,29 @@ class TestRegistration:
 
 
 class TestMenuParity:
-    """``setMyCommands`` in bot.py and the registered handlers must agree."""
+    """``setMyCommands`` in bot.py and the registered handlers must agree.
 
-    def menu_commands(self):
-        return re.findall(r'BotCommand\("([a-z0-9_]+)"', bot_source())
+    ``bot.py`` keeps the menu as ``(command, catalogue key)`` pairs, so the
+    description cannot drift from the catalogue and the menu cannot list a
+    command that no handler answers.
+    """
+
+    def menu(self) -> list[tuple[str, str]]:
+        body = re.search(r"\nMENU = \((.*?)\n\)", bot_source(), re.S)
+        assert body is not None, "bot.py no longer defines MENU"
+        return re.findall(r'\("([a-z0-9_]+)", "([a-z0-9_.]+)"\)', body.group(1))
 
     def test_menu_matches_the_handlers(self, registered):
         # The menu order in bot.py is curated (the shortcuts sit high); only
         # the set has to agree with what is registered.
-        assert sorted(self.menu_commands()) == sorted(commands_in(registered))
+        assert sorted(name for name, _ in self.menu()) == sorted(
+            commands_in(registered)
+        )
 
     def test_menu_entries_have_a_description(self):
-        described = re.findall(r'BotCommand\("([a-z0-9_]+)", "([^"]+)"\)', bot_source())
-        assert len(described) == len(self.menu_commands())
-        assert all(description.strip() for _, description in described)
+        for _, key in self.menu():
+            assert i18n.has(key, "en"), f"menu key {key} is missing from the catalogue"
+            assert i18n.t(key, "en").strip()
 
 
 class TestFacade:
@@ -164,8 +209,9 @@ class TestFacade:
         import handlers
 
         for name in (
-            "callbacks", "commands", "config", "download_flow",
-            "sessions", "stats", "texts", "url_flow",
+            "callbacks", "commands", "config", "download_flow", "keyboards",
+            "language", "onboarding", "sessions", "stages", "stats", "texts",
+            "url_flow",
         ):
             assert getattr(handlers, name) is not None
 

@@ -26,13 +26,13 @@ order) and the matching `CommandHandler`s in `register_handlers`
 
 | Command | Menu description | Handler | What it does |
 | --- | --- | --- | --- |
-| `/start` | Start Koyura | `cmd_start` (`:62`) | Static welcome text, plain (no `parse_mode`). |
+| `/start` | Start Koyura | `onboarding.start_command` | First contact: the language screen (when more than one language is enabled and the user has no saved choice), otherwise the welcome text with its inline keyboard — see §9. |
 | `/help` | Help and commands | `cmd_help` (`:82`) | Static how-to, sent as **MarkdownV2** (the source is pre-escaped). |
 | `/mp3` | Download as MP3 | `cmd_mp3` (`:213`) | Extracts links from the command or the replied-to message, validates them, starts one direct audio job per link (no picker). |
 | `/mp4` | Download best quality MP4 | `cmd_mp4` (`:229`) | Same, video, no format id → engine's best. |
 | `/best` | Best available quality | `cmd_best` (`:245`) | Alias: calls `cmd_mp4` verbatim. |
 | `/platforms` | Supported platforms | `cmd_platforms` (`:109`) | Static list, one indented line per platform. |
-| `/settings` | Your preferences | `cmd_settings` (`:146`) | Reads `state_store.get_prefs(user.id)` and prints quality + format. |
+| `/settings` | Your preferences | `commands.settings_command` | Prints quality, format, language and the armed MP3/MP4 mode, plus one button per enabled language (the current one ticked). |
 | `/setquality` | Set default quality | `cmd_setquality` (`:166`) | `best/1080/720/480/360`; usage line when no argument, options list when invalid. |
 | `/setformat` | Set default format | `cmd_setformat` (`:184`) | `video/audio`; same shape of usage/invalid replies. |
 | `/stats` | Koyura statistics | `cmd_stats` (`:117`) | Uptime, in-process download/error counters, files and MB in `DOWNLOADS_PATH`, number of live sessions. |
@@ -255,8 +255,21 @@ undeletable is a DEBUG line, never a failure).
 
 ## 5. User-visible texts
 
-All of them live in `bot/handlers/texts.py` after the rewrite. Pre-rewrite
-locations:
+The words themselves live in `bot/i18n.py`, in two catalogues (`en`, `ru`) with
+the same keys and the same `{placeholders}` — see §9. `bot/handlers/texts.py`
+only decides how the lines are arranged.
+
+Two forms, and the rule for picking one:
+
+* `texts.md(key, lang)` escapes for `parse_mode="MarkdownV2"` — every message the
+  bot posts goes through it;
+* `texts.t(key, lang)` does not — card captions (which escape their own inputs)
+  and plain emitters (`query.answer` toasts) use it.
+
+`progress_card`/`download_card` take a `lang=` keyword and default to English, so
+the pure formatting tests keep working unchanged.
+
+Pre-rewrite locations (the text is these days a catalogue entry):
 
 | Constant (new) | Text | Old location |
 | --- | --- | --- |
@@ -326,7 +339,12 @@ locations:
   total_bytes), `download_done` (job_id, file_size_bytes, duration_seconds,
   filename), `download_error` (job_id, error_message).
 * **`callback_data`**: exactly the values above, so buttons in old chats work.
-* **Command names and `setMyCommands` metadata**: unchanged.
+* **Command names and `setMyCommands` metadata**: unchanged (the descriptions now
+  come from the catalogue's `menu.*` keys, still published in English).
+* **Panel internal API**: `POST /api/events` is unchanged; this release adds
+  `GET /api/bot-settings` (read-only, `X-Internal-Token`, body
+  `{"languages": [...], "default_language": "en"}`) for the bot to read the
+  enabled languages. Adding it changes no existing field.
 
 ---
 
@@ -342,3 +360,100 @@ locations:
   repeat-tap guard, the stale-button path, queue refusal, engine failures, and
   the handler registration (command names, handler types, callback pattern).
 * All four suites (`bot`, `dashboard`, `koyura`, `.github/tests`) are green.
+
+---
+
+## 9. Languages (English / Russian)
+
+### Catalogues
+
+`bot/i18n.py` holds every word the bot can say:
+
+```python
+CATALOGS = {"en": EN, "ru": RU}      # same keys, same {placeholders}
+t("intake.too_many", lang, limit=5)   # "Only the first 5 links..."
+escape_md(text)                       # the bot's only MarkdownV2 escaper
+```
+
+Rules the tests enforce (`bot/tests/test_i18n.py`):
+
+* every key exists in **both** catalogues, with a non-empty value;
+* the `{placeholders}` of a key are identical across languages;
+* catalogues hold **plain text** — escaping happens once, at the send site;
+* the "searching" stage is `🔍` in both languages.
+
+Two things are deliberately not translated: the `EVENT_*` error strings stored in
+the dashboard (the panel is English-only) and the protocol values
+(`best`/`720`/`video`/platform names).
+
+### Which language a chat gets
+
+`handlers/language.current(user_id)` is the only place that answers this:
+a saved choice **if the operator still offers it**, otherwise the panel's
+default. A language switched in `/settings` changes the very next message.
+
+The choice is per user and survives a restart: `bot/state_store.py` keeps it in
+`user_prefs.language` (plus `user_prefs.pending_format` for the MP3/MP4 mode),
+added by an additive, replay-safe `ALTER TABLE … ADD COLUMN` on every start.
+
+### Where the setting comes from
+
+The panel owns it — Admin → **Bot languages** — stored as two rows in the same
+`settings` table the download limits use:
+
+```text
+bot_settings.languages         "en,ru"        (comma separated, ordered)
+bot_settings.default_language  "en"
+```
+
+The bot reads `GET /api/bot-settings` (`X-Internal-Token`) and caches the answer
+for `bot_settings.TTL_SECONDS` (45 s). Panel down, 401, bad JSON, or an empty
+language list → the built-in defaults (`en,ru`, default `en`). Validation in the
+panel: at least one language stays enabled, and the default must be one of them.
+
+### First contact
+
+| Situation | What the user gets |
+| --- | --- |
+| >1 language enabled, no saved choice | One message: "Choose the language of this chat." with `[English] [Русский]` (`lang:en`, `lang:ru`). The tap **replaces** that screen with the welcome in the chosen language. |
+| exactly one language enabled | The welcome immediately, in that language — no screen. |
+| a choice is already saved | The welcome immediately, in that language. The picker is never shown twice. |
+
+### The welcome screen
+
+```text
+Koyura Bot — a quiet downloader.
+
+Send a video or audio link and the file arrives in this chat.
+
+Supported platforms: YouTube, TikTok, Instagram, Twitter, Reddit, and 1000+ more.
+```
+
+Below it, an inline keyboard instead of the old command list, two per row:
+
+```text
+[ Help ]      [ Platforms ]
+[ Settings ]  [ Stats ]
+[ MP3 ]       [ MP4 ]
+```
+
+`welcome:help|platforms|settings|stats` replace the welcome with the same screen
+`/help`, `/platforms`, `/settings`, `/stats` produce (post the new message, then
+delete the old one — the same `StageTracker` rule as a download).
+
+`welcome:mp3` / `welcome:mp4` **arm a mode** instead of downloading: the answer
+says `Mode: MP3 — send the link`, and the next link the user sends downloads in
+that format without the picker, then the mode clears. If the welcome message is
+itself a reply to a link, the download starts immediately. `/settings` shows the
+armed mode, and `/mp3`/`/mp4` clear it (the user just said what they want).
+
+### `callback_data`
+
+| Scheme | Origin | Shape |
+| --- | --- | --- |
+| `lang:<code>` | first-contact picker | `lang:en`, `lang:ru` |
+| `lang:<code>:s` | the `/settings` language buttons | `lang:ru:s` (stay on settings) |
+| `welcome:<action>` | the welcome keyboard | `welcome:help` … `welcome:mp4` |
+
+The three patterns are separate handlers, so the card router's contract
+(`^(dl|fmt|qty):` and its four-field payload) is unchanged.

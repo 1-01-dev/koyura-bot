@@ -40,9 +40,11 @@ from koyura_client import (
     start_download,
 )
 
-from . import config, sessions, stages, stats, texts
+from . import config, language, sessions, stages, stats, texts
 
 logger = logging.getLogger(__name__)
+
+PARSE_MODE = "MarkdownV2"
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +158,7 @@ class Job:
     status_message_id: int
     started_at: float
     url_hash: str | None = None
+    lang: str = "en"
 
     @property
     def title(self) -> str:
@@ -175,7 +178,7 @@ def fallback_sender(bot, chat_id: int):
     return send
 
 
-def retry_markup(info: dict, url_hash: str | None):
+def retry_markup(info: dict, url_hash: str | None, lang: object = None):
     """``markup_factory(message_id)`` for the format keyboard of a failed card.
 
     A missing hash means there is nothing to rebuild the buttons from, and the
@@ -184,7 +187,7 @@ def retry_markup(info: dict, url_hash: str | None):
     if not url_hash:
         return None
     return lambda message_id: download_card.build_format_keyboard(
-        info, message_id, url_hash
+        info, message_id, url_hash, lang=lang
     )
 
 
@@ -205,12 +208,17 @@ async def run_download(
     url_hash: str | None = None,
     tracker=None,
     entry: dict | None = None,
+    lang: str | None = None,
 ) -> None:
     """Start a job, move it through its stages and finish it with the file.
 
     ``entry`` is the picker session; it is unlocked in a ``finally`` so a failed
     download gives the format buttons back instead of leaving the card dead.
+    ``lang`` is resolved once, by the caller that has the user in hand: a job can
+    outlive the message that started it.
     """
+    if lang is None:
+        lang = await language.current(user_id)
     job = Job(
         url=url,
         info=info,
@@ -223,6 +231,7 @@ async def run_download(
         status_message_id=status_message_id,
         started_at=started_at,
         url_hash=url_hash,
+        lang=lang,
     )
     if tracker is None:
         tracker = stages.StageTracker(
@@ -250,6 +259,7 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direc
             message,
             job.url_hash,
             retry_hint=retry_hint,
+            lang=job.lang,
         )
         # The error card is a new message with its own buttons, so the session
         # has to follow it — otherwise "tap a format to try again" on a card
@@ -262,7 +272,9 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direc
     # in flight is still recognised ("already downloading" rather than
     # "expired").
     await stage.replace_text(
-        progress_card.build_status_caption(job.info, texts.STARTING)
+        progress_card.build_status_caption(
+            job.info, texts.t("stage.starting", job.lang), lang=job.lang
+        )
     )
 
     try:
@@ -279,10 +291,10 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direc
     except KoyuraBusy as refusal:
         # A refusal has its own wording: the wait is known and the format
         # buttons come back with the error card, so "tap a format" is noise.
-        await fail(progress_card.busy_message(refusal), retry_hint=False)
+        await fail(progress_card.busy_message(refusal, lang=job.lang), retry_hint=False)
         return
     except KoyuraServiceDown:
-        await fail(texts.SERVICE_DOWN)
+        await fail(texts.t("engine.down", job.lang))
         return
     except KoyuraError as error:
         await fail(str(error))
@@ -290,7 +302,7 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direc
 
     job_id = str(accepted.get("job_id") or "")
     if not job_id:
-        await fail(texts.UNEXPECTED_ANSWER)
+        await fail(texts.t("download.unexpected", job.lang))
         return
 
     # A queued job keeps the same message and shows its place; the poll loop
@@ -302,6 +314,7 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direc
                 accepted.get("queue_position"),
                 accepted.get("wait_seconds"),
                 approximate=bool(accepted.get("queue_estimate_approximate", True)),
+                lang=job.lang,
             )
         )
 
@@ -313,7 +326,9 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direc
         return
 
     if status.get("status") == "error":
-        await fail(str(status.get("error") or texts.UNKNOWN_ERROR))
+        await fail(
+            str(status.get("error") or texts.t("download.unknown_error", job.lang))
+        )
         await event_client.send_download_error(
             job_id=job_id, error_message=status.get("error", texts.EVENT_UNKNOWN_ERROR)
         )
@@ -371,7 +386,9 @@ async def poll_until_finished(job: Job, job_id: str, stage) -> dict | None:
         try:
             status = await poll_status(job_id)
         except KoyuraServiceDown:
-            await report_failure(stage, job.info, texts.SERVICE_DOWN)
+            await report_failure(
+                stage, job.info, texts.t("engine.down", job.lang), lang=job.lang
+            )
             await event_client.send_download_error(
                 job_id=job_id, error_message=texts.EVENT_SERVICE_DOWN
             )
@@ -386,7 +403,7 @@ async def poll_until_finished(job: Job, job_id: str, stage) -> dict | None:
             return status
 
         if state == "queued":
-            await _show_queue_state(stage, job.info, status, throttle)
+            await _show_queue_state(stage, job.info, status, throttle, job.lang)
             continue
 
         progress = status.get("progress")
@@ -420,17 +437,20 @@ async def poll_until_finished(job: Job, job_id: str, stage) -> dict | None:
                 stage="downloading",
                 quality=job.quality,
                 elapsed=elapsed,
+                lang=job.lang,
             )
         )
 
-    await report_failure(stage, job.info, texts.TIMED_OUT)
+    await report_failure(
+        stage, job.info, texts.t("download.timed_out", job.lang), lang=job.lang
+    )
     await event_client.send_download_error(
         job_id=job_id, error_message=texts.EVENT_TIMED_OUT
     )
     return None
 
 
-async def _show_queue_state(stage, info: dict, status: dict, throttle) -> None:
+async def _show_queue_state(stage, info: dict, status: dict, throttle, lang: object = None) -> None:
     """Rewrite the progress message with the job's place in the queue.
 
     The same throttle as the progress caption applies, so a job moving up the
@@ -446,6 +466,7 @@ async def _show_queue_state(stage, info: dict, status: dict, throttle) -> None:
             position,
             wait,
             approximate=bool(status.get("queue_estimate_approximate", True)),
+            lang=lang,
         )
     )
 
@@ -483,7 +504,13 @@ async def _deliver(
     """Post the finished file as its own message and drop the progress card."""
     local = local_file(status)
     if local is None:
-        await report_failure(stage, job.info, texts.FILE_MISSING, job.url_hash)
+        await report_failure(
+            stage,
+            job.info,
+            texts.t("download.file_missing", job.lang),
+            job.url_hash,
+            lang=job.lang,
+        )
         stats.record_error()
         await event_client.send_download_error(
             job_id=job_id, error_message=texts.EVENT_FILE_MISSING
@@ -503,6 +530,7 @@ async def _deliver(
         quality=job.quality,
         size_bytes=size_bytes,
         duration=status.get("duration"),
+        lang=job.lang,
     )
 
     # Stage 3: the file replaces the progress message. It is uploaded first and
@@ -522,7 +550,13 @@ async def _deliver(
         )
     )
     if not delivered.ok:
-        await report_failure(stage, job.info, texts.UPLOAD_FAILED, job.url_hash)
+        await report_failure(
+            stage,
+            job.info,
+            texts.t("download.upload_failed", job.lang),
+            job.url_hash,
+            lang=job.lang,
+        )
         stats.record_error()
         await event_client.send_download_error(
             job_id=job_id, error_message=texts.EVENT_UPLOAD_FAILED
@@ -617,10 +651,15 @@ async def report_failure(
     url_hash: str | None = None,
     *,
     retry_hint: bool = True,
+    lang: object = None,
 ) -> None:
     """Replace the status message with the failure and its format buttons."""
-    text = progress_card.build_error_caption(info, message, retry_hint=retry_hint)
-    await stage.finish_with_text(text, markup_factory=retry_markup(info, url_hash))
+    text = progress_card.build_error_caption(
+        info, message, retry_hint=retry_hint, lang=lang
+    )
+    await stage.finish_with_text(
+        text, markup_factory=retry_markup(info, url_hash, lang)
+    )
 
 
 def unlink_quietly(path: Path) -> None:
@@ -642,6 +681,8 @@ async def run_direct(
     url: str,
     fmt: str,
     format_id: str | None,
+    *,
+    lang: str | None = None,
 ) -> None:
     """Download without the picker: fetch info, then the usual stages.
 
@@ -651,17 +692,19 @@ async def run_direct(
     user = update.effective_user
     if user is None:
         return
+    if lang is None:
+        lang = await language.current(user.id)
     stage = stages.StageTracker(
         context.bot, status_message.chat_id, status_message.message_id
     )
     try:
         info = await get_info(url)
     except KoyuraServiceDown:
-        await stage.edit(texts.SERVICE_DOWN)
+        await stage.edit(texts.md("engine.down", lang))
         stats.record_error()
         return
     except KoyuraError as error:
-        await stage.edit(texts.engine_error(error))
+        await stage.edit(texts.md("engine.error", lang, error=error))
         stats.record_error()
         return
 
