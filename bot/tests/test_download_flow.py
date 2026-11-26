@@ -3,6 +3,11 @@
 The engine and Telegram are both stubbed; the point is that a finished job is
 uploaded under a human name with the new caption and that the dashboard event
 keeps carrying title/format/quality/file_size_bytes.
+
+The second half tests what the owner sees in the chat: **one stage — one
+message**. A recording ``Bot`` captures the exact order of Telegram calls
+(``send → delete → edits → send → delete``), so "the previous stage is replaced,
+not stacked on" is an assertion rather than a hope.
 """
 import os
 import sys
@@ -13,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest  # noqa: E402
 
-from handlers import callbacks, config, download_flow, sessions  # noqa: E402
+from handlers import config, download_flow, sessions, stages  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -58,24 +63,84 @@ def media_file(tmp_path, monkeypatch):
     return tmp_path
 
 
+class RecordingBot:
+    """A fake Telegram bot that records every call, in order.
+
+    ``calls`` is a list of ``(name, kwargs)``; ``fail`` makes a named method
+    raise, which is how the "deletion refused" and "upload refused" behaviours
+    are exercised. Every successful send returns a message whose id comes from
+    ``_next_id``, so the ids in the recorded sequence are predictable.
+    """
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+        self.fail: dict[str, BaseException] = {}
+        self._next_id = 100
+
+    def _record(self, name: str, kwargs: dict, *, returns_message: bool = False):
+        self.calls.append((name, kwargs))
+        error = self.fail.get(name)
+        if error is not None:
+            raise error
+        if returns_message:
+            return MagicMock(message_id=self._next_message_id())
+        return True
+
+    def _next_message_id(self) -> int:
+        self._next_id += 1
+        return self._next_id
+
+    # Only the ``send_*`` methods post a message (and so allocate an id); an
+    # edit or a delete returns something the flows never inspect.
+    async def send_message(self, **kwargs):
+        return self._record("send_message", kwargs, returns_message=True)
+
+    async def send_photo(self, **kwargs):
+        return self._record("send_photo", kwargs, returns_message=True)
+
+    async def send_video(self, **kwargs):
+        return self._record("send_video", kwargs, returns_message=True)
+
+    async def send_audio(self, **kwargs):
+        return self._record("send_audio", kwargs, returns_message=True)
+
+    async def send_document(self, **kwargs):
+        return self._record("send_document", kwargs, returns_message=True)
+
+    async def delete_message(self, **kwargs):
+        return self._record("delete_message", kwargs)
+
+    async def edit_message_text(self, **kwargs):
+        return self._record("edit_message_text", kwargs)
+
+    async def edit_message_caption(self, **kwargs):
+        return self._record("edit_message_caption", kwargs)
+
+    async def edit_message_reply_markup(self, **kwargs):
+        return self._record("edit_message_reply_markup", kwargs)
+
+    # -- helpers ----------------------------------------------------------
+
+    def names(self) -> list[str]:
+        return [name for name, _ in self.calls]
+
+    def of(self, name: str) -> list[dict]:
+        return [kwargs for called, kwargs in self.calls if called == name]
+
+    def stage_script(self) -> list[str]:
+        """The sequence collapsed to the operations the owner actually sees."""
+        return [
+            name
+            for name in self.names()
+            if name in ("send_message", "send_photo", "send_video", "send_audio",
+                        "send_document", "delete_message", "edit_message_text",
+                        "edit_message_caption", "edit_message_reply_markup")
+        ]
+
+
 def _bot(in_place: bool = True):
-    """A bot mock where ``edit_message_media`` works (or fails, for fallback)."""
-    bot = MagicMock()
-    bot.send_video = AsyncMock()
-    bot.send_audio = AsyncMock()
-    bot.send_document = AsyncMock()
-    bot.send_message = AsyncMock()
-    bot.edit_message_caption = AsyncMock()
-    bot.edit_message_text = AsyncMock()
-    bot.edit_message_reply_markup = AsyncMock()
-    if in_place:
-        bot.edit_message_media = AsyncMock()
-    else:
-        from telegram.error import BadRequest
-        bot.edit_message_media = AsyncMock(
-            side_effect=BadRequest("Message can't be edited")
-        )
-    return bot
+    """A recording bot; ``in_place=False`` keeps the old call shape available."""
+    return RecordingBot()
 
 
 def _context(bot):
@@ -89,15 +154,22 @@ def _status(name, **extra):
             "duration": 635, "height": 720, "width": 1280, **extra}
 
 
-async def _run(monkeypatch, bot, fmt, status, *, format_id=None, height=None,
-               card=None, entry=None, url_hash=None):
-    # Write the finished artifact the engine would have left on the volume.
+def _write_artifact(status) -> None:
     name = status.get("filename") or "job.mp4"
     target = Path(config.DOWNLOADS_PATH) / name
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(b"x" * 2048)
+
+
+async def _run(monkeypatch, bot, fmt, status, *, format_id=None, height=None,
+               tracker=None, entry=None, url_hash=None, poll=None):
+    # Write the finished artifact the engine would have left on the volume.
+    _write_artifact(status)
     monkeypatch.setattr(download_flow, "start_download", AsyncMock(return_value={"job_id": "job1", "status": "downloading"}))
-    monkeypatch.setattr(download_flow, "poll_status", AsyncMock(return_value=status))
+    if isinstance(poll, list):
+        monkeypatch.setattr(download_flow, "poll_status", AsyncMock(side_effect=poll))
+    else:
+        monkeypatch.setattr(download_flow, "poll_status", AsyncMock(return_value=poll or status))
     started = AsyncMock()
     done = AsyncMock()
     monkeypatch.setattr(download_flow.event_client, "send_download_start", started)
@@ -117,7 +189,7 @@ async def _run(monkeypatch, bot, fmt, status, *, format_id=None, height=None,
         user_id=3,
         username="tester",
         started_at=0.0,
-        card=card,
+        tracker=tracker,
         entry=entry,
         url_hash=url_hash,
     )
@@ -125,25 +197,11 @@ async def _run(monkeypatch, bot, fmt, status, *, format_id=None, height=None,
 
 
 def _delivered(bot) -> dict:
-    """The file as the user receives it, normalised to one shape.
-
-    In-place delivery arrives as an ``InputMedia*`` object (where the human name
-    lives on the attached ``InputFile``); the fallback path passes the same
-    values straight to ``send_video``/``send_audio``/``send_document``.
-    """
-    if bot.edit_message_media.await_count:
-        media = bot.edit_message_media.await_args.kwargs["media"]
-        return {
-            "filename": getattr(media.media, "filename", None),
-            "caption": media.caption,
-            "title": getattr(media, "title", None),
-            "performer": getattr(media, "performer", None),
-            "duration": getattr(media, "duration", None),
-        }
+    """The file as the user receives it, read off the upload call."""
     for name in ("send_video", "send_audio", "send_document"):
-        sender = getattr(bot, name)
-        if sender.await_count:
-            return sender.await_args.kwargs
+        calls = bot.of(name)
+        if calls:
+            return calls[-1]
     raise AssertionError("nothing was delivered to the user")
 
 
@@ -181,7 +239,7 @@ class TestUpload:
         assert "KB" in caption
         assert "MP3" in caption
         assert kwargs["duration"] == 635
-        assert bot.send_video.call_count == 0
+        assert bot.of("send_video") == []
 
     @pytest.mark.asyncio
     async def test_falls_back_to_built_name_without_engine_filename(self, media_file, monkeypatch):
@@ -200,7 +258,7 @@ class TestEvents:
     async def test_start_event_keeps_title_format_quality(self, media_file, monkeypatch):
         bot = _bot()
         started, _ = await _run(monkeypatch, bot, "video", _status("job.mp4"),
-                                 format_id="137", height=1080)
+                                format_id="137", height=1080)
         kwargs = started.call_args.kwargs
         assert kwargs["title"] == "Artemis II to the Moon"
         assert kwargs["format"] == "video"
@@ -236,7 +294,7 @@ class TestEvents:
             height=None, user_id=3, username="t", started_at=0.0,
         )
         assert error.call_args.kwargs["error_message"] == "boom"
-        assert bot.send_video.call_count == 0
+        assert bot.of("send_video") == []
 
 
 class TestChoiceResolution:
@@ -280,7 +338,7 @@ class TestCallbackParsing:
 
 
 # ---------------------------------------------------------------------------
-# One message, three stages
+# One stage, one message
 # ---------------------------------------------------------------------------
 
 def _progress_status(percent, **extra):
@@ -301,71 +359,79 @@ def _progress_status(percent, **extra):
 
 class TestOneMessageFlow:
     @pytest.mark.asyncio
-    async def test_caption_then_caption_then_media(self, media_file, monkeypatch):
-        """The card is edited in place from start to finish."""
+    async def test_preview_is_deleted_then_progress_then_file(self, media_file, monkeypatch):
+        """send → delete → edits → send → delete: the canonical chain."""
         bot = _bot()
-        await _run(monkeypatch, bot, "video", _status("job.mp4"),
-                   format_id="137", height=1080)
+        await _run(
+            monkeypatch, bot, "video", _status("job.mp4"),
+            format_id="137", height=1080,
+            poll=[_progress_status(42.0), _status("job.mp4")],
+        )
 
-        # The finished file replaced the card's media instead of being sent as a
-        # third message.
-        assert bot.edit_message_media.await_count == 1
-        assert bot.send_video.call_count == 0
-        assert bot.send_document.call_count == 0
-        # ...and the progress captions went to the same message.
-        captions = [c.kwargs["caption"] for c in bot.edit_message_caption.await_args_list]
-        assert any("Starting" in _plain(c) for c in captions)
-        assert all(c.kwargs["message_id"] == 2
-                   for c in bot.edit_message_caption.await_args_list)
-        assert all(c.kwargs["message_id"] == 2
-                   for c in bot.edit_message_media.await_args_list)
+        script = bot.stage_script()
+        assert script[0] == "send_message"      # "Starting download…"
+        assert script[1] == "delete_message"    # the preview card goes
+        assert script[-2] == "send_video"       # the file arrives as its own message
+        assert script[-1] == "delete_message"   # the progress message goes
+        # Everything between the two deletes is an edit of one message.
+        middle = script[2:-2]
+        assert middle == ["edit_message_text"], middle
+
+        # The same message was edited throughout; the file got a new id.
+        edited = {kwargs["message_id"] for kwargs in bot.of("edit_message_text")}
+        progress_id = 101  # first id the recording bot hands out
+        assert edited == {progress_id}
+
+        # Both deletions point at a message that was once on screen.
+        deleted = [kwargs["message_id"] for kwargs in bot.of("delete_message")]
+        assert deleted == [2, progress_id]
+
+        # Both deletions point at a message that was once on screen.
+        deleted = [kwargs["message_id"] for kwargs in bot.of("delete_message")]
+        assert deleted == [2, progress_id]
 
     @pytest.mark.asyncio
-    async def test_final_media_is_a_video_with_the_file_caption(self, media_file, monkeypatch):
+    async def test_the_file_is_never_deleted(self, media_file, monkeypatch):
         bot = _bot()
         await _run(monkeypatch, bot, "video", _status("job.mp4"), height=720)
-        media = bot.edit_message_media.await_args.kwargs["media"]
-        assert media.type == "video"
-        # The human name travels on the attached upload, not on the media object.
-        assert media.media.filename == "job.mp4"
-        caption = _plain(media.caption)
-        assert "Artemis II to the Moon" in caption
-        assert "2.0KB" in caption
-        assert "10:35" in caption
-        assert "720p" in caption
+
+        file_ids = {kwargs["message_id"] for kwargs in bot.of("delete_message")}
+        delivered_id = 103  # second message posted in this scenario
+        assert delivered_id not in file_ids
+        assert bot.of("send_video"), "the file has to be posted"
 
     @pytest.mark.asyncio
-    async def test_audio_finishes_as_audio_with_tags(self, media_file, monkeypatch):
+    async def test_progress_never_posts_a_new_message(self, media_file, monkeypatch):
+        """Ticks edit the progress message; only the file is a new message."""
         bot = _bot()
-        await _run(monkeypatch, bot, "audio", _status("job.mp3"))
-        media = bot.edit_message_media.await_args.kwargs["media"]
-        assert media.type == "audio"
-        assert media.title == "Artemis II to the Moon"
-        assert media.performer == "NASA"
-        assert bot.send_audio.call_count == 0
+        polls = [_progress_status(10.0), _progress_status(55.0), _status("job.mp4")]
+        monkeypatch.setattr(download_flow, "start_download", AsyncMock(return_value={"job_id": "j", "status": "downloading"}))
+        monkeypatch.setattr(download_flow, "poll_status", AsyncMock(side_effect=polls))
+        for name in ("send_download_start", "send_download_done", "send_download_error", "send_progress"):
+            monkeypatch.setattr(download_flow.event_client, name, AsyncMock())
+        (media_file / "job.mp4").write_bytes(b"x" * 2048)
+
+        await download_flow.run_download(
+            context=_context(bot), chat_id=1, status_message_id=2,
+            url="https://youtube.com/x", info=INFO, fmt="video", format_id=None,
+            height=None, user_id=3, username="t", started_at=0.0,
+        )
+
+        # One status message, then the file: no third message in between.
+        assert len(bot.of("send_message")) == 1
+        assert len(bot.of("send_video")) == 1
+        captions = [_plain(kwargs["text"]) for kwargs in bot.of("edit_message_text")]
+        assert any("10%" in caption for caption in captions)
 
     @pytest.mark.asyncio
-    async def test_progress_removes_the_keyboard(self, media_file, monkeypatch):
+    async def test_progress_edits_drop_the_keyboard(self, media_file, monkeypatch):
         bot = _bot()
         await _run(monkeypatch, bot, "video", _status("job.mp4"))
-        # The button row is dropped as soon as the job starts.
-        assert bot.edit_message_reply_markup.await_count == 1
-        markup = bot.edit_message_reply_markup.await_args.kwargs["reply_markup"]
-        assert tuple(markup.inline_keyboard) == ()
-        # Progress captions never re-add a keyboard.
-        for call in bot.edit_message_caption.await_args_list:
-            assert call.kwargs.get("reply_markup") is None
+        for kwargs in bot.of("edit_message_text"):
+            assert kwargs.get("reply_markup") is None
 
     @pytest.mark.asyncio
-    async def test_media_edit_failure_still_delivers_the_file(self, media_file, monkeypatch):
-        """An uneditable card must not swallow the download."""
-        bot = _bot(in_place=False)
-        await _run(monkeypatch, bot, "video", _status("job.mp4"), height=720)
-        assert bot.send_video.await_count == 1
-        assert bot.send_video.await_args.kwargs["filename"] == "job.mp4"
-
-    @pytest.mark.asyncio
-    async def test_error_restores_the_format_keyboard(self, media_file, monkeypatch):
+    async def test_error_replaces_progress_with_a_ready_keyboard(self, media_file, monkeypatch):
         bot = _bot()
         monkeypatch.setattr(download_flow, "start_download", AsyncMock(return_value={"job_id": "j", "status": "downloading"}))
         monkeypatch.setattr(download_flow, "poll_status",
@@ -380,16 +446,21 @@ class TestOneMessageFlow:
             url_hash="abcdef123456",
         )
 
-        last = bot.edit_message_caption.await_args.kwargs
-        caption = _plain(last["caption"])
+        # The error is its own message and the progress message is retired.
+        assert bot.names()[-3:] == [
+            "send_message", "edit_message_reply_markup", "delete_message"
+        ]
+        error = bot.of("send_message")[-1]
+        caption = _plain(error["text"])
         assert "Video unavailable" in caption
         assert "Download failed" in caption
-        # The buttons come back, with the same callback data as the preview.
-        markup = last["reply_markup"]
+        # The buttons are attached to the message that shows them.
+        markup = bot.of("edit_message_reply_markup")[-1]["reply_markup"]
         datas = [b.callback_data for row in markup.inline_keyboard for b in row]
-        assert "dl:2:abcdef123456:137" in datas
-        assert all(len(d.encode()) <= 64 for d in datas)
-        assert bot.send_video.call_count == 0
+        error_id = 102  # second message the recording bot hands out
+        assert f"dl:{error_id}:abcdef123456:137" in datas
+        assert all(len(data.encode()) <= 64 for data in datas)
+        assert bot.of("send_video") == []
 
     @pytest.mark.asyncio
     async def test_error_without_a_hash_has_no_buttons(self, media_file, monkeypatch):
@@ -405,7 +476,8 @@ class TestOneMessageFlow:
             url="https://youtube.com/x", info=INFO, fmt="video", format_id=None,
             height=None, user_id=3, username="t", started_at=0.0,
         )
-        assert bot.edit_message_caption.await_args.kwargs["reply_markup"] is None
+        assert bot.of("edit_message_reply_markup") == []
+        assert bot.of("send_message")[-1]["reply_markup"] is None
 
     @pytest.mark.asyncio
     async def test_job_flag_is_cleared_when_the_download_ends(self, media_file, monkeypatch):
@@ -415,75 +487,76 @@ class TestOneMessageFlow:
         assert entry["job_active"] is False
 
 
-class TestCallbackGuard:
+# ---------------------------------------------------------------------------
+# Best-effort deletion and the send-before-delete rule
+# ---------------------------------------------------------------------------
+
+class TestStageDiscipline:
     @pytest.mark.asyncio
-    async def test_second_format_while_downloading_is_refused(self, monkeypatch):
-        """A second tap on the same card must not start a second job."""
-        monkeypatch.setattr(sessions, "evict_stale", lambda: None)
-        entry = {
-            "url": "https://youtube.com/x", "chat_id": 1, "user_id": 3,
-            "username": "t", "info": INFO, "message_id": 2, "photo": True,
-            "job_active": True, "created": 0.0,
-        }
-        monkeypatch.setattr(
-            sessions, "find", lambda query, message_id, uhash: entry
-        )
-        created = []
-        monkeypatch.setattr(callbacks.asyncio, "create_task", created.append)
+    async def test_undeletable_message_is_not_fatal(self, media_file, monkeypatch):
+        """A 48-hour-old or already-deleted message is a DEBUG line, not an error."""
+        from telegram.error import BadRequest
 
-        query = MagicMock()
-        query.data = "dl:2:abcdef123456:137"
-        query.message = MagicMock()
-        query.message.chat.id = 1
-        query.message.message_id = 2
-        query.answer = AsyncMock()
-        query.edit_message_text = AsyncMock()
+        bot = _bot()
+        bot.fail["delete_message"] = BadRequest("Message to delete not found")
+        await _run(monkeypatch, bot, "video", _status("job.mp4"))
 
-        update = MagicMock()
-        update.callback_query = query
-        await callbacks.on_format_button(update, _context(_bot()))
-
-        assert created == []
-        # Answered politely instead of silently doing nothing, and answered
-        # exactly once (Telegram rejects a second answer for the same query).
-        assert query.answer.await_count == 1
-        text = " ".join(str(part) for part in query.answer.await_args.args)
-        assert "Already downloading" in text
-        query.edit_message_text.assert_not_awaited()
+        # The flow ran to the end: the file still arrived.
+        assert bot.of("send_video"), "the download must survive a refused delete"
+        assert download_flow.stats.COUNTERS["downloads"] >= 1
+        # Every delete was attempted, none of them raised.
+        assert len(bot.of("delete_message")) == 2
 
     @pytest.mark.asyncio
-    async def test_first_tap_starts_a_job_and_marks_the_card_busy(self, monkeypatch):
-        monkeypatch.setattr(sessions, "evict_stale", lambda: None)
-        entry = {
-            "url": "https://youtube.com/x", "chat_id": 1, "user_id": 3,
-            "username": "t", "info": INFO, "message_id": 2, "photo": True,
-            "job_active": False, "created": 0.0,
-        }
-        monkeypatch.setattr(
-            sessions, "find", lambda query, message_id, uhash: entry
+    async def test_deleted_by_user_is_not_fatal(self, media_file, monkeypatch):
+        from telegram.error import BadRequest
+
+        bot = _bot()
+        bot.fail["delete_message"] = BadRequest(
+            "Bad Request: message can't be deleted for everyone"
         )
-        created = []
+        await _run(monkeypatch, bot, "video", _status("job.mp4"))
+        assert bot.of("send_video")
 
-        def _capture(coro):
-            # Close it instead of awaiting: the job itself is covered elsewhere.
-            coro.close()
-            created.append(coro)
+    @pytest.mark.asyncio
+    async def test_a_failed_new_stage_keeps_the_old_message(self, media_file, monkeypatch):
+        """Send first, delete second: a refused send must not lose the card."""
+        bot = _bot()
+        bot.fail["send_message"] = RuntimeError("too many requests")
+        await _run(monkeypatch, bot, "video", _status("job.mp4"))
 
-        monkeypatch.setattr(callbacks.asyncio, "create_task", _capture)
+        # The "Starting download…" post failed, so that stage was written into
+        # the message already on screen instead of deleting it and failing.
+        assert bot.calls[0][0] == "send_message"
+        # The preview card of the button flow is a photo, so the fallback is a
+        # caption edit of the card that stayed on screen.
+        assert bot.calls[1][0] in ("edit_message_text", "edit_message_caption")
+        assert bot.calls[1][1]["message_id"] == 2
+        text = bot.calls[1][1].get("text") or bot.calls[1][1].get("caption")
+        assert text is not None and "Starting" in _plain(text)
+        # The progress message *is* the original card here (the fallback edit
+        # kept its id), so that is the one retired once the file is posted.
+        deleted = [kwargs["message_id"] for kwargs in bot.of("delete_message")]
+        assert deleted == [2], deleted
+        # The download itself still ran and the file was posted.
+        assert bot.of("send_video")
 
-        query = MagicMock()
-        query.data = "dl:2:abcdef123456:137"
-        query.message = MagicMock()
-        query.message.chat.id = 1
-        query.message.message_id = 2
-        query.answer = AsyncMock()
+    @pytest.mark.asyncio
+    async def test_a_failed_upload_keeps_the_progress_and_shows_the_error(self, media_file, monkeypatch):
+        bot = _bot()
+        bot.fail["send_video"] = RuntimeError("upload refused")
+        await _run(monkeypatch, bot, "video", _status("job.mp4"))
 
-        update = MagicMock()
-        update.callback_query = query
-        await callbacks.on_format_button(update, _context(_bot()))
-
-        assert len(created) == 1
-        assert entry["job_active"] is True
+        # The upload never succeeded, so the progress message was not retired
+        # for the file; the error card replaced it instead.
+        attempts = bot.of("send_video")
+        assert len(attempts) == 2, "the upload is retried once"
+        deleted = [kwargs["message_id"] for kwargs in bot.of("delete_message")]
+        assert deleted == [2, 101], deleted
+        errors = [kwargs for kwargs in bot.of("send_message")
+                  if "Download failed" in _plain(kwargs["text"])]
+        assert len(errors) == 1
+        assert "Failed to upload file to Telegram." in _plain(errors[0]["text"])
 
 
 class TestProgressThrottleInFlow:
@@ -532,8 +605,7 @@ class TestProgressThrottleInFlow:
                 download_flow.progress_card.time, "monotonic", real_monotonic
             )
 
-        captions = [_plain(c.kwargs["caption"])
-                    for c in bot.edit_message_caption.await_args_list]
+        captions = [_plain(kwargs["text"]) for kwargs in bot.of("edit_message_text")]
         progress_captions = [c for c in captions if "%" in c]
         # Three polls produced two captions: the 11% one fell inside the 3s
         # window after the 10% caption and was dropped (not queued up).
@@ -543,15 +615,17 @@ class TestProgressThrottleInFlow:
         assert not any("11%" in c for c in progress_captions)
         # The dashboard still receives every progress event, throttled or not.
         assert progress_events.await_count == 3
+        # And every edit went to the same message.
+        assert len({k["message_id"] for k in bot.of("edit_message_text")}) == 1
 
 
 class TestErrorOnUneditableCard:
     @pytest.mark.asyncio
-    async def test_error_lands_in_one_message_with_buttons(self, media_file, monkeypatch):
-        """When the card is gone, the error is sent once, with its buttons."""
+    async def test_error_still_arrives_when_the_status_message_is_gone(self, media_file, monkeypatch):
+        """A user who deleted the progress message still gets the error."""
         from telegram.error import BadRequest
         bot = _bot()
-        bot.edit_message_caption = AsyncMock(side_effect=BadRequest("Message can't be edited"))
+        bot.fail["edit_message_text"] = BadRequest("Message to edit not found")
         monkeypatch.setattr(download_flow, "start_download", AsyncMock(return_value={"job_id": "j", "status": "downloading"}))
         monkeypatch.setattr(download_flow, "poll_status",
                             AsyncMock(return_value={"status": "error", "error": "gone"}))
@@ -565,13 +639,94 @@ class TestErrorOnUneditableCard:
             url_hash="abcdef123456",
         )
 
-        # Each caption write fell back once; the buttons ride on the last one.
-        assert bot.send_message.await_count >= 1
-        with_buttons = [
-            c for c in bot.send_message.await_args_list
-            if c.kwargs.get("reply_markup") is not None
-        ]
-        assert len(with_buttons) == 1
-        datas = [b.callback_data for row in with_buttons[0].kwargs["reply_markup"].inline_keyboard
-                 for b in row]
-        assert "dl:2:abcdef123456:137" in datas
+        # The error text ends up on screen exactly once, with its buttons.
+        errors = [kwargs for kwargs in bot.of("send_message")
+                  if "Download failed" in _plain(kwargs["text"])]
+        assert len(errors) == 1
+        markup = bot.of("edit_message_reply_markup")[-1]["reply_markup"]
+        datas = [b.callback_data for row in markup.inline_keyboard for b in row]
+        error_id = 102  # second message the recording bot hands out
+        assert f"dl:{error_id}:abcdef123456:137" in datas
+
+
+# ---------------------------------------------------------------------------
+# The stage helper itself
+# ---------------------------------------------------------------------------
+
+class TestStageTrackerUnit:
+    @pytest.mark.asyncio
+    async def test_replace_posts_then_deletes(self):
+        bot = RecordingBot()
+        tracker = stages.StageTracker(bot, 1, 2)
+        await tracker.replace_text("next")
+        assert bot.names() == ["send_message", "delete_message"]
+        assert bot.of("delete_message")[0]["message_id"] == 2
+        assert tracker.message_id == 101
+
+    @pytest.mark.asyncio
+    async def test_delete_failure_is_only_logged(self):
+        from telegram.error import BadRequest
+
+        bot = RecordingBot()
+        bot.fail["delete_message"] = BadRequest("Message to delete not found")
+        tracker = stages.StageTracker(bot, 1, 2)
+        result = await tracker.replace_text("next")
+        assert result.ok is True
+        assert tracker.message_id == 101
+
+    @pytest.mark.asyncio
+    async def test_failed_send_falls_back_to_editing_the_old_message(self):
+        bot = RecordingBot()
+        bot.fail["send_message"] = RuntimeError("429")
+        tracker = stages.StageTracker(bot, 1, 2)
+        result = await tracker.replace_text("next")
+        assert result.ok is True
+        assert bot.of("delete_message") == []
+        assert bot.of("edit_message_text")[0]["message_id"] == 2
+        assert tracker.message_id == 2
+
+    @pytest.mark.asyncio
+    async def test_finish_with_file_keeps_progress_when_the_upload_fails(self):
+        bot = RecordingBot()
+        bot.fail["send_video"] = RuntimeError("nope")
+        tracker = stages.StageTracker(bot, 1, 2)
+        result = await tracker.finish_with_file(lambda: bot.send_video(chat_id=1))
+        assert result.ok is False
+        assert bot.of("delete_message") == []
+        assert tracker.message_id == 2
+
+    @pytest.mark.asyncio
+    async def test_finish_with_file_deletes_progress_after_the_upload(self):
+        bot = RecordingBot()
+        tracker = stages.StageTracker(bot, 1, 2)
+        result = await tracker.finish_with_file(lambda: bot.send_video(chat_id=1))
+        assert result.ok is True
+        assert bot.names() == ["send_video", "delete_message"]
+        assert tracker.finished is True
+
+    @pytest.mark.asyncio
+    async def test_not_modified_edit_is_not_a_failure(self):
+        from telegram.error import BadRequest
+
+        bot = RecordingBot()
+        bot.fail["edit_message_text"] = BadRequest("Message is not modified")
+        tracker = stages.StageTracker(bot, 1, 2)
+        result = await tracker.edit("same")
+        assert result.ok is True
+        assert bot.of("send_message") == []
+
+    @pytest.mark.asyncio
+    async def test_caption_edit_is_used_for_a_photo_stage(self):
+        bot = RecordingBot()
+        tracker = stages.StageTracker(bot, 1, 2, photo=True)
+        await tracker.edit("later")
+        assert bot.names() == ["edit_message_caption"]
+
+    @pytest.mark.asyncio
+    async def test_delete_quietly_tolerates_everything(self):
+        from telegram.error import BadRequest
+
+        bot = RecordingBot()
+        bot.fail["delete_message"] = BadRequest("message can't be deleted")
+        assert await stages.delete_quietly(bot, 1, 2) is False
+        assert await stages.delete_quietly(bot, 1, None) is False

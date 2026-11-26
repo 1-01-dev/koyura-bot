@@ -45,7 +45,70 @@ def _no_dns(monkeypatch):
     monkeypatch.setattr(url_flow, "validate_url", _validate)
 
 
+class RecordingBot:
+    """The bot behind ``update.get_bot()``: records every stage operation."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+        self.fail: dict[str, BaseException] = {}
+        self._next_id = 100
+
+    def _record(self, name: str, kwargs: dict, *, returns_message: bool = False):
+        self.calls.append((name, kwargs))
+        error = self.fail.get(name)
+        if error is not None:
+            raise error
+        if returns_message:
+            self._next_id += 1
+            return MagicMock(message_id=self._next_id)
+        return True
+
+    async def send_message(self, **kwargs):
+        return self._record("send_message", kwargs, returns_message=True)
+
+    async def send_photo(self, **kwargs):
+        return self._record("send_photo", kwargs, returns_message=True)
+
+    async def delete_message(self, **kwargs):
+        return self._record("delete_message", kwargs)
+
+    async def edit_message_text(self, **kwargs):
+        return self._record("edit_message_text", kwargs)
+
+    async def edit_message_caption(self, **kwargs):
+        return self._record("edit_message_caption", kwargs)
+
+    async def edit_message_reply_markup(self, **kwargs):
+        return self._record("edit_message_reply_markup", kwargs)
+
+    # -- helpers ----------------------------------------------------------
+
+    def names(self) -> list[str]:
+        return [name for name, _ in self.calls]
+
+    def of(self, name: str) -> list[dict]:
+        return [kwargs for called, kwargs in self.calls if called == name]
+
+    def written_texts(self) -> list[str]:
+        """Everything the user ends up reading, in order."""
+        texts = []
+        for called, kwargs in self.calls:
+            if called in ("send_message", "edit_message_text"):
+                texts.append(str(kwargs.get("text") or ""))
+            elif called == "edit_message_caption":
+                texts.append(str(kwargs.get("caption") or ""))
+        return texts
+
+
 def fake_update(text, *, replied=None):
+    """An update whose status message is id 11 and whose bot is a recorder.
+
+    The first "Fetching info..." still comes from ``message.reply_text`` (it is a
+    reply to the user's link); every later stage goes through the bot, because a
+    replacement is posted as a plain chat message and the old one is deleted.
+    """
+    bot = RecordingBot()
+
     status = MagicMock()
     status.message_id = 11
     status.chat_id = 5
@@ -73,6 +136,8 @@ def fake_update(text, *, replied=None):
     update.message = message
     update.effective_user = user
     update.effective_chat = MagicMock(id=5)
+    update.get_bot = MagicMock(return_value=bot)
+    update.bot = bot
     return update, status
 
 
@@ -235,18 +300,28 @@ class TestPreviewCard:
 
         await url_flow.url_handler(update, MagicMock())
 
-        # "Fetching info..." disappears, the photo carries caption + buttons.
-        status.delete.assert_awaited_once()
-        kwargs = update.message.reply_photo.await_args.kwargs
+        bot = update.get_bot()
+        # The photo is posted **first** and "Fetching info..." (id 11) is deleted
+        # after it, so the chat never shows a link with no card. The keyboard is
+        # attached afterwards, because a button must carry its own message id.
+        assert bot.names() == [
+            "send_photo", "edit_message_reply_markup", "delete_message"
+        ]
+        assert bot.of("delete_message")[0]["message_id"] == 11
+
+        kwargs = bot.of("send_photo")[0]
         assert kwargs["photo"] == "https://cdn.example/thumb.jpg"
         assert kwargs["parse_mode"] == "MarkdownV2"
         assert "Artemis II to the Moon" in kwargs["caption"]
-        datas = [b.callback_data for row in kwargs["reply_markup"].inline_keyboard for b in row]
+        # The buttons are attached once the new message has an id, so they
+        # address the card that shows them and not the deleted status line.
+        markup = bot.of("edit_message_reply_markup")[0]["reply_markup"]
+        datas = [b.callback_data for row in markup.inline_keyboard for b in row]
         fingerprint = sessions.url_hash("https://x.example/1")
-        assert f"dl:11:{fingerprint}:137" in datas
-        assert f"dl:11:{fingerprint}:mp3" in datas
+        assert f"dl:101:{fingerprint}:137" in datas
+        assert f"dl:101:{fingerprint}:mp3" in datas
 
-        entry = sessions.get(5, 12, sessions.url_hash("https://x.example/1"))
+        entry = sessions.get(5, 101, sessions.url_hash("https://x.example/1"))
         assert entry is not None
         assert entry["photo"] is True
         assert entry["job_active"] is False
@@ -258,8 +333,13 @@ class TestPreviewCard:
 
         await url_flow.url_handler(update, MagicMock())
 
-        kwargs = status.edit_text.await_args.kwargs
-        assert "Artemis II to the Moon" in status.edit_text.await_args.args[0]
+        # No photo to post: the "Fetching info..." message is edited in place, so
+        # the link still ends up with exactly one message.
+        bot = update.get_bot()
+        assert bot.names() == ["edit_message_text"]
+        kwargs = bot.of("edit_message_text")[0]
+        assert "Artemis II to the Moon" in kwargs["text"]
+        assert kwargs["message_id"] == 11
         assert kwargs["parse_mode"] == "MarkdownV2"
         assert kwargs["reply_markup"] is not None
         entry = sessions.get(5, 11, sessions.url_hash("https://x.example/1"))
@@ -271,11 +351,20 @@ class TestPreviewCard:
         info = dict(INFO, thumbnail="https://cdn.example/thumb.jpg")
         monkeypatch.setattr(url_flow, "get_info", AsyncMock(return_value=info))
         update, status = fake_update("https://x.example/1")
-        update.message.reply_photo = AsyncMock(side_effect=RuntimeError("too big"))
+        update.get_bot().fail["send_photo"] = RuntimeError("too big")
 
         await url_flow.url_handler(update, MagicMock())
 
-        assert status.edit_text.await_count >= 1
+        bot = update.get_bot()
+        # The photo never arrived, so nothing is deleted and the caption goes
+        # into the message that is already on screen.
+        assert bot.names() == ["send_photo", "edit_message_text"]
+        assert bot.of("delete_message") == []
+        assert bot.of("edit_message_text")[0]["message_id"] == 11
+        # The buttons travel with that edit, addressing the same message.
+        markup = bot.of("edit_message_text")[0]["reply_markup"]
+        datas = [b.callback_data for row in markup.inline_keyboard for b in row]
+        assert all(data.startswith("dl:11:") for data in datas)
         entry = sessions.get(5, 11, sessions.url_hash("https://x.example/1"))
         assert entry is not None and entry["photo"] is False
 
@@ -283,11 +372,13 @@ class TestPreviewCard:
     async def test_unrenderable_card_says_what_to_do(self, monkeypatch):
         monkeypatch.setattr(url_flow, "get_info", AsyncMock(return_value=dict(INFO)))
         update, status = fake_update("https://x.example/1")
-        status.edit_text = AsyncMock(side_effect=[RuntimeError("no"), None])
+        bot = update.get_bot()
+        # The card edit fails for every stage, so the advice is all that is left.
+        bot.fail["edit_message_text"] = RuntimeError("no")
 
         await url_flow.url_handler(update, MagicMock())
 
-        assert status.edit_text.await_args.args[0] == (
+        assert bot.written_texts()[-1] == (
             "Could not render this link. Try /mp4 or /mp3 instead."
         )
         assert sessions.live_count() == 0
@@ -301,7 +392,8 @@ class TestPreviewCard:
 
         await url_flow.url_handler(update, MagicMock())
 
-        assert status.edit_text.await_args.args[0] == (
+        # The one failure message replaces "Fetching info...": edit in place.
+        assert update.get_bot().written_texts()[-1] == (
             "Download service temporarily unavailable."
         )
 
@@ -314,7 +406,7 @@ class TestPreviewCard:
 
         await url_flow.url_handler(update, MagicMock())
 
-        assert status.edit_text.await_args.args[0] == (
+        assert update.get_bot().written_texts()[-1] == (
             "Failed to fetch info: Unsupported URL"
         )
 
@@ -325,7 +417,7 @@ class TestPreviewCard:
 
         await url_flow.url_handler(update, MagicMock())
 
-        assert status.edit_text.await_args.args[0] == "Error: boom"
+        assert update.get_bot().written_texts()[-1] == "Error: boom"
 
     @pytest.mark.asyncio
     async def test_update_without_chat_or_user_posts_nothing(self, monkeypatch):

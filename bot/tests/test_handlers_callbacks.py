@@ -55,17 +55,21 @@ def card():
     return entry
 
 
-def fake_query(data, *, chat_id=5, message_id=11, message=True):
+def fake_query(data, *, chat_id=5, message_id=11, message=True, photo=None):
     query = MagicMock()
     query.data = data
     if message:
         query.message = MagicMock()
         query.message.chat.id = chat_id
         query.message.message_id = message_id
+        # A real ``Message`` carries ``None`` here for a text card; without this
+        # a MagicMock attribute would look like a photo.
+        query.message.photo = photo
     else:
         query.message = None
     query.answer = AsyncMock()
     query.edit_message_text = AsyncMock()
+    query.edit_message_caption = AsyncMock()
     query.edit_message_reply_markup = AsyncMock()
     update = MagicMock()
     update.callback_query = query
@@ -182,7 +186,20 @@ class TestRouting:
 
         assert spawned == []
         query.answer.assert_awaited_once()
+        # The tapped card is rewritten, not joined by a second message.
         assert query.edit_message_text.await_args.args[0] == (
+            "Session expired. Please send the link again."
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_session_on_a_photo_card_edits_the_caption(self, spawned):
+        """A photo card cannot be edited with ``edit_message_text``."""
+        update, query = fake_query(f"dl:11:{HASH}:137", photo=[object()])
+        await callbacks.on_format_button(update, MagicMock())
+
+        assert spawned == []
+        query.edit_message_text.assert_not_awaited()
+        assert query.edit_message_caption.await_args.kwargs["caption"] == (
             "Session expired. Please send the link again."
         )
 

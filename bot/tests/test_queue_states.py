@@ -71,15 +71,17 @@ def downloads(tmp_path, monkeypatch):
 
 
 def _bot():
+    """A bot mock; sends return messages with real ids so buttons can address them."""
     bot = MagicMock()
-    bot.send_video = AsyncMock()
-    bot.send_audio = AsyncMock()
-    bot.send_document = AsyncMock()
-    bot.send_message = AsyncMock()
+    bot.send_video = AsyncMock(return_value=MagicMock(message_id=43))
+    bot.send_audio = AsyncMock(return_value=MagicMock(message_id=44))
+    bot.send_document = AsyncMock(return_value=MagicMock(message_id=45))
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=42))
+    bot.send_photo = AsyncMock(return_value=MagicMock(message_id=41))
+    bot.delete_message = AsyncMock()
     bot.edit_message_caption = AsyncMock()
     bot.edit_message_text = AsyncMock()
     bot.edit_message_reply_markup = AsyncMock()
-    bot.edit_message_media = AsyncMock()
     return bot
 
 
@@ -107,7 +109,21 @@ async def _run(bot, *, fmt="video", format_id=None, height=None, url_hash="abcde
 
 
 def _captions(bot) -> list[str]:
-    return [_plain(c.kwargs["caption"]) for c in bot.edit_message_caption.await_args_list]
+    """Every caption/text the user ends up reading, in the order it appeared.
+
+    Progress and queue states are edits of the one progress message (``text``),
+    while the error card is a new message of its own — both count as "what the
+    user saw", so the two are merged and ordered.
+    """
+    seen: list[tuple[int, str]] = []
+    for index, call in enumerate(bot.method_calls):
+        name = call[0]
+        kwargs = call[2]
+        if name in ("edit_message_text", "send_message"):
+            seen.append((index, _plain(str(kwargs.get("text") or ""))))
+        elif name == "edit_message_caption":
+            seen.append((index, _plain(str(kwargs.get("caption") or ""))))
+    return [text for _, text in seen]
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +206,9 @@ class TestQueuedCard:
         captions = _captions(bot)
         assert any("In queue" in caption for caption in captions)
         assert any("42%" in caption for caption in captions)
-        assert bot.edit_message_media.await_count == 1
+        # The file arrives as its own message and the progress message is retired.
+        assert bot.send_video.await_count == 1
+        assert bot.delete_message.await_count == 2
 
     @pytest.mark.asyncio
     async def test_queue_state_without_numbers_is_still_readable(self, downloads, monkeypatch):
@@ -229,9 +247,10 @@ class TestRefusalCard:
         assert "~3 min" in caption
         # The buttons are still on screen; no "tap a format" hint needed.
         assert "Tap a format" not in caption
-        markup = bot.edit_message_caption.await_args.kwargs["reply_markup"]
+        markup = bot.edit_message_reply_markup.await_args.kwargs["reply_markup"]
         datas = [b.callback_data for row in markup.inline_keyboard for b in row]
-        assert "dl:2:abcdef123456:137" in datas
+        # The buttons ride on the error card, so they address *its* id (42).
+        assert "dl:42:abcdef123456:137" in datas
         assert bot.send_video.call_count == 0
 
     @pytest.mark.asyncio
