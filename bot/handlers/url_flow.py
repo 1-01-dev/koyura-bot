@@ -23,7 +23,7 @@ import download_card
 from koyura_client import KoyuraError, KoyuraInfoError, KoyuraServiceDown, get_info
 from url_safety import UnsafeURLError, validate_url
 
-from . import config, sessions, texts
+from . import config, sessions, stages, texts
 
 logger = logging.getLogger(__name__)
 
@@ -113,21 +113,27 @@ async def send_preview(update: Update, url: str) -> None:
 
     fingerprint = sessions.url_hash(url)
     status = await message.reply_text(texts.FETCHING_INFO)
+    # ``status`` is the first stage of the chain; the tracker owns it from here
+    # on, so a failure replaces it instead of piling one more message on top.
+    tracker = stages.StageTracker(update.get_bot(), chat.id, status.message_id)
 
     try:
         info = await get_info(url)
     except KoyuraServiceDown:
-        await status.edit_text(texts.SERVICE_DOWN)
+        await tracker.edit(texts.SERVICE_DOWN)
         return
     except KoyuraInfoError as error:
-        await status.edit_text(texts.info_failed(error))
+        await tracker.edit(texts.info_failed(error))
         return
     except KoyuraError as error:
-        await status.edit_text(texts.engine_error(error))
+        await tracker.edit(texts.engine_error(error))
         return
 
     caption = download_card.build_card(info)
-    keyboard = download_card.build_format_keyboard(info, status.message_id, fingerprint)
+
+    def keyboard(message_id: int):
+        """The format buttons, addressing the message they are attached to."""
+        return download_card.build_format_keyboard(info, message_id, fingerprint)
 
     def remember(message_id: int, photo: bool) -> None:
         sessions.remember(
@@ -141,24 +147,29 @@ async def send_preview(update: Update, url: str) -> None:
         )
 
     if info.get("thumbnail"):
-        try:
-            # The thumbnail becomes the card, so the "Fetching info..." line has
-            # to go: one message per link, not two.
-            await status.delete()
-            sent = await message.reply_photo(
-                photo=info["thumbnail"],
-                caption=caption,
-                parse_mode="MarkdownV2",
-                reply_markup=keyboard,
-            )
-            remember(sent.message_id, photo=True)
+        # The thumbnail becomes the card, so the "Fetching info..." line is
+        # deleted **after** the photo arrives: one message per link, not two.
+        # A photo Telegram refuses falls back to the caption in the message that
+        # is already on screen, so the same ``ok`` check covers both.
+        card = await tracker.replace_photo(
+            info["thumbnail"],
+            caption,
+            fallback_text=caption,
+            markup_factory=keyboard,
+        )
+        if card.ok and tracker.message_id is not None:
+            remember(tracker.message_id, photo=tracker.photo)
             return
-        except Exception:
-            logger.exception("Failed to send thumbnail, falling back to text")
 
-    try:
-        await status.edit_text(caption, parse_mode="MarkdownV2", reply_markup=keyboard)
-        remember(status.message_id, photo=False)
-    except Exception:
-        logger.exception("Failed to render the download card")
-        await status.edit_text(texts.CARD_RENDER_FAILED)
+    # No thumbnail, or the photo could not be posted: the caption and the
+    # buttons go into the message that is already on screen.
+    result = await tracker.edit(
+        caption,
+        reply_markup=keyboard(tracker.message_id or status.message_id),
+    )
+    if result.ok and tracker.message_id is not None:
+        remember(tracker.message_id, photo=tracker.photo)
+        return
+
+    logger.warning("Failed to render the download card: %s", result.detail)
+    await tracker.edit(texts.CARD_RENDER_FAILED)

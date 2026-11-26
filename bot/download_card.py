@@ -188,37 +188,16 @@ def card_meta_lines(info: dict) -> list[str]:
     return lines
 
 
-def _format_lines(info: dict, limit: int | None = None) -> list[str]:
-    lines = []
-    for fmt in _video_formats(info)[:limit]:
-        label = str(fmt.get("button_label") or fmt.get("label") or "").strip()
-        if label:
-            lines.append(label)
-    audio = info.get("audio") or {}
-    audio_size = format_filesize(audio.get("size_bytes")) if audio else None
-    lines.append(f"MP3 · {audio_size}" if audio_size else "MP3")
-    return lines
-
-
 def build_card(info: dict) -> str:
-    """Render the whole preview card as a MarkdownV2 caption (<= 1024 chars)."""
+    """Render the whole preview card as a MarkdownV2 caption (<= 1024 chars).
+
+    Only metadata is drawn. The formats and their sizes live on the keyboard,
+    where they are tappable, so repeating them in the caption spent the caption
+    budget on information the user could already see.
+    """
     headline = card_headline(info)
     meta = card_meta_lines(info)
-
-    # Format lines are the only unbounded section, so they are dropped first
-    # when the caption would not fit.
-    shown = MAX_FORMAT_BUTTONS
-    while True:
-        formats = _format_lines(info, limit=shown) if shown else []
-        total = len(_video_formats(info))
-        header = "Formats:" if total <= shown else f"Formats (top {shown}):"
-        body = [escape_md(header)] + [escape_md(line) for line in formats]
-        blocks = [headline, "\n".join(meta) if meta else "", "\n".join(body)]
-        caption = "\n\n".join(block for block in blocks if block)
-        if len(caption) <= CAPTION_BUDGET or shown <= 3:
-            break
-        shown -= 1
-
+    caption = "\n\n".join(block for block in (headline, "\n".join(meta)) if block)
     if len(caption) > CAPTION_BUDGET:
         caption = caption[: CAPTION_BUDGET - 1].rstrip() + "…"
     return caption

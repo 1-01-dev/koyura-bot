@@ -85,6 +85,28 @@ def forget_all() -> None:
     _sessions.clear()
 
 
+def rebind(
+    chat_id: int, message_id: int, fingerprint: str, new_message_id: int
+) -> dict | None:
+    """Move a session to the message its keyboard now lives on.
+
+    Every stage posts a new message, and a failed job re-posts the format
+    keyboard under the error card. The session has to follow, otherwise the
+    buttons a user can actually see would answer "session expired". Re-keying
+    keeps the entry (and its ``created`` stamp) so the ten-minute window is not
+    extended by a retry.
+    """
+    old_key = key(chat_id, message_id, fingerprint)
+    entry = _sessions.get(old_key)
+    if entry is None:
+        return None
+    entry["message_id"] = new_message_id
+    _sessions[key(chat_id, new_message_id, fingerprint)] = entry
+    if old_key != key(chat_id, new_message_id, fingerprint):
+        del _sessions[old_key]
+    return entry
+
+
 def evict_stale(now: float | None = None) -> int:
     """Drop sessions older than ``STATE_TTL``; returns how many went away.
 
