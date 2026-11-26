@@ -4,7 +4,7 @@ This document is the **contract** the bot has with its users. It was written
 before the `bot/handlers.py` rewrite (wave 1) by reading the file as it stood at
 commit `6274984` (the merge of `main` into `koyura/wave1-bot-handlers`), the
 `setMyCommands` block in `bot/bot.py`, and the modules the handlers call
-(`download_card`, `progress_card`, `card_message`, `koyura_client`,
+(`download_card`, `progress_card`, `handlers.stages`, `koyura_client`,
 `event_client`, `state_store`, `url_safety`).
 
 Everything listed here is behaviour the rewrite must preserve. Line references
@@ -148,8 +148,10 @@ then renders `download_card.build_card(info)` with
 | caption edit fails | **"Could not render this link. Try /mp4 or /mp3 instead."** |
 
 The entry's `photo` flag records whether the card is a photo (caption edits) or
-plain text (text edits); `card_message.CardMessage` uses it for every later
-edit.
+plain text (text edits). The card is the first stage of the one-message chain:
+`handlers.stages.StageTracker` deletes the status line **after** the photo it is
+replaced by has arrived, so a refused upload never leaves the chat without a
+card.
 
 ### 4.3 Button press
 
@@ -169,17 +171,23 @@ edit.
 
 ### 4.4 Stages
 
-`_run_download` → `_drive_download` (`:657`, `:714`). One message is reused for
-preview → progress → file; the buttons are removed as the job starts so the
-same card cannot start a second job.
+`run_download` → `_advance`. Every stage **replaces** the one before it: the
+preview card is deleted once the progress message is up, the progress message is
+deleted once the file (or the error card) is up. `handlers.stages.StageTracker`
+owns that chain and enforces two rules: send first / delete second, and deletion
+is always best effort (a message older than 48 h, already removed by the user or
+undeletable is a DEBUG line, never a failure).
 
-1. Caption ← `progress_card.build_status_caption(info, "Starting download…")`,
-   then `clear_keyboard()`.
+1. `replace_text(build_status_caption(info, "Starting download…"))`: the
+   progress message is posted first, then the preview card is deleted — a stage
+   that never arrived must not cost the user the card they can see.
 2. `koyura_client.start_download(url, fmt, format_id, title, uploader=…,
    height=…, user_id=…, size_bytes=_size_hint(...))`.
-3. Refusal (`KoyuraBusy`, HTTP 429) → error caption with
-   `progress_card.busy_message(e)`, **without** the "Tap a format to try again"
-   hint (the buttons are still there and the wait is known):
+3. Refusal (`KoyuraBusy`, HTTP 429) → the error card **replaces** the progress
+   message: `finish_with_text(build_error_caption(...))` posts it, attaches
+   the format keyboard to the new message and deletes the progress one. The
+   wording comes from `progress_card.busy_message(e)`, **without** the "Tap a
+   format to try again" hint (the buttons are there and the wait is known):
    * `code=user_busy` → "You already have a download running. Try again in ~2 min."
    * anything else (`busy`, `queue_full`, `too_long`, or no code at all) → "The service is overloaded right now — try again in ~2 min."
    * the wait is `retry_after`/`wait_seconds` rounded by
@@ -216,12 +224,12 @@ same card cannot start a second job.
 9. Caption under the file: `download_card.build_file_caption(info,
    quality=…, size_bytes=…, duration=…)` → `*Title*`, `size · duration ·
    quality`, `via Koyura`.
-10. Delivery: `editMessageMedia` replaces the card's media (video / audio /
-    document, with filename, duration, width/height, title/performer tags).
-    If that fails, `send_video`/`send_audio`/`send_document` posts the file as a
-    new message (one retry after 1 s on any exception) and the card is left with
-    the file caption. Both failing → **"Failed to upload file to Telegram."** +
-    `download_error` event, and the local file is deleted.
+10. Delivery: the file is uploaded as its **own** message (`sendVideo` /
+    `sendAudio` / `sendDocument`, one retry after 1 s on any exception) and the
+    progress message is deleted **after** the upload succeeded. A failed upload
+    keeps the progress message and turns it into the error card
+    (**"Failed to upload file to Telegram."** + `download_error` event), and the
+    local file is deleted. The file itself is never deleted.
 11. `download_done` event with `file_size_bytes`, `duration_seconds`, `filename`;
     `_stats["downloads"] += 1`; the local file is deleted (best effort).
 12. `entry["job_active"] = False` in a `finally` — the card is reusable after a
@@ -294,7 +302,7 @@ locations:
 | Tap on a stale card (>10 min, or after a restart) | "Session expired. Please send the link again." |
 | Tap on a legacy `fmt:`/`qty:` button whose session is still alive | `video`/`back` re-render the keyboard; anything else downloads (unknown ids are forwarded to the engine). |
 | Thumbnail missing or unsendable | Text card, same caption/buttons. |
-| Card deleted or made uneditable mid-job | `card_message.CardMessage` detects it, posts progress/file/error as new messages; the download is never lost. |
+| Card deleted or made uneditable mid-job | `handlers.stages.StageTracker` sees the `gone` classification, posts the stage again and forgets the dead message; the download is never lost. |
 | Engine unreachable during polling | "Download service temporarily unavailable." + `download_error`; card unlocked. |
 | Engine returns a broken status | Non-dict `progress` is treated as empty; missing numbers are simply not drawn. |
 | Engine says done but the file is gone | "File not found after download." + `download_error`; card unlocked. |

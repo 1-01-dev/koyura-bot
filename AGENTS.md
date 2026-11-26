@@ -98,6 +98,15 @@ These are load-bearing for a running deployment:
    `httpx`/`httpcore` to WARNING (their INFO lines contain
    `.../bot<token>/getMe`) and redacts `bot<id>:<secret>` plus configured
    secrets. Never build a log message from `BOT_TOKEN`.
+8. **The stage chain.** A download is one stage per message, and each stage
+   *replaces* the previous one (`bot/handlers/stages.py`): the preview card is
+   deleted once the progress message is up, the progress message once the file
+   is up. Progress ticks only ever **edit** that one progress message — posting a
+   new message per tick is spam and hits Telegram's edit limits. Delivery is
+   send-then-delete, so a refused send never leaves the chat without a card, and
+   deletion stays best effort (48-hour-old, already-deleted and undeletable
+   messages are a DEBUG line, never a failure). Never delete the file: it is the
+   result.
 
 ## Gotchas
 
