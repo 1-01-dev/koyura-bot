@@ -23,7 +23,7 @@ from telegram.ext import ContextTypes
 
 import download_card
 
-from . import download_flow, sessions, stages, texts
+from . import download_flow, language, sessions, stages, texts
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def _is_photo(query) -> bool:
     return bool(getattr(message, "photo", None))
 
 
-async def _expired_card(query, context, card) -> None:
+async def _expired_card(query, context, card, lang: object = None) -> None:
     """Tell the user the session is gone — by rewriting the tapped card.
 
     The tapped message is the stage that has to change, so it is edited in
@@ -59,17 +59,18 @@ async def _expired_card(query, context, card) -> None:
     card cannot be edited at all the notice is posted as one new message and the
     old one is retired, which is the same replace-not-add rule.
     """
+    notice = texts.t("download.session_expired", lang)
     message = getattr(query, "message", None)
     try:
         if getattr(message, "photo", None):
-            await query.edit_message_caption(caption=texts.SESSION_EXPIRED)
+            await query.edit_message_caption(caption=notice)
         else:
-            await query.edit_message_text(texts.SESSION_EXPIRED)
+            await query.edit_message_text(notice)
         return
     except Exception as exc:  # noqa: BLE001 - classified by the tracker below
         logger.debug("Could not rewrite the expired card: %s", exc)
     if card is not None:
-        await card.replace_text(texts.SESSION_EXPIRED)
+        await card.replace_text(texts.md("download.session_expired", lang))
 
 
 async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -88,6 +89,10 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # ``query.message`` is Optional and may be an inaccessible message, so the
     # card is addressed by the ids recorded when it was posted.
     entry = sessions.find(query, message_id, url_hash)
+    user = update.effective_user
+    lang = await language.current(
+        entry["user_id"] if entry is not None else getattr(user, "id", None)
+    )
     if entry is None:
         await query.answer()
         chat_id = _card_chat_id(query)
@@ -96,7 +101,7 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             card = stages.StageTracker(
                 context.bot, chat_id, message_id, photo=_is_photo(query)
             )
-        await _expired_card(query, context, card)
+        await _expired_card(query, context, card, lang)
         return
 
     info = entry["info"]
@@ -104,7 +109,9 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         # Legacy MP4 button: show the per-format keyboard instead of guessing.
         await query.answer()
         await query.edit_message_reply_markup(
-            reply_markup=download_card.build_format_keyboard(info, message_id, url_hash)
+            reply_markup=download_card.build_format_keyboard(
+                info, message_id, url_hash, lang=lang
+            )
         )
         return
 
@@ -113,7 +120,7 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # The card locks itself while a job runs: a second format on the same
     # message would race for the same output and upload the wrong file.
     if entry.get("job_active"):
-        await query.answer(texts.ALREADY_DOWNLOADING, show_alert=False)
+        await query.answer(texts.t("download.already", lang), show_alert=False)
         return
     entry["job_active"] = True
     await query.answer()
@@ -141,6 +148,7 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             url_hash=url_hash,
             tracker=tracker,
             entry=entry,
+            lang=lang,
         ),
         entry,
     )

@@ -8,6 +8,7 @@ from telegram.ext import ApplicationBuilder
 import state_store
 from cleanup import cleanup_loop
 from handlers import register_handlers
+from i18n import t
 from logging_setup import configure_logging
 from koyura_client import validate_startup_config
 
@@ -15,6 +16,27 @@ from koyura_client import validate_startup_config
 # accidental secret out of the logs; see bot/logging_setup.py.
 configure_logging()
 logger = logging.getLogger(__name__)
+
+# Telegram's command menu is **per bot**, not per chat, so it is published once in
+# the source language. The words still live in the catalogue (``menu.*``) so the
+# menu and the answers cannot drift apart.
+MENU = (
+    ("start", "menu.start"),
+    ("help", "menu.help"),
+    ("mp3", "menu.mp3"),
+    ("mp4", "menu.mp4"),
+    ("best", "menu.best"),
+    ("platforms", "menu.platforms"),
+    ("settings", "menu.settings"),
+    ("setquality", "menu.setquality"),
+    ("setformat", "menu.setformat"),
+    ("stats", "menu.stats"),
+)
+
+
+def menu_commands(lang: str = "en") -> list[tuple[str, str]]:
+    """``(command, description)`` pairs, as ``setMyCommands`` wants them."""
+    return [(name, t(key, lang)) for name, key in MENU]
 
 
 async def wait_for_bot_api(url: str, max_wait: int = 60):
@@ -66,18 +88,9 @@ def main():
     async def post_init(application):
         asyncio.create_task(cleanup_loop())
         from telegram import BotCommand
-        await application.bot.set_my_commands([
-            BotCommand("start", "Start Koyura"),
-            BotCommand("help", "Help and commands"),
-            BotCommand("mp3", "Download as MP3"),
-            BotCommand("mp4", "Download best quality MP4"),
-            BotCommand("best", "Best available quality"),
-            BotCommand("platforms", "Supported platforms"),
-            BotCommand("settings", "Your preferences"),
-            BotCommand("setquality", "Set default quality"),
-            BotCommand("setformat", "Set default format"),
-            BotCommand("stats", "Koyura statistics"),
-        ])
+        await application.bot.set_my_commands(
+            [BotCommand(name, description) for name, description in menu_commands()]
+        )
         logger.info("Bot commands registered")
 
     app.post_init = post_init

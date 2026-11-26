@@ -17,6 +17,20 @@ import url_safety  # noqa: E402
 from handlers import config, sessions, url_flow  # noqa: E402
 from koyura_client import KoyuraError, KoyuraInfoError, KoyuraServiceDown  # noqa: E402
 
+def _plain(text: object) -> str:
+    """Drop MarkdownV2 backslashes so assertions read like the message."""
+    text = str(text or "")
+    out, i = [], 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text):
+            out.append(text[i + 1])
+            i += 2
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
 INFO = {
     "title": "Artemis II to the Moon",
     "duration": 635,
@@ -197,7 +211,7 @@ class TestValidation:
             ["http://127.0.0.1/x", "https://x.example/1"]
         )
         assert safe == ["https://x.example/1"]
-        assert notice == (
+        assert _plain(notice) == (
             "I can only download from public http(s) links. "
             "That link was skipped because it is not allowed."
         )
@@ -206,7 +220,7 @@ class TestValidation:
         urls = [f"https://x.example/{index}" for index in range(8)]
         safe, notice = url_flow.validated_links(urls)
         assert len(safe) == config.MAX_LINKS_PER_MESSAGE
-        assert notice == "Only the first 5 links of a message are processed."
+        assert _plain(notice) == "Only the first 5 links of a message are processed."
 
     def test_both_notices_share_one_message(self):
         # Seven candidates, the first of them refused: five are examined, four
@@ -215,7 +229,7 @@ class TestValidation:
         safe, notice = url_flow.validated_links(urls)
         assert len(safe) == config.MAX_LINKS_PER_MESSAGE - 1
         assert notice is not None
-        assert notice.splitlines() == [
+        assert _plain(notice).splitlines() == [
             "I can only download from public http(s) links. "
             "That link was skipped because it is not allowed.",
             "Only the first 5 links of a message are processed.",
@@ -250,7 +264,7 @@ class TestTextHandler:
 
         await url_flow.url_handler(update, MagicMock())
 
-        assert update.message.reply_text.await_args.args[0].startswith(
+        assert _plain(update.message.reply_text.await_args.args[0]).startswith(
             "I can only download from public http(s) links."
         )
         get_info.assert_not_awaited()
@@ -378,7 +392,7 @@ class TestPreviewCard:
 
         await url_flow.url_handler(update, MagicMock())
 
-        assert bot.written_texts()[-1] == (
+        assert _plain(bot.written_texts()[-1]) == (
             "Could not render this link. Try /mp4 or /mp3 instead."
         )
         assert sessions.live_count() == 0
@@ -393,7 +407,7 @@ class TestPreviewCard:
         await url_flow.url_handler(update, MagicMock())
 
         # The one failure message replaces "Fetching info...": edit in place.
-        assert update.get_bot().written_texts()[-1] == (
+        assert _plain(update.get_bot().written_texts()[-1]) == (
             "Download service temporarily unavailable."
         )
 
@@ -406,7 +420,7 @@ class TestPreviewCard:
 
         await url_flow.url_handler(update, MagicMock())
 
-        assert update.get_bot().written_texts()[-1] == (
+        assert _plain(update.get_bot().written_texts()[-1]) == (
             "Failed to fetch info: Unsupported URL"
         )
 
@@ -417,7 +431,7 @@ class TestPreviewCard:
 
         await url_flow.url_handler(update, MagicMock())
 
-        assert update.get_bot().written_texts()[-1] == "Error: boom"
+        assert _plain(update.get_bot().written_texts()[-1]) == "Error: boom"
 
     @pytest.mark.asyncio
     async def test_update_without_chat_or_user_posts_nothing(self, monkeypatch):

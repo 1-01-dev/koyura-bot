@@ -1,8 +1,10 @@
 """Every command in the menu: the exact answer, and the refusal paths.
 
 The wording is the contract (see ``docs/bot-behavior.md``), so the assertions are
-on the user-visible text, not on the constants — a rename inside ``texts`` must
-not be able to change what the user reads without failing a test.
+on the user-visible text, not on the constants — a rename inside the catalogue
+must not be able to change what the user reads without failing a test. The
+answers are MarkdownV2, so comparisons go through ``_plain``: the backslashes are
+Telegram's, not the reader's.
 """
 import os
 import sys
@@ -13,7 +15,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest  # noqa: E402
 
 import state_store  # noqa: E402
-from handlers import commands, config, download_flow, stats, texts, url_flow  # noqa: E402
+from handlers import (  # noqa: E402
+    commands,
+    config,
+    download_flow,
+    onboarding,
+    stats,
+    texts,
+    url_flow,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -33,6 +43,19 @@ def downloads(tmp_path, monkeypatch):
     volume.mkdir()
     monkeypatch.setattr(config, "DOWNLOADS_PATH", str(volume))
     return volume
+
+
+def _plain(text: str) -> str:
+    """Drop MarkdownV2 backslashes so assertions read like the message."""
+    out, i = [], 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text):
+            out.append(text[i + 1])
+            i += 2
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
 
 
 def fake_update(text="/cmd", *, args=None, user_id=7, username="tester", replied=None):
@@ -63,6 +86,10 @@ def replies(message):
     return [call.args[0] for call in message.reply_text.await_args_list]
 
 
+def plain_replies(message):
+    return [_plain(text) for text in replies(message)]
+
+
 def last_call(mock):
     """The most recent awaited call, as a real object (``await_args`` is Optional)."""
     call = mock.await_args
@@ -70,20 +97,7 @@ def last_call(mock):
     return call
 
 
-class TestStartAndHelp:
-    @pytest.mark.asyncio
-    async def test_start_is_plain_text_with_the_menu(self):
-        update, context = fake_update()
-        await commands.start_command(update, context)
-
-        (text,) = replies(update.message)
-        assert text.startswith("Koyura Bot — a quiet downloader.")
-        assert "Send a video or audio link and the file arrives in this chat." in text
-        for command in ("/help", "/platforms", "/settings", "/stats", "/mp3 <link>", "/mp4 <link>"):
-            assert command in text
-        # No parse_mode: the welcome text is not Markdown and must not be parsed.
-        assert update.message.reply_text.await_args.kwargs == {}
-
+class TestStaticAnswers:
     @pytest.mark.asyncio
     async def test_help_is_markdown_v2_and_pre_escaped(self):
         update, context = fake_update()
@@ -102,11 +116,21 @@ class TestStartAndHelp:
         update, context = fake_update()
         await commands.platforms_command(update, context)
 
-        (text,) = replies(update.message)
+        text = plain_replies(update.message)[0]
         assert text.startswith("Supported platforms:\n\n")
         for platform in texts.SUPPORTED_PLATFORMS:
             assert f"  {platform}" in text
         assert "and 1000+ more via yt-dlp" in text
+
+    @pytest.mark.asyncio
+    async def test_the_screens_answer_in_the_users_language(self):
+        state_store.set_language(7, "ru")
+        update, context = fake_update()
+        await commands.help_command(update, context)
+
+        text = plain_replies(update.message)[0]
+        assert text.startswith("*Как пользоваться Koyura Bot:*")
+        assert "/cancel - отмена (скоро)" in text
 
 
 class TestStats:
@@ -121,7 +145,7 @@ class TestStats:
         update, context = fake_update()
         await commands.stats_command(update, context)
 
-        (text,) = replies(update.message)
+        text = plain_replies(update.message)[0]
         assert "Downloads: 12" in text
         assert "Errors: 3" in text
         # A directory on the volume is not a cached file.
@@ -135,8 +159,7 @@ class TestStats:
         monkeypatch.setattr(config, "DOWNLOADS_PATH", str(tmp_path / "gone"))
         update, context = fake_update()
         await commands.stats_command(update, context)
-        (text,) = replies(update.message)
-        assert "Cached files: 0" in text
+        assert "Cached files: 0" in plain_replies(update.message)[0]
 
 
 class TestPreferences:
@@ -147,17 +170,38 @@ class TestPreferences:
 
         update, context = fake_update()
         await commands.settings_command(update, context)
-        (text,) = replies(update.message)
+        text = plain_replies(update.message)[0]
         assert "Default quality: 720" in text
         assert "Default format: video" in text
+        assert "Language: English" in text
+        assert "Next link: not set" in text
         assert "/setquality <best/720/480>" in text
+
+    @pytest.mark.asyncio
+    async def test_settings_offers_the_language_buttons(self):
+        update, context = fake_update()
+        await commands.settings_command(update, context)
+
+        markup = update.message.reply_text.await_args.kwargs["reply_markup"]
+        labels = [button.text for row in markup.inline_keyboard for button in row]
+        datas = [button.callback_data for row in markup.inline_keyboard for button in row]
+        assert labels == ["✓ English", "Русский"]
+        # The settings switch keeps the user on the settings screen.
+        assert datas == ["lang:en:s", "lang:ru:s"]
+
+    @pytest.mark.asyncio
+    async def test_settings_shows_the_armed_mode(self):
+        state_store.set_pending_format(7, "audio")
+        update, context = fake_update()
+        await commands.settings_command(update, context)
+        assert "Next link: MP3" in plain_replies(update.message)[0]
 
     @pytest.mark.asyncio
     async def test_setquality_stores_the_choice(self):
         update, context = fake_update(args=["1080"])
         await commands.set_quality_command(update, context)
 
-        assert replies(update.message) == ["Default quality set to: 1080"]
+        assert plain_replies(update.message) == ["Default quality set to: 1080"]
         assert state_store.get_prefs(7)["quality"] == "1080"
 
     @pytest.mark.asyncio
@@ -165,14 +209,16 @@ class TestPreferences:
         update, context = fake_update()
         await commands.set_quality_command(update, context)
 
-        assert replies(update.message) == ["Usage: /setquality <best/1080/720/480/360>"]
+        assert plain_replies(update.message) == [
+            "Usage: /setquality <best/1080/720/480/360>"
+        ]
 
     @pytest.mark.asyncio
     async def test_setquality_rejects_unknown_values(self):
         update, context = fake_update(args=["4K"])
         await commands.set_quality_command(update, context)
 
-        assert replies(update.message) == [
+        assert plain_replies(update.message) == [
             "Invalid quality. Options: best, 1080, 720, 480, 360"
         ]
         assert state_store.get_prefs(7)["quality"] == "best"
@@ -181,31 +227,33 @@ class TestPreferences:
     async def test_setquality_lowercases_the_argument(self):
         update, context = fake_update(args=["BEST"])
         await commands.set_quality_command(update, context)
-        assert replies(update.message) == ["Default quality set to: best"]
+        assert plain_replies(update.message) == ["Default quality set to: best"]
 
     @pytest.mark.asyncio
     async def test_setformat_stores_the_choice(self):
         update, context = fake_update(args=["audio"])
         await commands.set_format_command(update, context)
 
-        assert replies(update.message) == ["Default format set to: audio"]
+        assert plain_replies(update.message) == ["Default format set to: audio"]
         assert state_store.get_prefs(7)["format"] == "audio"
 
     @pytest.mark.asyncio
     async def test_setformat_usage_and_refusal(self):
         update, context = fake_update()
         await commands.set_format_command(update, context)
-        assert replies(update.message) == ["Usage: /setformat <video/audio>"]
+        assert plain_replies(update.message) == ["Usage: /setformat <video/audio>"]
 
         update, context = fake_update(args=["mkv"])
         await commands.set_format_command(update, context)
-        assert replies(update.message) == ["Invalid format. Options: video, audio"]
+        assert plain_replies(update.message) == [
+            "Invalid format. Options: video, audio"
+        ]
 
 
 class TestDirectDownloads:
     @pytest.fixture(autouse=True)
     def _no_network(self, monkeypatch):
-        async def _safe(urls):
+        async def _safe(urls, **kwargs):
             return list(urls), None
 
         monkeypatch.setattr(url_flow, "safe_links", _safe)
@@ -217,7 +265,7 @@ class TestDirectDownloads:
         update, context = fake_update("/mp3 https://a.example/1 https://a.example/2")
         await commands.mp3_command(update, context)
 
-        assert replies(update.message) == ["Downloading MP3...", "Downloading MP3..."]
+        assert plain_replies(update.message) == ["Downloading MP3..."] * 2
         assert self.direct.await_count == 2
         first = self.direct.await_args_list[0]
         assert first.args[3] == "https://a.example/1"
@@ -229,7 +277,7 @@ class TestDirectDownloads:
         update, context = fake_update("/mp4 https://a.example/1")
         await commands.mp4_command(update, context)
 
-        assert replies(update.message) == ["Downloading MP4 (best quality)..."]
+        assert plain_replies(update.message) == ["Downloading MP4 (best quality)..."]
         args = last_call(self.direct).args
         assert (args[3], args[4], args[5]) == ("https://a.example/1", "video", None)
 
@@ -238,7 +286,7 @@ class TestDirectDownloads:
         update, context = fake_update("/best https://a.example/1")
         await commands.best_command(update, context)
 
-        assert replies(update.message) == ["Downloading MP4 (best quality)..."]
+        assert plain_replies(update.message) == ["Downloading MP4 (best quality)..."]
         assert last_call(self.direct).args[4] == "video"
 
     @pytest.mark.asyncio
@@ -246,7 +294,7 @@ class TestDirectDownloads:
         update, context = fake_update("/mp3")
         await commands.mp3_command(update, context)
 
-        assert replies(update.message) == [
+        assert plain_replies(update.message) == [
             "Usage: /mp3 <link>\nOr reply to a message containing a link."
         ]
         self.direct.assert_not_awaited()
@@ -256,7 +304,7 @@ class TestDirectDownloads:
         update, context = fake_update("/mp4")
         await commands.mp4_command(update, context)
 
-        assert replies(update.message) == [
+        assert plain_replies(update.message) == [
             "Usage: /mp4 <link>\nOr reply to a message containing a link."
         ]
 
@@ -272,22 +320,26 @@ class TestDirectDownloads:
 
     @pytest.mark.asyncio
     async def test_a_refused_link_is_announced_before_the_usage(self, monkeypatch):
-        async def _safe(urls):
-            return [], (
-                "I can only download from public http(s) links. "
-                "That link was skipped because it is not allowed."
-            )
+        async def _safe(urls, **kwargs):
+            return [], texts.intake_notice(5, rejected=True, truncated=False)
 
         monkeypatch.setattr(url_flow, "safe_links", _safe)
         update, context = fake_update("/mp3 http://127.0.0.1/x")
         await commands.mp3_command(update, context)
 
-        assert replies(update.message) == [
+        assert plain_replies(update.message) == [
             "I can only download from public http(s) links. "
             "That link was skipped because it is not allowed.",
             "Usage: /mp3 <link>\nOr reply to a message containing a link.",
         ]
         self.direct.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_format_clears_the_armed_mode(self):
+        state_store.set_pending_format(7, "video")
+        update, context = fake_update("/mp3 https://a.example/1")
+        await commands.mp3_command(update, context)
+        assert state_store.get_pending_format(7) is None
 
 
 class TestUpdatesWithoutAMessage:
@@ -295,7 +347,7 @@ class TestUpdatesWithoutAMessage:
     @pytest.mark.parametrize(
         "handler",
         [
-            commands.start_command,
+            onboarding.start_command,
             commands.help_command,
             commands.platforms_command,
             commands.stats_command,

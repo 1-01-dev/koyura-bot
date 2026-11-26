@@ -102,7 +102,7 @@ class TestDirectCommandStages:
         _write(downloads, "job.mp3")
 
         update, context, bot = _update("/mp3 https://a.example/1")
-        status_message = await update.message.reply_text(texts.MP3_STARTED)
+        status_message = await update.message.reply_text(texts.md("mp3.started"))
         await download_flow.run_direct(
             update, context, status_message, "https://a.example/1", "audio", None
         )
@@ -137,7 +137,7 @@ class TestDirectCommandStages:
         _write(downloads, "job.mp4")
 
         update, context, bot = _update("/mp4 https://a.example/1")
-        status_message = await update.message.reply_text(texts.MP4_STARTED)
+        status_message = await update.message.reply_text(texts.md("mp4.started"))
         await download_flow.run_direct(
             update, context, status_message, "https://a.example/1", "video", None
         )
@@ -163,7 +163,7 @@ class TestDirectCommandStages:
 
         update, context, bot = _update("/best https://a.example/1")
         # ``best`` shares ``mp4``'s handler, so the command line is identical.
-        status_message = await update.message.reply_text(texts.MP4_STARTED)
+        status_message = await update.message.reply_text(texts.md("mp4.started"))
         await download_flow.run_direct(
             update, context, status_message, "https://a.example/1", "video", None
         )
@@ -177,7 +177,7 @@ class TestDirectCommandStages:
             download_flow, "get_info", AsyncMock(side_effect=KoyuraError("boom"))
         )
         update, context, bot = _update("/mp3 https://a.example/1")
-        status_message = await update.message.reply_text(texts.MP3_STARTED)
+        status_message = await update.message.reply_text(texts.md("mp3.started"))
 
         await download_flow.run_direct(
             update, context, status_message, "https://a.example/1", "audio", None
@@ -196,7 +196,7 @@ class TestDirectCommandStages:
             AsyncMock(side_effect=KoyuraBusy("busy", code="busy", retry_after=120)),
         )
         update, context, bot = _update("/mp3 https://a.example/1")
-        status_message = await update.message.reply_text(texts.MP3_STARTED)
+        status_message = await update.message.reply_text(texts.md("mp3.started"))
 
         await download_flow.run_direct(
             update, context, status_message, "https://a.example/1", "audio", None
@@ -211,7 +211,7 @@ class TestDirectCommandStages:
 class TestCommandReplyStaysOneMessage:
     @pytest.mark.asyncio
     async def test_the_command_posts_exactly_one_starting_line(self, monkeypatch):
-        async def _safe(urls):
+        async def _safe(urls, *, lang=None):
             return list(urls), None
 
         monkeypatch.setattr(download_flow, "run_direct", AsyncMock())
@@ -222,7 +222,9 @@ class TestCommandReplyStaysOneMessage:
 
         await commands.mp3_command(update, context)
 
-        assert replies(update.message) == ["Downloading MP3..."]
+        # The command"s own line is MarkdownV2-escaped: the dots carry a
+        # backslash, and the user still reads "Downloading MP3...".
+        assert replies(update.message) == [texts.md("mp3.started")]
         assert bot.names() == []
 
 

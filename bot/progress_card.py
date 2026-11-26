@@ -16,6 +16,7 @@ import math
 import time
 
 import download_card
+from i18n import escape_md, t
 
 CAPTION_MAX = download_card.CAPTION_MAX
 CAPTION_BUDGET = download_card.CAPTION_BUDGET
@@ -26,12 +27,23 @@ BAR_WIDTH = 12
 BAR_FULL = "▓"
 BAR_EMPTY = "░"
 
-STAGE_LABELS = {
-    "starting": "Starting…",
-    "downloading": "Downloading…",
-    "processing": "Processing…",
-    "uploading": "Uploading…",
-}
+# Progress labels come from the catalogue (``stage.starting``, ``stage.downloading``,
+# ``stage.processing``, ``stage.uploading``, ``stage.searching``); this is the one
+# used when the engine reports a stage the bot does not know yet.
+DEFAULT_STAGE = "downloading"
+
+
+def stage_label(stage: object, lang: object = None) -> str:
+    """The caption line for one stage, in the user's language.
+
+    An unknown stage falls back to "Downloading…" rather than showing a bare key:
+    the engine may grow a stage before the bot learns its word for it.
+    """
+    name = str(stage or DEFAULT_STAGE)
+    key = f"stage.{name}"
+    if t(key, lang) == key:
+        key = f"stage.{DEFAULT_STAGE}"
+    return t(key, lang)
 
 
 # ---------------------------------------------------------------------------
@@ -98,11 +110,11 @@ def progress_bar(percent: object, width: int = BAR_WIDTH) -> str:
     return f"{bar} {value:.0f}%"
 
 
-def _caption_title(info: dict) -> str:
-    title = str(info.get("title") or "").strip() or "Download"
+def _caption_title(info: dict, lang: object = None) -> str:
+    title = str(info.get("title") or "").strip() or t("card.download", lang)
     if len(title) > 300:
         title = title[:299] + "…"
-    return f"*{download_card.escape_md(title)}*"
+    return f"*{escape_md(title)}*"
 
 
 def _bounded(lines: list[str]) -> str:
@@ -174,6 +186,7 @@ def build_progress_caption(
     stage: str = "downloading",
     quality: str | None = None,
     elapsed: float | None = None,
+    lang: object = None,
 ) -> str:
     """The card caption while a job runs.
 
@@ -188,9 +201,9 @@ def build_progress_caption(
         # yt-dlp is finished; the engine is still merging/transcoding.
         stage = "processing"
 
-    lines = [_caption_title(info)]
+    lines = [_caption_title(info, lang)]
 
-    label = STAGE_LABELS.get(stage, "Downloading…")
+    label = stage_label(stage, lang)
     if percent is None or stage in ("starting", "processing", "uploading"):
         lines.append(download_card.escape_md(label))
     if percent is not None:
@@ -211,10 +224,10 @@ def build_progress_caption(
         facts.append(speed)
     eta = derive_eta(progress)
     if eta is not None and percent is not None and percent < 100:
-        facts.append(f"ETA {format_eta(eta)}")
+        facts.append(t("progress.eta", lang, eta=format_eta(eta)))
     elapsed_text = format_eta(elapsed) if elapsed is not None else None
     if elapsed_text:
-        facts.append(f"{elapsed_text} elapsed")
+        facts.append(t("progress.elapsed", lang, elapsed=elapsed_text))
 
     facts = [fact for fact in facts if fact]
     if facts:
@@ -229,35 +242,37 @@ def build_progress_caption(
 ERROR_DETAIL_CHARS = 180
 
 
-def build_error_caption(info: dict, error: object, *, retry_hint: bool = True) -> str:
+def build_error_caption(
+    info: dict, error: object, *, retry_hint: bool = True, lang: object = None
+) -> str:
     """The card caption when the job failed; the keyboard comes back with it."""
     detail = str(error or "").strip().splitlines()
-    detail = detail[0].strip() if detail else "Unknown error"
+    detail = detail[0].strip() if detail else t("download.unknown_error", lang)
     if len(detail) > ERROR_DETAIL_CHARS:
         detail = detail[: ERROR_DETAIL_CHARS - 1].rstrip() + "…"
     lines = [
-        _caption_title(info),
-        download_card.escape_md("Download failed"),
-        download_card.escape_md(detail),
+        _caption_title(info, lang),
+        escape_md(t("download.failed", lang)),
+        escape_md(detail),
     ]
     if retry_hint:
-        lines.append(download_card.escape_md("Tap a format to try again."))
+        lines.append(escape_md(t("download.retry_hint", lang)))
     return _bounded(lines)
 
 
-def build_status_caption(info: dict, text: str) -> str:
+def build_status_caption(info: dict, text: str, *, lang: object = None) -> str:
     """A short one-off caption (starting, busy, service down)."""
-    return _bounded([_caption_title(info), download_card.escape_md(text)])
+    return _bounded([_caption_title(info, lang), escape_md(text)])
 
 
 # ---------------------------------------------------------------------------
 # Queue captions
 # ---------------------------------------------------------------------------
 
-QUEUE_HINT = "You can leave this chat — the file arrives here."
+QUEUE_HINT_KEY = "queue.hint"
 
 
-def format_queue_wait(seconds: object) -> str | None:
+def format_queue_wait(seconds: object, lang: object = None) -> str | None:
     """``~45 s`` / ``~2 min`` — coarse on purpose: the estimate is a guess.
 
     Minutes round **up**: a wait that is really 2m25s must not be announced as
@@ -268,8 +283,8 @@ def format_queue_wait(seconds: object) -> str | None:
         return None
     if value < 90:
         rounded = int(round(value / 5.0) * 5) or 5
-        return f"~{rounded} s"
-    return f"~{max(2, math.ceil(value / 60.0))} min"
+        return t("queue.wait_seconds", lang, seconds=rounded)
+    return t("queue.wait_minutes", lang, minutes=max(2, math.ceil(value / 60.0)))
 
 
 def build_queued_caption(
@@ -278,28 +293,31 @@ def build_queued_caption(
     wait_seconds: object = None,
     *,
     approximate: bool = True,
+    lang: object = None,
 ) -> str:
     """The card caption while the job waits for a free slot.
 
     ``Queue #3 · ~45 s`` — the position comes from the engine, and a missing
     number is simply not drawn rather than filled in with a made-up guess.
     """
-    lines = [_caption_title(info)]
+    lines = [_caption_title(info, lang)]
     place = as_number(position)
-    head = "In queue"
+    head = t("queue.head", lang)
     if place is not None and place >= 1:
-        head = f"In queue \u2116{int(place)}"
-    wait = format_queue_wait(wait_seconds)
+        head = t("queue.head_number", lang, position=int(place))
+    wait = format_queue_wait(wait_seconds, lang)
     if wait:
         head = f"{head} \u00b7 {wait}"
-    lines.append(download_card.escape_md(head))
+    lines.append(escape_md(head))
     if approximate and wait:
-        lines.append(download_card.escape_md("Estimated wait"))
-    lines.append(download_card.escape_md(QUEUE_HINT))
+        lines.append(escape_md(t("queue.estimated", lang)))
+    lines.append(escape_md(t(QUEUE_HINT_KEY, lang)))
     return _bounded(lines)
 
 
-def busy_message(error: BaseException | str, *, seconds: object = None) -> str:
+def busy_message(
+    error: BaseException | str, *, seconds: object = None, lang: object = None
+) -> str:
     """User-facing text for a refusal from the engine.
 
     The engine's own message is usually English prose about internal limits; a
@@ -313,7 +331,7 @@ def busy_message(error: BaseException | str, *, seconds: object = None) -> str:
         code = getattr(error, "code", None)
     if seconds is not None:
         wait = seconds
-    when = format_queue_wait(wait) or "~2 min"
+    when = format_queue_wait(wait, lang) or t("download.wait_default", lang)
     if code == "user_busy":
         return f"You already have a download running. Try again in {when}."
     return f"The service is overloaded right now — try again in {when}."

@@ -15,6 +15,10 @@ import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+# The one MarkdownV2 escaper of the bot lives in ``i18n``; it is re-exported here
+# because the captions in this module and in ``progress_card`` are built from it.
+from i18n import escape_md, t
+
 CAPTION_MAX = 1024
 # Leave a little headroom: Telegram counts entities and emoji differently.
 CAPTION_BUDGET = 1000
@@ -34,13 +38,8 @@ _MD_SPECIAL = r"_*[]()~`>#+-=|{}.!\\"
 
 
 # ---------------------------------------------------------------------------
-# Escaping and formatting
+# Formatting helpers
 # ---------------------------------------------------------------------------
-
-def escape_md(text: object) -> str:
-    """Escape MarkdownV2 specials; every caption here uses MarkdownV2."""
-    return "".join(f"\\{c}" if c in _MD_SPECIAL else c for c in str(text))
-
 
 def format_count(count: object) -> str | None:
     """``1.3M`` / ``110.6K`` / ``942``."""
@@ -134,16 +133,22 @@ def _video_formats(info: dict) -> list[dict]:
     )
 
 
-def card_headline(info: dict) -> str:
+def card_headline(info: dict, lang: object = None) -> str:
     """The card's first line: the title, escaped and bounded."""
-    title = str(info.get("title") or "").strip() or "Untitled"
+    title = str(info.get("title") or "").strip() or t("card.untitled", lang)
     if len(title) > 300:
         title = title[:299] + "…"
     return f"*{escape_md(title)}*"
 
 
-def card_meta_lines(info: dict) -> list[str]:
-    """Channel / duration / engagement / category / date, minus what's missing."""
+def card_meta_lines(info: dict, lang: object = None) -> list[str]:
+    """Channel / duration / engagement / category / date, minus what's missing.
+
+    The lines come back **plain**: ``build_card`` escapes the whole block once,
+    so a label and the value next to it cannot be escaped differently. The labels
+    themselves (Duration, Followers, Category, Uploaded) come from the catalogue,
+    so a Russian card says what a Russian user expects.
+    """
     lines: list[str] = []
 
     channel = str(info.get("channel") or info.get("uploader") or "").strip()
@@ -151,24 +156,28 @@ def card_meta_lines(info: dict) -> list[str]:
     if handle and not handle.startswith("@"):
         handle = handle if handle.startswith("@") else f"@{handle}"
     if channel and handle and handle.lstrip("@").lower() not in channel.lower():
-        lines.append(f"{escape_md(channel)} · {escape_md(handle)}")
+        lines.append(f"{channel} · {handle}")
     elif channel or handle:
-        lines.append(escape_md(channel or handle))
+        lines.append(channel or handle)
 
-    parts = [escape_md(f"{format_duration(info.get('duration'))}")]
-    if format_duration(info.get("duration")):
-        lines.append(f"Duration: {parts[0]}")
+    duration = format_duration(info.get("duration"))
+    if duration:
+        lines.append(
+            t("card.label_value", lang, label=t("card.duration", lang), value=duration)
+        )
 
     followers = format_count(info.get("channel_follower_count"))
     if followers:
-        lines.append(f"Followers: {escape_md(followers)}")
+        lines.append(
+            t("card.label_value", lang, label=t("card.followers", lang), value=followers)
+        )
 
     engagement = [
-        f"{escape_md(format_count(info[key]))} {noun}"
+        f"{format_count(info[key])} {t(noun, lang)}"
         for key, noun in (
-            ("view_count", "views"),
-            ("like_count", "likes"),
-            ("comment_count", "comments"),
+            ("view_count", "card.views"),
+            ("like_count", "card.likes"),
+            ("comment_count", "card.comments"),
         )
         if format_count(info.get(key))
     ]
@@ -179,25 +188,38 @@ def card_meta_lines(info: dict) -> list[str]:
         str(c).strip() for c in (info.get("categories") or []) if str(c or "").strip()
     ]
     if categories:
-        lines.append(f"Category: {escape_md(', '.join(categories[:2]))}")
+        lines.append(
+            t(
+                "card.label_value",
+                lang,
+                label=t("card.category", lang),
+                value=", ".join(categories[:2]),
+            )
+        )
 
     upload_date = format_upload_date(info.get("upload_date"))
     if upload_date:
-        lines.append(f"Uploaded: {escape_md(upload_date)}")
+        lines.append(
+            t("card.label_value", lang, label=t("card.uploaded", lang), value=upload_date)
+        )
 
     return lines
 
 
-def build_card(info: dict) -> str:
+def build_card(info: dict, *, lang: object = None) -> str:
     """Render the whole preview card as a MarkdownV2 caption (<= 1024 chars).
 
     Only metadata is drawn. The formats and their sizes live on the keyboard,
     where they are tappable, so repeating them in the caption spent the caption
     budget on information the user could already see.
+
+    The single escaping pass happens here: the headline is escaped with its bold
+    markers, the metadata block is escaped as one string, so a title with ``_``
+    and a channel with ``.`` are handled by exactly the same rule.
     """
-    headline = card_headline(info)
-    meta = card_meta_lines(info)
-    caption = "\n\n".join(block for block in (headline, "\n".join(meta)) if block)
+    headline = card_headline(info, lang)
+    meta = escape_md("\n".join(card_meta_lines(info, lang)))
+    caption = "\n\n".join(block for block in (headline, meta) if block)
     if len(caption) > CAPTION_BUDGET:
         caption = caption[: CAPTION_BUDGET - 1].rstrip() + "…"
     return caption
@@ -220,7 +242,9 @@ def callback_data_fits(data: str) -> bool:
     return len(data.encode("utf-8")) <= CALLBACK_DATA_MAX_BYTES
 
 
-def build_format_keyboard(info: dict, msg_id: int, url_hash: str) -> InlineKeyboardMarkup:
+def build_format_keyboard(
+    info: dict, msg_id: int, url_hash: str, *, lang: object = None
+) -> InlineKeyboardMarkup:
     """One button per video format plus MP3, two per row, sizes in the labels."""
     formats = _video_formats(info)
     shown = formats[:MAX_FORMAT_BUTTONS]
@@ -250,7 +274,7 @@ def build_format_keyboard(info: dict, msg_id: int, url_hash: str) -> InlineKeybo
     if len(formats) > MAX_FORMAT_BUTTONS:
         buttons.append(
             InlineKeyboardButton(
-                "Best quality",
+                t("card.best_quality", lang),
                 callback_data=build_callback_data(msg_id, url_hash, "best"),
             )
         )
@@ -302,9 +326,11 @@ def build_file_caption(
     quality: str | None = None,
     size_bytes: int | None = None,
     duration: object = None,
+    *,
+    lang: object = None,
 ) -> str:
     """Title, size, duration and quality — replaces the old ``Sent: <title>``."""
-    title = str(info.get("title") or "").strip() or "Download"
+    title = str(info.get("title") or "").strip() or t("card.download", lang)
     if len(title) > 300:
         title = title[:299] + "…"
     facts = [
@@ -316,5 +342,5 @@ def build_file_caption(
     caption = f"*{escape_md(title)}*"
     if detail:
         caption += f"\n{escape_md(detail)}"
-    caption += f"\n{escape_md('via Koyura')}"
+    caption += f"\n{escape_md(t('card.via', lang))}"
     return caption[:CAPTION_BUDGET]
