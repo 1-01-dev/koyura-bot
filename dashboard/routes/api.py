@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 import auth
+import bot_languages
 import db
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,30 @@ async def ingest_event(request: Request) -> dict[str, str]:
         raise HTTPException(status_code=500, detail="Could not store event") from exc
 
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Bot settings (internal, read-only)
+# ---------------------------------------------------------------------------
+
+@router.get("/api/bot-settings")
+async def bot_settings(request: Request) -> dict[str, Any]:
+    """The languages the bot offers and its default, for the bot itself.
+
+    Read-only and internal: ``bot/bot_settings.py`` polls this once a minute and
+    caches the answer, so a language toggled in the panel reaches the chat within
+    that window. A request without the shared token is refused exactly like an
+    event would be, and the response carries nothing but the two public facts.
+    """
+    if not _internal_token_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    stored = await db.get_settings(prefix=bot_languages.SETTING_PREFIX)
+    settings = bot_languages.BotLanguages.from_row(stored)
+    return {
+        "languages": list(settings.languages),
+        "default_language": settings.default_language,
+    }
 
 
 # ---------------------------------------------------------------------------

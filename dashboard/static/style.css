@@ -671,6 +671,26 @@
   width: 100%;
 }
 
+/* The language checkboxes: one row per language, aligned with the labels. */
+.language-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.language-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.language-name {
+  color: var(--ink);
+  font-size: 13px;
+}
+
 /* Notes are prose: no uppercase, no wide tracking. */
 .limits-note {
   margin-top: 10px;

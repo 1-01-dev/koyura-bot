@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 import auth
+import bot_languages
 import db
 import download_limits as limits_settings
 
@@ -223,8 +224,27 @@ def _pretty_bound(value: float) -> str:
     return str(int(value)) if float(value) == int(value) else f"{value:g}"
 
 
+def _languages_context(stored: dict[str, str], error: str | None = None,
+                       notice: str | None = None) -> dict:
+    """Template context for the Bot languages section.
+
+    The form always shows a valid pair: what is stored when it parses, the
+    defaults otherwise. A rejected submission arrives as ``error`` and the
+    template echoes the submitted values, so nothing the admin clicked is lost.
+    """
+    settings = bot_languages.BotLanguages.from_row(stored)
+    return {
+        "bot_languages": settings.as_form(),
+        "language_options": bot_languages.options(),
+        "languages_error": error,
+        "languages_notice": notice,
+    }
+
+
 @router.get("/admin", response_class=HTMLResponse)
-async def admin_page(request: Request, saved: int = 0) -> Response:
+async def admin_page(
+    request: Request, saved: int = 0, languages_saved: int = 0
+) -> Response:
     user = _require_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
@@ -267,6 +287,14 @@ async def admin_page(request: Request, saved: int = 0) -> Response:
     context["limits_notice"] = (
         "Limits saved and applied to the engine."
         if saved and not context.get("limits_error")
+        else None
+    )
+
+    languages_stored = await db.get_settings(prefix=bot_languages.SETTING_PREFIX)
+    context.update(_languages_context(languages_stored))
+    context["languages_notice"] = (
+        "Languages saved. The bot picks them up within a minute."
+        if languages_saved and not context.get("languages_error")
         else None
     )
     return _render(request, "admin.html", context)
@@ -338,12 +366,67 @@ async def save_limits(request: Request) -> Response:
     return RedirectResponse(url="/admin?saved=1", status_code=303)
 
 
+@router.post("/admin/languages")
+async def save_languages(request: Request) -> Response:
+    """Validate, store and let the bot pick up the enabled languages.
+
+    There is nothing to push: the bot polls ``GET /api/bot-settings`` and caches
+    it for under a minute, so saving here is enough. The two rules the engine of
+    this page enforces are that at least one language stays on and that the
+    default is one of them.
+    """
+    user = _require_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    form = await request.form()
+    submitted_csrf = str(form.get(auth.CSRF_FORM_FIELD, ""))
+    if not auth.verify_csrf(request, submitted_csrf):
+        return _render(
+            request,
+            "admin.html",
+            await _admin_error_context(
+                user, "Your session expired. Reload the page and try again."
+            ),
+            status_code=403,
+        )
+
+    enabled = [str(value) for value in form.getlist("languages")]
+    default = str(form.get("default_language", ""))
+    parsed, errors = bot_languages.parse(enabled, default)
+    if parsed is None or errors:
+        message = " ".join(errors) or "Could not save these languages."
+        context = await _admin_error_context(user, message)
+        # Echo the submission so the checkboxes keep what the admin clicked.
+        context["bot_languages"] = {
+            "languages": [code for code in enabled if code in bot_languages.LANGUAGES],
+            "default_language": default,
+            "options": bot_languages.options(),
+        }
+        return _render(request, "admin.html", context, status_code=400)
+    settings = parsed
+
+    before = bot_languages.BotLanguages.from_row(
+        await db.get_settings(prefix=bot_languages.SETTING_PREFIX)
+    )
+    await db.save_settings(settings.as_stored())
+    # One line per save: who changed what, from which value to which.
+    logging.getLogger("koyura.dashboard").info(
+        "bot languages updated by %s: %s -> %s",
+        user,
+        before.describe(),
+        settings.describe(),
+    )
+    return RedirectResponse(url="/admin?languages_saved=1", status_code=303)
+
+
 async def _admin_error_context(user: str, message: str) -> dict:
     """Shared context for an admin page that has to show a message."""
     stored = await db.get_settings(prefix=limits_settings.SETTING_PREFIX)
     context = {"user": user, "active": "admin", "files": [], "downloads_bytes": 0,
                "max_disk_mb": 0, "disk_pct": 0}
     context.update(_limits_context(stored, error=message))
+    context.update(_languages_context({}, error=message))
     return context
 
 
