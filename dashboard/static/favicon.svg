@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Koyura">
+  <title>Koyura</title>
+  <g fill="none" stroke="#17140f" stroke-linecap="butt">
+    <path d="M25.24 14.39A10.4 10.4 0 0 1 10.12 25.38" stroke-width="3"/>
+    <path d="M8.6 24.4A10.4 10.4 0 0 1 8.04 8.47" stroke-width="2.5"/>
+    <path d="M9.8 7.19A10.4 10.4 0 0 1 17.16 6.03" stroke-width="1.9"/>
+  </g>
+  <circle cx="25" cy="6.6" r="3.2" fill="#d4361c"/>
+</svg>

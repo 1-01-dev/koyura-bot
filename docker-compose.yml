@@ -1,0 +1,175 @@
+# Koyura — canonical deployment (docker compose)
+#
+# Only the dashboard is published, and only on the host loopback. The media
+# engine, the bot and the self-hosted Bot API are reachable exclusively from the
+# internal compose network.
+#
+#   cp .env.example .env   # then fill in the required secrets
+#   docker compose up -d
+#
+# Every value can be overridden from the environment, so the same file also
+# works for a systemd/venv deployment where compose is not used.
+services:
+  koyura-engine:
+    image: >-
+      ghcr.io/${GHCR_OWNER:-1-01-dev}/koyura-bot/koyura-engine:${IMAGE_TAG:-latest}
+    build: ./koyura
+    init: true
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8899"
+      DOWNLOADS_PATH: /downloads
+      MAX_CONCURRENT_DOWNLOADS: ${MAX_CONCURRENT_DOWNLOADS:-2}
+      PER_USER_MAX_ACTIVE: ${PER_USER_MAX_ACTIVE:-1}
+      PER_USER_MAX_QUEUED: ${PER_USER_MAX_QUEUED:-1}
+      MAX_QUEUE_LENGTH: ${MAX_QUEUE_LENGTH:-6}
+      QUEUE_MAX_WAIT_SECONDS: ${QUEUE_MAX_WAIT_SECONDS:-120}
+      QUEUE_ESTIMATE_MBPS: ${QUEUE_ESTIMATE_MBPS:-2}
+      QUEUE_ESTIMATE_OVERHEAD_SECONDS: ${QUEUE_ESTIMATE_OVERHEAD_SECONDS:-6}
+      QUEUE_EXPIRY_SECONDS: ${QUEUE_EXPIRY_SECONDS:-120}
+      # Own volume: the EWMA must not live in /downloads, which gets purged.
+      KOYURA_STATE_DIR: /state
+      DOWNLOAD_TIMEOUT: ${DOWNLOAD_TIMEOUT:-900}
+      INFO_TIMEOUT: ${INFO_TIMEOUT:-60}
+      MAX_FILESIZE_MB: ${MAX_FILESIZE_MB:-2000}
+      MAX_DURATION_SECONDS: ${MAX_DURATION_SECONDS:-7200}
+      JOB_TTL_SECONDS: ${JOB_TTL_SECONDS:-3600}
+      # "native" keeps live progress; "ffmpeg" trades it for X/Twitter.
+      HLS_DOWNLOADER: ${HLS_DOWNLOADER:-native}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN is required}
+      INTERNAL_API_AUTH_DISABLED: ${INTERNAL_API_AUTH_DISABLED:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - downloads:/downloads
+      - koyura-engine-state:/state
+    networks:
+      - internal
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request as u;
+          u.urlopen('http://127.0.0.1:8899/healthz', timeout=4)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  bot:
+    image: >-
+      ghcr.io/${GHCR_OWNER:-1-01-dev}/koyura-bot/bot:${IMAGE_TAG:-latest}
+    build: ./bot
+    init: true
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:?BOT_TOKEN is required}
+      KOYURA_ENGINE_URL: http://koyura-engine:8899
+      TELEGRAM_BOT_API_URL: http://telegram-bot-api:8081
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN is required}
+      INTERNAL_API_AUTH_DISABLED: ${INTERNAL_API_AUTH_DISABLED:-false}
+      DOWNLOADS_PATH: /downloads
+      BOT_STATE_DB_PATH: /data/koyura_bot_state.db
+      CLEANUP_MAX_AGE_HOURS: ${CLEANUP_MAX_AGE_HOURS:-1}
+      CLEANUP_MAX_DISK_MB: ${CLEANUP_MAX_DISK_MB:-5000}
+      CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-300}
+      CLEANUP_ACTIVE_GRACE_SECONDS: ${CLEANUP_ACTIVE_GRACE_SECONDS:-300}
+      DASHBOARD_URL: http://dashboard:8080
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - downloads:/downloads
+      - dashboard-data:/data
+    depends_on:
+      koyura-engine:
+        condition: service_healthy
+      telegram-bot-api:
+        condition: service_started
+    networks:
+      - internal
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  telegram-bot-api:
+    # Pinned release: never deploy :latest for a service that talks to Telegram.
+    image: aiogram/telegram-bot-api:10.5
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?TELEGRAM_API_ID is required}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?TELEGRAM_API_HASH is required}
+      TELEGRAM_LOCAL: "true"
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    networks:
+      - internal
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  dashboard:
+    image: >-
+      ghcr.io/${GHCR_OWNER:-1-01-dev}/koyura-bot/dashboard:${IMAGE_TAG:-latest}
+    build: ./dashboard
+    init: true
+    environment:
+      ADMIN_USER: ${DASHBOARD_USER:-admin}
+      ADMIN_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      ADMIN_PASSWORD_HASH: ${DASHBOARD_PASSWORD_HASH:-}
+      SECRET_KEY: ${DASHBOARD_SECRET_KEY:?DASHBOARD_SECRET_KEY is required}
+      SESSION_MAX_AGE_SECONDS: ${SESSION_MAX_AGE_SECONDS:-43200}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-auto}
+      LOGIN_RATE_LIMIT_ATTEMPTS: ${LOGIN_RATE_LIMIT_ATTEMPTS:-5}
+      LOGIN_RATE_LIMIT_WINDOW_SECONDS: ${LOGIN_RATE_LIMIT_WINDOW_SECONDS:-300}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+      DB_PATH: /data/koyura_bot.db
+      DOWNLOADS_PATH: /downloads
+      KOYURA_ENGINE_URL: http://koyura-engine:8899
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN is required}
+      CLEANUP_MAX_DISK_MB: ${CLEANUP_MAX_DISK_MB:-5000}
+      MARK_STALE_ON_STARTUP: ${MARK_STALE_ON_STARTUP:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - dashboard-data:/data
+      # Writable so the Admin page can delete files; the dashboard itself is
+      # loopback-only and behind authentication.
+      - downloads:/downloads
+    # Loopback only: the admin panel must never be reachable from the LAN.
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-8080}:8080"
+    depends_on:
+      koyura-engine:
+        condition: service_healthy
+    networks:
+      - internal
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request as u;
+          u.urlopen('http://127.0.0.1:8080/login', timeout=4)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  downloads:
+  telegram-bot-api-data:
+  dashboard-data:
+  # Queue throughput EWMA; deliberately separate from the purgeable downloads.
+  koyura-engine-state:
+
+networks:
+  internal:
+    driver: bridge

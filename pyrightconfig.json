@@ -1,0 +1,5 @@
+{
+  "pythonVersion": "3.12",
+  "include": ["bot", "dashboard", "koyura", ".github/tests"],
+  "exclude": ["**/__pycache__", "**/.venv*"]
+}

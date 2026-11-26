@@ -1,0 +1,67 @@
+name: Build and Push Docker Images
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # The engine is published as koyura-engine but lives in koyura/.
+          - service: koyura-engine
+            directory: koyura
+          - service: bot
+            directory: bot
+          - service: dashboard
+            directory: dashboard
+    steps:
+      - name: Checkout
+        # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Set up Docker Buildx
+        # v4
+        uses: >-
+          docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Login to GHCR
+        # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase repository
+        id: repo
+        env:
+          REPOSITORY: ${{ github.repository }}
+        # The image path must be lowercase even when the owner is not.
+        run: |
+          repo=$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.service }}
+        # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        env:
+          IMAGE: ghcr.io/${{ steps.repo.outputs.repo }}/${{ matrix.service }}
+        with:
+          context: ./${{ matrix.directory }}
+          push: true
+          build-args: VERSION=${{ steps.version.outputs.version }}
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE }}:latest

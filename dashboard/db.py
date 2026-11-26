@@ -1,0 +1,694 @@
+"""SQLite persistence for the Koyura admin panel.
+
+One module owns the whole data layer: the schema, the migrations, and every
+query the panel, the API routes and the bot's event stream need. It is async
+throughout (aiosqlite) because FastAPI endpoints are, and a blocking sqlite3
+call would stall the event loop for every other request.
+
+Design notes that outlive any single query:
+
+* **The schema is a contract, not a convenience.** ``koyura_bot.db`` is created
+  by an older release and then reused forever, so every statement here is
+  ``IF NOT EXISTS`` and runs on each new connection. A restart migrates, it
+  never drops. ``tests/test_db.py`` pins the columns; do not "tidy" the DDL.
+* **The path is read per call.** ``DB_PATH`` is resolved on every connection
+  rather than at import, which keeps the file relocatable for tests and for a
+  deployment that mounts a volume late.
+* **Timestamps are UTC strings.** ``%Y-%m-%d %H:%M:%S`` sorts correctly as text,
+  matches what the bot writes, and is the format every ``LIKE 'YYYY-MM-DD%'``
+  day filter below assumes.
+* **User input never reaches SQL text.** Optional filters are applied with
+  ``column = ? OR ? IS NULL`` so one statement serves every combination.
+
+WAL mode and a 5 s busy timeout let the bot write while the panel reads.
+"""
+from __future__ import annotations
+
+import os
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import aiosqlite
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+
+_DEFAULT_DB_PATH = "/data/koyura_bot.db"
+
+_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+# The whole schema in one script: executescript is atomic from the caller's
+# point of view and leaves no half-created table behind on failure. Every
+# statement is IF NOT EXISTS, so this doubles as the migration for an existing
+# file and is safe to run on every connection.
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS downloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT UNIQUE NOT NULL,
+    user_id INTEGER,
+    username TEXT,
+    chat_id INTEGER,
+    url TEXT NOT NULL,
+    title TEXT,
+    platform TEXT,
+    format TEXT,
+    quality TEXT,
+    file_size_bytes INTEGER,
+    download_duration_sec REAL,
+    status TEXT NOT NULL DEFAULT 'started',
+    error_message TEXT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS disk_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    total_bytes INTEGER NOT NULL,
+    file_count INTEGER NOT NULL,
+    snapshot_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Admin-editable settings, currently the download limits. Values stay text:
+-- a malformed number must be a validation error on read, never a broken row.
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_downloads_started_at ON downloads(started_at);
+CREATE INDEX IF NOT EXISTS idx_downloads_status ON downloads(status);
+"""
+
+
+# ---------------------------------------------------------------------------
+# Connection plumbing
+# ---------------------------------------------------------------------------
+
+def _db_path() -> str:
+    """Resolve ``DB_PATH`` now (not at import) so callers can redirect it."""
+    return os.environ.get("DB_PATH", _DEFAULT_DB_PATH)
+
+
+def _utc_now() -> str:
+    """Current UTC time in the storage format."""
+    return datetime.now(timezone.utc).strftime(_TIME_FORMAT)
+
+
+def _day_start(day: str) -> str:
+    """Inclusive lower bound for a ``YYYY-MM-DD`` filter value."""
+    return f"{day} 00:00:00"
+
+
+def _day_end(day: str) -> str:
+    """Inclusive upper bound for a ``YYYY-MM-DD`` filter value."""
+    return f"{day} 23:59:59"
+
+
+@asynccontextmanager
+async def _conn() -> AsyncGenerator[aiosqlite.Connection, None]:
+    """Open one migrated, row-dict connection and close it on exit."""
+    path = _db_path()
+    directory = os.path.dirname(os.path.abspath(path))
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"DB_PATH {path!r} is not writable: {exc}") from exc
+
+    async with aiosqlite.connect(path, timeout=10.0) as conn:
+        conn.row_factory = aiosqlite.Row
+        # journal_mode is persistent per file, the busy timeout is per session:
+        # a writer waits up to 5 s for the lock instead of failing at once.
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA busy_timeout=5000")
+        await conn.executescript(_SCHEMA)
+        await conn.commit()
+        yield conn
+
+
+async def _ensure_job_row(conn: aiosqlite.Connection, job_id: str) -> None:
+    """Create a placeholder row when an event names a job we never saw start.
+
+    The engine can answer the dashboard faster than the bot reports it (or the
+    start event is simply lost), and dropping the late event would hide the
+    failure the admin needs to see.
+    """
+    cursor = await conn.execute(
+        "SELECT 1 FROM downloads WHERE job_id = ?", (job_id,)
+    )
+    known = await cursor.fetchone()
+    await cursor.close()
+    if known is None:
+        cursor = await conn.execute(
+            "INSERT INTO downloads (job_id, url, status, started_at) "
+            "VALUES (?, '', 'started', ?)",
+            (job_id, _utc_now()),
+        )
+        await cursor.close()
+
+
+# ---------------------------------------------------------------------------
+# Startup / maintenance
+# ---------------------------------------------------------------------------
+
+async def init_db(path: str | None = None) -> None:
+    """Create or migrate the schema.
+
+    ``path`` is an explicit override for scripts and tests; the environment is
+    restored afterwards so a temporary database never leaks into later calls.
+    """
+    if path is None:
+        async with _conn():
+            return
+
+    previous = os.environ.get("DB_PATH")
+    os.environ["DB_PATH"] = path
+    try:
+        async with _conn():
+            pass
+    finally:
+        if previous is None:
+            os.environ.pop("DB_PATH", None)
+        else:
+            os.environ["DB_PATH"] = previous
+
+
+async def mark_interrupted_downloads(
+    reason: str = "Interrupted by service restart",
+) -> int:
+    """Fail every row that was still in flight when the panel stopped.
+
+    Job state lives in the engine's memory, so after a restart nothing will
+    ever finish these rows, and leaving them "downloading" keeps the panel
+    claiming work that no longer exists. Returns the number of rows updated.
+    """
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "UPDATE downloads SET status = 'error', error_message = ?, "
+            "completed_at = ? "
+            "WHERE status IN ('started', 'downloading') AND completed_at IS NULL",
+            (reason, _utc_now()),
+        )
+        updated = cursor.rowcount
+        await cursor.close()
+        await conn.commit()
+    return updated
+
+
+# ---------------------------------------------------------------------------
+# Download lifecycle (written from the bot's event stream)
+# ---------------------------------------------------------------------------
+
+async def insert_download_start(
+    *,
+    job_id: str,
+    user_id: int | None,
+    username: str | None,
+    chat_id: int | None,
+    url: str,
+    platform: str | None = None,
+    title: str | None = None,
+    format: str | None = None,
+    quality: str | None = None,
+) -> None:
+    """Record a job the engine accepted.
+
+    The bot already knows the metadata when it asks for a download, so title,
+    format and quality are stored here instead of waiting for a later event.
+    Re-delivery is harmless: the unique ``job_id`` wins and the row is kept.
+    """
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "INSERT INTO downloads (job_id, user_id, username, chat_id, url, "
+            "platform, title, format, quality, started_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(job_id) DO NOTHING",
+            (job_id, user_id, username, chat_id, url,
+             platform, title, format, quality, _utc_now()),
+        )
+        await cursor.close()
+        await conn.commit()
+
+
+async def update_download_title(*, job_id: str, title: str | None) -> None:
+    """Backfill a title discovered after the start event.
+
+    Empty values are ignored: a progress tick without a title must not erase
+    the one already stored.
+    """
+    cleaned = (title or "").strip()
+    if not cleaned:
+        return
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "UPDATE downloads SET title = ? WHERE job_id = ?",
+            (cleaned, job_id),
+        )
+        await cursor.close()
+        await conn.commit()
+
+
+async def update_download_done(
+    *,
+    job_id: str,
+    title: str | None = None,
+    format: str | None = None,
+    quality: str | None = None,
+    file_size_bytes: int | None = None,
+    download_duration_sec: float | None = None,
+) -> None:
+    """Close a job successfully and store the numbers the KPIs use."""
+    async with _conn() as conn:
+        await _ensure_job_row(conn, job_id)
+        cursor = await conn.execute(
+            "UPDATE downloads SET status = 'done', "
+            "title = COALESCE(?, title), "
+            "format = COALESCE(?, format), "
+            "quality = COALESCE(?, quality), "
+            "file_size_bytes = ?, download_duration_sec = ?, completed_at = ? "
+            "WHERE job_id = ?",
+            (title, format, quality, file_size_bytes, download_duration_sec,
+             _utc_now(), job_id),
+        )
+        await cursor.close()
+        await conn.commit()
+
+
+async def update_download_error(*, job_id: str, error_message: str) -> None:
+    """Close a job as failed, keeping the message the user was shown."""
+    async with _conn() as conn:
+        await _ensure_job_row(conn, job_id)
+        cursor = await conn.execute(
+            "UPDATE downloads SET status = 'error', error_message = ?, "
+            "completed_at = ? WHERE job_id = ?",
+            (error_message, _utc_now(), job_id),
+        )
+        await cursor.close()
+        await conn.commit()
+
+
+async def get_download_by_job_id(job_id: str) -> aiosqlite.Row | None:
+    """One download row, or ``None`` when the id is unknown."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM downloads WHERE job_id = ?", (job_id,)
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+    return row
+
+
+# ---------------------------------------------------------------------------
+# KPI strip
+# ---------------------------------------------------------------------------
+
+async def _day_totals(conn: aiosqlite.Connection, day: str) -> tuple[int, int, int]:
+    """``(finished, failed, started)`` for one UTC calendar day."""
+    prefix = f"{day}%"
+    cursor = await conn.execute(
+        "SELECT COUNT(*) FROM downloads WHERE status = 'done' AND started_at LIKE ?",
+        (prefix,),
+    )
+    row = await cursor.fetchone()
+    await cursor.close()
+    finished = int(row[0]) if row else 0
+
+    cursor = await conn.execute(
+        "SELECT COUNT(*) FROM downloads WHERE status = 'error' AND started_at LIKE ?",
+        (prefix,),
+    )
+    row = await cursor.fetchone()
+    await cursor.close()
+    failed = int(row[0]) if row else 0
+
+    cursor = await conn.execute(
+        "SELECT COUNT(*) FROM downloads WHERE started_at LIKE ?",
+        (prefix,),
+    )
+    row = await cursor.fetchone()
+    await cursor.close()
+    started = int(row[0]) if row else 0
+
+    return finished, failed, started
+
+
+def _error_rate(failed: int, started: int) -> float:
+    """Failures as a percentage of everything attempted, rounded for display."""
+    if not started:
+        return 0.0
+    return round(failed / started * 100, 2)
+
+
+async def get_dashboard_stats() -> dict[str, Any]:
+    """Everything the four KPI cells need, in one call.
+
+    "Today" and "yesterday" are UTC calendar days so the numbers never depend
+    on the server's local timezone, matching how ``started_at`` is written.
+    """
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    window_start = (now - timedelta(hours=24)).strftime(_TIME_FORMAT)
+
+    async with _conn() as conn:
+        done_today, failed_today, started_today = await _day_totals(conn, today)
+        done_yesterday, failed_yesterday, started_yesterday = await _day_totals(
+            conn, yesterday
+        )
+        cursor = await conn.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM downloads WHERE started_at >= ?",
+            (window_start,),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        active_users = int(row[0]) if row and row[0] is not None else 0
+
+    return {
+        "downloads_today": done_today,
+        "downloads_yesterday": done_yesterday,
+        "active_users_24h": active_users,
+        "error_rate": _error_rate(failed_today, started_today),
+        "error_rate_yesterday": _error_rate(failed_yesterday, started_yesterday),
+        "errors_today": failed_today,
+        "total_today": started_today,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Charts
+# ---------------------------------------------------------------------------
+
+#: ``(labels, bucket keys, key format, window start)`` for one range switch.
+BucketPlan = tuple[list[str], list[str], str, str]
+
+
+def _hourly_plan(now: datetime) -> BucketPlan:
+    """Last 24 hours, one bucket per hour."""
+    stamps = [now - timedelta(hours=offset) for offset in range(23, -1, -1)]
+    return (
+        [stamp.strftime("%H:00") for stamp in stamps],
+        [stamp.strftime("%Y-%m-%d %H") for stamp in stamps],
+        "%Y-%m-%d %H",
+        (now - timedelta(hours=24)).strftime(_TIME_FORMAT),
+    )
+
+
+def _daily_plan(now: datetime, days: int, label_format: str) -> BucketPlan:
+    """``days`` whole days ending today, one bucket per day."""
+    stamps = [now - timedelta(days=offset) for offset in range(days - 1, -1, -1)]
+    return (
+        [stamp.strftime(label_format) for stamp in stamps],
+        [stamp.strftime("%Y-%m-%d") for stamp in stamps],
+        "%Y-%m-%d",
+        (now - timedelta(days=days)).strftime(_TIME_FORMAT),
+    )
+
+
+def _monthly_plan(now: datetime) -> BucketPlan:
+    """Twelve months ending with the current one.
+
+    Stepping back in 30-day strides from the first of the month (rather than in
+    calendar months) is what the panel has always drawn; the axis is labelled by
+    month, so which day of the previous month a stride lands on does not show.
+    """
+    first_of_month = now.replace(day=1)
+    stamps = [
+        first_of_month - timedelta(days=30 * offset) for offset in range(11, -1, -1)
+    ]
+    return (
+        [stamp.strftime("%b %Y") for stamp in stamps],
+        [stamp.strftime("%Y-%m") for stamp in stamps],
+        "%Y-%m",
+        (now - timedelta(days=365)).strftime(_TIME_FORMAT),
+    )
+
+
+def _bucket_plan(range_key: str, now: datetime) -> BucketPlan:
+    """Map the range switch to its bucket plan (1Y is the fallback)."""
+    if range_key == "1D":
+        return _hourly_plan(now)
+    if range_key == "7D":
+        return _daily_plan(now, 7, "%a %d")
+    if range_key == "1M":
+        return _daily_plan(now, 30, "%b %d")
+    return _monthly_plan(now)
+
+
+async def get_chart_data(range_key: str) -> dict[str, Any]:
+    """Time series plus the two "top five" lists for one range."""
+    now = datetime.now(timezone.utc)
+    labels, bucket_keys, bucket_format, start = _bucket_plan(range_key, now)
+
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT started_at FROM downloads "
+            "WHERE started_at >= ? AND status = 'done'",
+            (start,),
+        )
+        finished = await cursor.fetchall()
+        await cursor.close()
+
+        # Bucketing happens here rather than in SQL so both statements stay
+        # static and the key format lives right next to the labels.
+        counts: dict[str, int] = {}
+        for row in finished:
+            try:
+                moment = datetime.strptime(row["started_at"] or "", _TIME_FORMAT)
+            except ValueError:
+                # A hand-edited or legacy timestamp must not break the chart.
+                continue
+            key = moment.strftime(bucket_format)
+            counts[key] = counts.get(key, 0) + 1
+
+        cursor = await conn.execute(
+            "SELECT platform, COUNT(*) FROM downloads "
+            "WHERE started_at >= ? AND platform IS NOT NULL "
+            "GROUP BY platform ORDER BY COUNT(*) DESC LIMIT 5",
+            (start,),
+        )
+        platform_rows = await cursor.fetchall()
+        await cursor.close()
+
+        cursor = await conn.execute(
+            "SELECT username, COUNT(*) FROM downloads "
+            "WHERE started_at >= ? AND username IS NOT NULL "
+            "GROUP BY username ORDER BY COUNT(*) DESC LIMIT 5",
+            (start,),
+        )
+        user_rows = await cursor.fetchall()
+        await cursor.close()
+
+    return {
+        "labels": labels,
+        "values": [counts.get(key, 0) for key in bucket_keys],
+        "platforms": [
+            {"platform": row[0], "count": row[1]} for row in platform_rows
+        ],
+        "top_users": [{"username": row[0], "count": row[1]} for row in user_rows],
+    }
+
+
+# ---------------------------------------------------------------------------
+# History and error tables
+# ---------------------------------------------------------------------------
+
+#: The five optional filters, each as `:name IS NULL OR column = :name`. One
+#: named-parameter statement serves every combination, and the caller passes a
+#: dict literal, so no value is ever spliced into the SQL text.
+_HISTORY_WHERE = """
+    (:platform IS NULL OR platform = :platform)
+    AND (:status IS NULL OR status = :status)
+    AND (:username IS NULL OR username = :username)
+    AND (:date_from IS NULL OR started_at >= :date_from)
+    AND (:date_to IS NULL OR started_at <= :date_to)
+"""
+
+
+def _window(date_from: str | None, date_to: str | None) -> tuple[str | None, str | None]:
+    """Turn two ``YYYY-MM-DD`` inputs into inclusive timestamp bounds."""
+    return (
+        _day_start(date_from) if date_from else None,
+        _day_end(date_to) if date_to else None,
+    )
+
+
+async def get_downloads_page(
+    page: int = 1,
+    per_page: int = 20,
+    platform: str | None = None,
+    status: str | None = None,
+    user: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict[str, Any]:
+    """One page of download history, newest first, with optional filters."""
+    current = max(1, page)
+    per_page = max(1, per_page)
+    offset = (current - 1) * per_page
+    lower, upper = _window(date_from, date_to)
+
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            """
+            SELECT COUNT(*) FROM downloads
+            WHERE (:platform IS NULL OR platform = :platform)
+              AND (:status IS NULL OR status = :status)
+              AND (:username IS NULL OR username = :username)
+              AND (:date_from IS NULL OR started_at >= :date_from)
+              AND (:date_to IS NULL OR started_at <= :date_to)
+            """,
+            {
+                "platform": platform,
+                "status": status,
+                "username": user,
+                "date_from": lower,
+                "date_to": upper,
+            },
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        total = int(row[0]) if row else 0
+
+        cursor = await conn.execute(
+            """
+            SELECT * FROM downloads
+            WHERE (:platform IS NULL OR platform = :platform)
+              AND (:status IS NULL OR status = :status)
+              AND (:username IS NULL OR username = :username)
+              AND (:date_from IS NULL OR started_at >= :date_from)
+              AND (:date_to IS NULL OR started_at <= :date_to)
+            ORDER BY started_at DESC
+            LIMIT :limit OFFSET :offset
+            """,
+            {
+                "platform": platform,
+                "status": status,
+                "username": user,
+                "date_from": lower,
+                "date_to": upper,
+                "limit": per_page,
+                "offset": offset,
+            },
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+
+    return {
+        "rows": [dict(row) for row in rows],
+        "total": total,
+        "pages": (total + per_page - 1) // per_page if total else 1,
+        "page": current,
+    }
+
+
+async def get_error_downloads(
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict[str, Any]]:
+    """Every failed download in the window, newest first, full messages."""
+    lower, upper = _window(date_from, date_to)
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            """
+            SELECT * FROM downloads
+            WHERE (:platform IS NULL OR platform = :platform)
+              AND (:status IS NULL OR status = :status)
+              AND (:username IS NULL OR username = :username)
+              AND (:date_from IS NULL OR started_at >= :date_from)
+              AND (:date_to IS NULL OR started_at <= :date_to)
+            ORDER BY started_at DESC
+            """,
+            {
+                "platform": None,
+                "status": "error",
+                "username": None,
+                "date_from": lower,
+                "date_to": upper,
+            },
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+    return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Disk snapshots
+# ---------------------------------------------------------------------------
+
+async def insert_disk_snapshot(total_bytes: int, file_count: int) -> None:
+    """Record what ``DOWNLOADS_PATH`` held at this moment."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "INSERT INTO disk_snapshots (total_bytes, file_count, snapshot_at) "
+            "VALUES (?, ?, ?)",
+            (total_bytes, file_count, _utc_now()),
+        )
+        await cursor.close()
+        await conn.commit()
+
+
+async def get_latest_disk_snapshot() -> dict[str, Any] | None:
+    """The newest snapshot, or ``None`` before the first scan."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM disk_snapshots ORDER BY id DESC LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+    return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Admin settings (download limits)
+# ---------------------------------------------------------------------------
+
+async def get_settings(prefix: str = "") -> dict[str, str]:
+    """Stored settings as ``{key: value}``, optionally limited to a prefix.
+
+    Values stay strings all the way to the validator, which is the only place
+    allowed to decide what a number means.
+    """
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT key, value FROM settings WHERE key LIKE ? AND ? != '' "
+            "UNION ALL SELECT key, value FROM settings WHERE ? = ''",
+            (f"{prefix}%", prefix, prefix),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+    return {str(row[0]): str(row[1]) for row in rows}
+
+
+async def get_setting(key: str, default: str | None = None) -> str | None:
+    """One setting, or ``default`` when it was never saved."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+    return str(row[0]) if row else default
+
+
+async def save_settings(values: dict[str, str]) -> None:
+    """Upsert a group of settings in one transaction.
+
+    A half-applied set of limits would be worse than an old one, so the whole
+    group is written together or not at all.
+    """
+    if not values:
+        return
+    updated_at = _utc_now()
+    async with _conn() as conn:
+        for key, value in values.items():
+            cursor = await conn.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                "updated_at = excluded.updated_at",
+                (str(key), str(value), updated_at),
+            )
+            await cursor.close()
+        await conn.commit()

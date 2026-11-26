@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Koyura — Free Media Downloader</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/koyura.css">
+  <link rel="stylesheet" href="/static/loader.css">
+  <script src="/static/theme.js"></script>
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand">
+        <h1>Koy<em>u</em>ra</h1>
+        <p>Free media downloader · <span aria-hidden="true">動画・音声・保存</span></p>
+      </div>
+      <div class="topbar-actions">
+        <span aria-hidden="true">送る → 選ぶ → 待つ → 届く</span>
+        <button type="button" class="theme-toggle theme-toggle--inline" id="theme-toggle" aria-pressed="false">Invert color · dark</button>
+      </div>
+    </header>
+
+    <!-- Input surface: the textarea keeps the paste, the pills pick the format -->
+    <div class="input-card">
+      <textarea id="urls" placeholder="Paste one or more URLs..." rows="2" aria-label="Video URLs"></textarea>
+      <p class="hint">Multiple links? Separate with spaces, commas, or newlines.</p>
+
+      <div class="controls">
+        <div class="pill-group" role="group" aria-label="Format">
+          <button type="button" class="pill active" data-format="video" aria-pressed="true">MP4</button>
+          <button type="button" class="pill" data-format="audio" aria-pressed="false">MP3</button>
+        </div>
+        <button type="button" class="fetch-btn" id="goBtn">Fetch</button>
+      </div>
+
+      <!-- Read-only queue state: slots, queue depth, estimated wait. -->
+      <p class="limits-line" id="limits-line" aria-live="off">slots — · queue —</p>
+    </div>
+
+    <!-- Result cards are appended here by loader.js -->
+    <div id="cards" class="cards" aria-live="polite"></div>
+
+    <footer class="footer">
+      YouTube &middot; TikTok &middot; Instagram &middot; Twitter/X &middot; Reddit &middot; Facebook<br>
+      Vimeo &middot; Twitch &middot; Dailymotion &middot; SoundCloud &middot; Loom &middot; Streamable<br>
+      Pinterest &middot; Tumblr &middot; Threads &middot; LinkedIn &middot; 1000+ more
+    </footer>
+  </div>
+
+  <!-- Engine token for the loopback operator only; empty for everyone else.
+       It is data, not code: loader.js reads it and sends it as a header (or
+       as ?token= on the file link, which cannot carry a header). -->
+  <script id="api-token" type="application/json">{{ api_token|tojson }}</script>
+  <script type="module" src="/static/loader.js"></script>
+</body>
+</html>

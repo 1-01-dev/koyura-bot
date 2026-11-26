@@ -1,0 +1,1270 @@
+/* =========================================================
+   Koyura admin — shell, components and the sign-in page
+   =========================================================
+
+   Every colour, type family and control skin comes from koyura.css. This
+   sheet only arranges what the four admin pages need on top of it, and it is
+   written in the order the markup is read:
+
+     0. shell measurements      — the two sidebar widths
+     1. shared captions         — the mono micro-label used everywhere
+     2. shell                   — rail, drawer, scrim, content column
+     3. page head               — display title plus a mono counter-label
+     4. KPI strip               — one shared outline, one accent cell
+     5. cards                   — section and table frames
+     6. charts                  — canvas wells and the range switch
+     7. tables                  — scrolling, checkbox column, key/value pairs
+     8. filters                 — bar, results line, truncation
+     9. download limits         — presets, field grid, notices
+    10. pagination
+    11. disk summary
+    12. purge modal
+    13. toasts
+    14. breakpoints             — 1023px icon rail, 767px drawer
+    15. login                   — a backdrop and exactly one framed object
+
+   Two rules of thumb keep the sheet small: a shared set of declarations is
+   written once and applied to a selector list (section 1), and a component
+   only restates the properties where it differs from that base.
+   */
+
+/* ---------------------------------------------------------
+   0. Shell measurements
+   ---------------------------------------------------------
+   Geometry only: colours belong to the token sheet. */
+:root {
+  --sidebar-width: 200px;
+  --sidebar-collapsed: 56px;
+}
+
+/* ---------------------------------------------------------
+   1. Shared captions
+   ---------------------------------------------------------
+   The panel speaks in one voice: an 11px mono caption in the dim ink,
+   uppercase, with a little tracking. Nav rows, card titles, KPI labels,
+   filter results, page numbers, the disk summary and toasts all use it and
+   then override just the exceptions (ink instead of dim, filled cells). */
+.nav-item,
+.card-title,
+.page-meta,
+.kpi-label,
+.range-btn,
+.info-key,
+.results-info,
+.page-num,
+.disk-summary,
+.toast,
+.preset-label,
+.nav-item--button {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+/* The limits section labels are a step smaller: they sit inside a dense grid
+   of number inputs and would otherwise compete with the values. */
+.limits-label,
+.limits-hint,
+.limits-meta,
+.preset-tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+/* ---------------------------------------------------------
+   2. Application shell
+   --------------------------------------------------------- */
+
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  width: var(--sidebar-width);
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  padding-top: var(--safe-top);
+  padding-bottom: var(--safe-bottom);
+  padding-left: var(--safe-left);
+  border-right: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.sidebar-logo {
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+/* The wordmark carries its kana underneath: latin in mono, コユラ in mincho. */
+.sidebar-logo .brand-jp {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: none;
+  color: var(--dim);
+}
+
+.sidebar-nav {
+  flex: 1;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+}
+
+/* A nav row is a table cell, not a pill: 1px separators and a 2px accent edge
+   that only appears on the current page. */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  border-left: 2px solid transparent;
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: color 0.1s ease, background 0.1s ease;
+}
+
+.nav-item:hover {
+  color: var(--ink);
+  background: var(--wash);
+}
+
+.nav-item.active {
+  border-left-color: var(--red);
+  font-weight: 500;
+  color: var(--red-ink);
+}
+
+.nav-item svg {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.5;
+}
+
+/* Sidebar footer: the theme switch sits above the logout form (POST + CSRF). */
+.sidebar-bottom {
+  border-top: 1px solid var(--line);
+}
+
+.logout-form {
+  margin: 0;
+}
+
+.nav-item--button {
+  width: 100%;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  background: none;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nav-item--button:hover {
+  color: var(--ink);
+  background: var(--wash);
+}
+
+.sidebar-bottom .theme-toggle {
+  border-top: 1px solid var(--line);
+}
+
+/* Drawer trigger: a 1px square with three ink rules inside, hidden on wide
+   screens. */
+.hamburger {
+  display: none;
+  position: fixed;
+  top: calc(12px + var(--safe-top));
+  left: calc(12px + var(--safe-left));
+  z-index: 300;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.hamburger span {
+  display: block;
+  width: 18px;
+  height: 1px;
+  background: var(--ink);
+  transition: background 0.1s ease;
+}
+
+.hamburger:hover span {
+  background: var(--red);
+}
+
+/* The scrim is the only dimmed surface in the panel. */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  background: color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+.sidebar-overlay.visible {
+  display: block;
+}
+
+.content {
+  margin-left: var(--sidebar-width);
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.content-inner {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 32px;
+}
+
+/* ---------------------------------------------------------
+   3. Page head
+   ---------------------------------------------------------
+   The rule under the title is the page's top margin: everything below starts
+   immediately and is separated by hairlines only. */
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--ink);
+}
+
+.page-title {
+  font-size: clamp(28px, 4vw, 44px);
+  font-weight: 700;
+  line-height: 0.85;
+  letter-spacing: -0.05em;
+  color: var(--ink);
+}
+
+.page-meta {
+  text-align: right;
+}
+
+/* ---------------------------------------------------------
+   4. KPI strip
+   ---------------------------------------------------------
+   Four cells share one outline: the grid draws top and left, the cells draw
+   right and bottom, so no hairline is painted twice. */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+
+.kpi-card {
+  display: block;
+  min-width: 0;
+  padding: 14px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  text-decoration: none;
+  transition: background 0.1s ease;
+}
+
+.kpi-card:hover {
+  background: var(--wash);
+  color: var(--ink);
+}
+
+.kpi-label {
+  margin-bottom: 10px;
+  font-weight: 400;
+}
+
+/* The number is the only display serif in the panel, and it is the loudest
+   thing on the page. */
+.kpi-value {
+  font-family: var(--font-serif);
+  font-size: clamp(30px, 5vw, 64px);
+  font-weight: 800;
+  line-height: 0.85;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+  color: var(--ink);
+}
+
+/* The trend line keeps its height when there is nothing to compare against,
+   so the four cells stay aligned. */
+.kpi-trend {
+  min-height: 1.2em;
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.kpi-trend.up {
+  color: var(--success);
+}
+
+.kpi-trend.down {
+  color: var(--red-ink);
+}
+
+/* One cell is filled: the error rate, the number that needs a decision. Its
+   ink flips to the on-red token, dimmed for the secondary lines. */
+.kpi-card.kpi-card--accent {
+  background: var(--red);
+  color: var(--on-red);
+}
+
+.kpi-card.kpi-card--accent:hover {
+  background: var(--red);
+}
+
+.kpi-card.kpi-card--accent .kpi-label,
+.kpi-card.kpi-card--accent .kpi-trend,
+.kpi-card.kpi-card--accent .kpi-trend.up,
+.kpi-card.kpi-card--accent .kpi-trend.down {
+  opacity: 0.8;
+  color: var(--on-red);
+}
+
+.kpi-card.kpi-card--accent .kpi-value {
+  color: var(--on-red);
+}
+
+/* Disk meter: a 1px contour, filled to the percentage the KPI renderer sets.
+   Colour comes from the cell it lives in. */
+.disk-bar-wrap {
+  position: relative;
+  overflow: hidden;
+  height: 6px;
+  margin-top: 12px;
+  border: 1px solid currentColor;
+}
+
+.disk-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  height: 100%;
+  background: currentColor;
+  transition: width 0.4s ease-out, background 0.2s ease;
+}
+
+.kpi-card.kpi-card--accent .disk-bar {
+  background: var(--on-red);
+}
+
+/* ---------------------------------------------------------
+   5. Cards
+   --------------------------------------------------------- */
+
+.card {
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: transparent;
+}
+
+/* A section card continues the rule above it instead of adding a second one. */
+.section-card {
+  border-top: 0;
+}
+
+/* A table card keeps no padding: the scroll well has to reach the frame. */
+.table-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.table-card .card-header {
+  padding: 14px;
+  margin-bottom: 0;
+}
+
+.card-title {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ---------------------------------------------------------
+   6. Charts
+   --------------------------------------------------------- */
+
+.chart-wrap {
+  position: relative;
+  height: 240px;
+}
+
+.chart-wrap--short {
+  height: 180px;
+}
+
+/* Range switch: adjacent 1px cells sharing their borders with a -1px pull. */
+.range-buttons {
+  display: flex;
+}
+
+.range-btn {
+  padding: 4px 10px;
+  margin-left: -1px;
+  border: 1px solid var(--line);
+  background: transparent;
+  font-weight: 400;
+  cursor: pointer;
+  transition: color 0.1s ease, background 0.1s ease;
+}
+
+.range-btn:first-child {
+  margin-left: 0;
+}
+
+.range-btn:hover {
+  color: var(--ink);
+  background: var(--wash);
+}
+
+.range-btn.active {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--bg);
+}
+
+/* ---------------------------------------------------------
+   7. Tables and the bottom grid
+   --------------------------------------------------------- */
+
+/* Two panels share one outline the way the KPI grid does. */
+.bottom-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-left: 1px solid var(--line);
+}
+
+.bottom-grid > * {
+  min-width: 0;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+/* Horizontal scrolling belongs to the card, never to the page. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.col-check {
+  width: 36px;
+  text-align: center !important;
+}
+
+/* Key/value pairs use a real table: the browser aligns the two columns for
+   free, which a definition list would not. */
+.info-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.info-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.info-table tr:last-child td {
+  border-bottom: none;
+}
+
+.info-key {
+  width: 220px;
+}
+
+/* ---------------------------------------------------------
+   8. Filters, results line, cell truncation
+   ---------------------------------------------------------
+   The bar, the results line and the table stack without gaps: they share their
+   borders top to bottom. */
+.filter-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+}
+
+.filter-input,
+.filter-select {
+  width: auto;
+  min-width: 0;
+  flex: 1 1 140px;
+}
+
+.filter-bar .btn {
+  flex: 0 0 auto;
+}
+
+.results-info {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+}
+
+.url-cell {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+  word-break: break-all;
+}
+
+.url-cell:hover {
+  color: var(--red-ink);
+}
+
+/* A title is one ellipsised line; the full string stays in the tooltip. */
+.title-cell {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The error message is the one cell that wraps: it is the content. */
+.error-message {
+  max-width: 460px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--red-ink);
+}
+
+/* ---------------------------------------------------------
+   9. Download limits (admin)
+   ---------------------------------------------------------
+   Presets are a row of cells, the fields a wrapping grid of cells. Accent
+   colour marks the recommended preset and nothing else. */
+.limits-presets {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  border: 1px solid var(--line);
+  border-bottom: 0;
+}
+
+.preset-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--dim);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.preset-btn:last-child {
+  border-right: 0;
+}
+
+.preset-btn:hover {
+  background: var(--wash);
+  color: var(--ink);
+}
+
+.preset-btn:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: -2px;
+}
+
+.preset-btn.active {
+  border-color: var(--red);
+  color: var(--ink);
+}
+
+.preset-label {
+  letter-spacing: 0.04em;
+}
+
+.preset-tag {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+
+.preset-btn--recommended .preset-tag {
+  color: var(--red-ink);
+}
+
+.limits-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+}
+
+.limits-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.limits-label {
+  color: var(--ink);
+}
+
+.limits-input {
+  width: 100%;
+}
+
+/* Notes are prose: no uppercase, no wide tracking. */
+.limits-note {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--dim);
+}
+
+.limits-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.form-error,
+.form-notice {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--red);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.form-error {
+  color: var(--red-ink);
+}
+
+.form-notice {
+  border-color: var(--line);
+  color: var(--dim);
+}
+
+/* One column on a phone: the inner dividers would double up. */
+@media (max-width: 600px) {
+  .limits-cell {
+    border-right: 0;
+  }
+}
+
+/* ---------------------------------------------------------
+   10. Pagination
+   --------------------------------------------------------- */
+
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.page-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  text-decoration: none;
+  transition: color 0.1s ease, background 0.1s ease;
+}
+
+.page-num:hover {
+  color: var(--ink);
+  background: var(--wash);
+}
+
+.page-num.active {
+  border-color: var(--ink);
+  background: var(--ink);
+  font-weight: 500;
+  color: var(--bg);
+}
+
+.page-ellipsis {
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* ---------------------------------------------------------
+   11. Disk summary (admin)
+   --------------------------------------------------------- */
+
+.disk-summary {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* The numbers are the content; the labels around them stay dim. */
+.disk-summary .mono {
+  color: var(--ink);
+}
+
+/* ---------------------------------------------------------
+   12. Modal (purge confirmation)
+   --------------------------------------------------------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--ink) 62%, transparent);
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 440px;
+  padding: 20px;
+  border: 1px solid var(--ink);
+  background: var(--bg);
+}
+
+.modal-card--danger {
+  border-color: var(--red);
+}
+
+.modal-title {
+  margin-bottom: 12px;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 0.9;
+  letter-spacing: -0.04em;
+  color: var(--ink);
+}
+
+.modal-body {
+  margin-bottom: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--dim);
+}
+
+.modal-body strong {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+/* ---------------------------------------------------------
+   13. Toasts
+   --------------------------------------------------------- */
+
+.toast-container {
+  position: fixed;
+  top: calc(16px + var(--safe-top));
+  right: calc(16px + var(--safe-right));
+  z-index: 600;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 32px));
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--ink);
+  background: var(--bg);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink);
+  transition: opacity 0.2s ease-in, transform 0.2s ease-in;
+}
+
+/* Leaving is a class, not an inline style: the transition runs and the toast
+   module removes the node afterwards. */
+.toast.is-leaving {
+  opacity: 0;
+  transform: translateX(20px);
+}
+
+.toast.toast-success {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.toast.toast-danger {
+  border-color: var(--red);
+  color: var(--red-ink);
+}
+
+.toast.toast-warning {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.toast-close {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 14px;
+  line-height: 1;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------
+   14. Breakpoints
+   --------------------------------------------------------- */
+
+/* 768–1023px: the rail narrows to icons. Labels go, glyphs stay, and the
+   active row keeps its accent edge. */
+@media (max-width: 1023px) {
+  .sidebar {
+    width: var(--sidebar-collapsed);
+  }
+
+  .sidebar-logo {
+    padding: 16px 8px;
+    font-size: 0;
+    text-align: center;
+  }
+
+  .sidebar-logo .brand-jp {
+    margin-top: 0;
+    font-size: 13px;
+    letter-spacing: 0;
+  }
+
+  .nav-item {
+    justify-content: center;
+    gap: 0;
+    padding: 14px 8px;
+    border-left-width: 2px;
+  }
+
+  .nav-item span {
+    display: none;
+  }
+
+  .theme-toggle {
+    justify-content: center;
+    padding: 14px 8px;
+  }
+
+  .theme-toggle span,
+  .theme-toggle .dot {
+    display: none;
+  }
+
+  .content {
+    margin-left: var(--sidebar-collapsed);
+  }
+
+  .kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ≤767px: the rail becomes a drawer over the content. */
+@media (max-width: 767px) {
+  .hamburger {
+    display: flex;
+  }
+
+  .sidebar {
+    width: var(--sidebar-width);
+    transform: translateX(-100%);
+    box-shadow: none;
+    transition: transform 0.2s ease-out;
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  /* The drawer has room, so the full labels come back. */
+  .sidebar .sidebar-logo {
+    padding: 16px;
+    font-size: 11px;
+    text-align: left;
+  }
+
+  .sidebar .sidebar-logo .brand-jp {
+    margin-top: 4px;
+    font-size: 13px;
+    letter-spacing: 0.1em;
+  }
+
+  .sidebar .nav-item {
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 12px 16px;
+  }
+
+  .sidebar .nav-item span {
+    display: inline;
+  }
+
+  .sidebar .theme-toggle {
+    justify-content: flex-start;
+    padding: 12px 16px;
+  }
+
+  .sidebar .theme-toggle span,
+  .sidebar .theme-toggle .dot {
+    display: inline-block;
+  }
+
+  .content {
+    margin-left: 0;
+  }
+
+  /* Room for the fixed hamburger above the first heading. */
+  .content-inner {
+    padding: 64px 14px 28px;
+  }
+
+  .page-title {
+    font-size: clamp(26px, 8vw, 34px);
+  }
+
+  .page-meta {
+    text-align: left;
+  }
+
+  .bottom-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* Ten-column history tables cannot shrink below a readable width, so the
+     card scrolls and the page does not. */
+  .data-table {
+    min-width: 560px;
+  }
+
+  .table-card .table-scroll {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .filter-input,
+  .filter-select,
+  .filter-bar .btn {
+    width: 100%;
+    flex: 0 0 auto;
+  }
+
+  .disk-summary {
+    gap: 10px;
+  }
+
+  .modal-actions .btn {
+    flex: 1 1 auto;
+  }
+}
+
+/* ---------------------------------------------------------
+   15. Login
+   ---------------------------------------------------------
+   One object on a backdrop: the form is the only framed surface, and the
+   decorative layer behind it is fixed, clipped and inert. */
+
+/* The body is the centring context. Without a height there is nothing to
+   centre inside; `safe center` keeps a panel taller than the viewport
+   reachable instead of clipping its top out of the scroll origin. */
+.login-body {
+  display: flex;
+  align-items: center;
+  align-items: safe center;
+  justify-content: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  /* Longhand on purpose: a `padding` shorthand would clobber the safe-area
+     insets koyura.css puts on body. */
+  padding: calc(24px + var(--safe-top)) calc(24px + var(--safe-right))
+    calc(24px + var(--safe-bottom)) calc(24px + var(--safe-left));
+}
+
+/* The backdrop is a full-viewport layer painted behind everything, and
+   entirely inert: no pointer events, no focus stop, no frame of its own. */
+.login-hero {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  border: 0;
+  pointer-events: none;
+  isolation: auto;
+  --enso-x: 30%;
+  --enso-y: 46%;
+}
+
+/* Background typography sits at backdrop strength: texture, never competition
+   for the form. */
+.login-hero .enso {
+  left: var(--enso-x);
+  top: var(--enso-y);
+  /* ~78 columns at ~0.6em advance is ~47em wide, so 13px fills a wide screen
+     without spilling past the viewport. */
+  font-size: clamp(4.5px, 0.92vw, 13px);
+  opacity: 0.42;
+  color: var(--ink);
+}
+
+.login-hero .sun {
+  left: calc(var(--enso-x) + 1.5vw);
+  top: calc(var(--enso-y) - 21vh);
+  right: auto;
+  width: clamp(110px, 12vw, 210px);
+  opacity: 0.85;
+}
+
+.login-hero .hero-kana {
+  position: absolute;
+  left: clamp(14px, 4vw, 56px);
+  top: 50%;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
+  font-family: var(--font-serif);
+  font-size: clamp(15px, 1.8vw, 24px);
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0.14em;
+  opacity: 0.7;
+  color: var(--dim);
+}
+
+.login-hero .hero-mark {
+  position: absolute;
+  left: clamp(14px, 4vw, 56px);
+  bottom: clamp(10px, 4vh, 40px);
+  font-family: var(--font-sans);
+  font-size: clamp(44px, 7.5vw, 132px);
+  font-weight: 700;
+  line-height: 0.8;
+  letter-spacing: -0.06em;
+  opacity: 0.5;
+  color: var(--dim);
+}
+
+.login-hero .hero-mark span {
+  color: var(--red-ink);
+}
+
+/* Positioning context for the panel; it must not draw anything itself. */
+.login-shell {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 100%;
+  padding-inline: clamp(0px, 6vw, 130px);
+}
+
+/* The one framed object: opaque paper, hairline edge, no shadow. */
+.login-panel {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+  max-width: 440px;
+  min-width: 0;
+  padding: 32px 28px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.login-head {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--ink);
+}
+
+.login-brand {
+  margin-bottom: 10px;
+  color: var(--dim);
+}
+
+.login-sub {
+  margin-top: 8px;
+  color: var(--dim);
+}
+
+.login-panel form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.login-submit {
+  width: 100%;
+  padding: 11px 14px;
+}
+
+/* Sign-in error: framed in accent, message in ink so it stays readable. */
+.error {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--red);
+  font-size: 13px;
+  color: var(--red-ink);
+}
+
+.error-tag {
+  opacity: 0.85;
+  color: var(--red-ink);
+}
+
+.error-text {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+
+.login-foot {
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 10px;
+}
+
+/* Phones: the backdrop becomes a band that scrolls with the page, and the
+   form starts below it instead of being centred in the leftover space. */
+@media (max-width: 767px) {
+  .login-body {
+    align-items: flex-start;
+    padding: calc(14px + var(--safe-top) + 196px) calc(14px + var(--safe-right))
+      calc(14px + var(--safe-bottom)) calc(14px + var(--safe-left));
+  }
+
+  .login-hero {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 200px;
+    --enso-x: 50%;
+    --enso-y: 52%;
+  }
+
+  /* 36 rows at 4.5px is 162px: it fits the 200px band. */
+  .login-hero .enso {
+    font-size: 4.5px;
+    opacity: 0.5;
+  }
+
+  .login-hero .sun {
+    left: auto;
+    right: 16%;
+    top: 12%;
+    width: 78px;
+  }
+
+  .login-hero .hero-kana {
+    display: none;
+  }
+
+  .login-hero .hero-mark {
+    left: 14px;
+    bottom: 10px;
+    font-size: 34px;
+    opacity: 0.55;
+  }
+
+  .login-shell {
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  .login-panel {
+    padding: 22px 18px;
+  }
+}

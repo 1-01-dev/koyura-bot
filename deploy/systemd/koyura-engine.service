@@ -1,0 +1,38 @@
+[Unit]
+Description=Koyura media engine
+Documentation=https://github.com/1-01-dev/koyura-bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=koyura
+Group=koyura
+# All configuration lives in one root-owned environment file (mode 0600).
+EnvironmentFile=/etc/koyura/koyura.env
+# systemd starts units with a minimal PATH: the venv must be listed explicitly
+# so ffmpeg/ffprobe wrappers installed next to yt-dlp are found as well.
+# yt-dlp itself is invoked as `python -m yt_dlp` and does not depend on PATH.
+Environment=PATH=/opt/koyura/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/opt/koyura/koyura
+ExecStart=/opt/koyura/.venv/bin/python app.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+# /var/lib/koyura is created and owned by the service user; downloads, the
+# dashboard DB and the bot state DB live there.
+StateDirectory=koyura
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

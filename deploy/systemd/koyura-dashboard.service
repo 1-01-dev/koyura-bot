@@ -1,0 +1,32 @@
+[Unit]
+Description=Koyura admin dashboard
+Documentation=https://github.com/1-01-dev/koyura-bot
+After=network-online.target koyura-engine.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=koyura
+Group=koyura
+EnvironmentFile=/etc/koyura/koyura.env
+Environment=PATH=/opt/koyura/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/opt/koyura/dashboard
+ExecStart=/opt/koyura/.venv/bin/uvicorn main:create_app --factory --host 127.0.0.1 --port 8080
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+StateDirectory=koyura
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+# Never ship secrets, VCS metadata, caches or user downloads in an image.
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm
+downloads/
+telegram-bot-api-data/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+tests/
+*.log
+.DS_Store

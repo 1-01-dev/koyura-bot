@@ -1,0 +1,32 @@
+[Unit]
+Description=Koyura Telegram bot
+Documentation=https://github.com/1-01-dev/koyura-bot
+After=network-online.target koyura-engine.service koyura-dashboard.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=koyura
+Group=koyura
+EnvironmentFile=/etc/koyura/koyura.env
+Environment=PATH=/opt/koyura/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/opt/koyura/bot
+ExecStart=/opt/koyura/.venv/bin/python bot.py
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+StateDirectory=koyura
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

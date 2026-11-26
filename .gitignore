@@ -1,0 +1,42 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Local SQLite databases (dashboard + bot state)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Runtime data volumes
+downloads/
+telegram-bot-api-data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv-*/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.part
+*.temp
+.DS_Store
+Thumbs.db
+*.swp
+
+# Local notes / agent scratch files
+DESIGN.md
+CLAUDE.md

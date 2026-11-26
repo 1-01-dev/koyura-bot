@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Koyura Admin — Sign in</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/static/koyura.css" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="/static/theme.js"></script>
+</head>
+<body class="login-body">
+
+  <!-- Decorative background layer: ensō, sun, kana, wordmark.
+       Fixed to the viewport, behind everything, and inert: it never takes a
+       click or a focus stop, and no text in it carries meaning. -->
+  <section class="hero login-hero" aria-hidden="true">
+    <div class="sun"></div>
+    <pre class="enso" id="enso" aria-hidden="true"></pre>
+    <div class="hero-kana">動画・音声・保存</div>
+    <div class="hero-mark">ko<span>y</span>ura</div>
+  </section>
+
+  <!-- The form is the only object on the page. -->
+  <div class="login-shell">
+    <section class="login-panel">
+      <header class="login-head">
+        <p class="mono login-brand">Koyura / <span aria-hidden="true">コユラ</span></p>
+        <h1 class="page-title">Sign in</h1>
+        <p class="login-sub mono">Self-hosted media engine</p>
+      </header>
+
+      {% if error %}
+      <div class="error" role="alert">
+        <span class="mono error-tag">誤 — error</span>
+        <span class="error-text">{{ error }}</span>
+      </div>
+      {% endif %}
+
+      <form method="post" action="/login" autocomplete="on">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token | default('') }}" />
+        <div class="field">
+          <label for="username">Username</label>
+          <input
+            type="text"
+            id="username"
+            name="username"
+            autocomplete="username"
+            required
+            autofocus
+          />
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input
+            type="password"
+            id="password"
+            name="password"
+            autocomplete="current-password"
+            required
+          />
+        </div>
+        <button type="submit" class="btn btn-primary login-submit">Sign in</button>
+      </form>
+
+      <footer class="site-footer mono login-foot">
+        <span>©2026 Koyura</span>
+        <span>[ self-hosted · MIT ]</span>
+      </footer>
+    </section>
+  </div>
+
+  <script src="/static/enso.js"></script>
+</body>
+</html>
