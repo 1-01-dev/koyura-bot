@@ -87,12 +87,14 @@ class TestCard:
         assert "Science & Technology" in caption
         assert "2025-02-10" in caption
 
-    def test_card_lists_formats_and_mp3(self):
+    def test_card_does_not_repeat_the_formats(self):
+        """Formats and their sizes live on the keyboard; the caption is metadata."""
         caption = _plain(card.build_card(FULL_INFO))
-        for label in ("1080p", "720p", "480p", "360p", "240p", "144p"):
-            assert label in caption
-        assert "MP3" in caption
-        assert "32.1MB" in caption
+        assert "Formats" not in caption
+        for label in ("1080p", "720p", "480p", "360p", "240p", "144p", "MP3"):
+            assert label not in caption
+        assert "32.1MB" not in caption
+        assert "9.8MB" not in caption
 
     def test_card_is_markdown_escaped(self):
         info = dict(FULL_INFO, title="A [bracket] and *stars*")
@@ -132,6 +134,31 @@ class TestCard:
         }
         caption = card.build_card(many)
         assert len(caption) <= 1024
+
+    def test_metadata_alone_never_needs_truncating(self):
+        """Without the format block the metadata fits the budget untouched."""
+        realistic = {
+            "title": "T" * 300,
+            "channel": "C" * 60,
+            "uploader_id": "@" + "h" * 60,
+            "channel_follower_count": 1_260_000,
+            "view_count": 23_594_224,
+            "like_count": 110_575,
+            "comment_count": 5_200,
+            "categories": ["Film & Animation", "Shorts"],
+            "upload_date": "20141110",
+            "duration": 3723,
+            "formats": [
+                {"id": str(i), "label": f"{i}p", "height": i,
+                 "button_label": f"{i}p · 9.9MB"} for i in range(40)
+            ],
+            "audio": {"size_bytes": 123456},
+        }
+        caption = card.build_card(realistic)
+        assert len(caption) <= card.CAPTION_BUDGET
+        assert not caption.endswith("…")
+        assert "Uploaded:" in _plain(caption)
+        assert "Category:" in _plain(caption)
 
     def test_short_duration_and_counts(self):
         assert card.format_duration(62) == "1:02"
