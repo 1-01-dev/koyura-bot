@@ -4,11 +4,11 @@ The engine does the work; this module is the choreography around it:
 
     button (/mp3) -> start_download -> status poll -> upload -> done event
 
-and every stage rewrites **the same Telegram message** (see ``card_message``):
-the preview loses its buttons and becomes the progress card, and the progress
-card becomes the file. When a message can no longer be edited the card falls
-back to posting fresh messages, so a download is never lost to a broken chat
-message.
+and every stage **replaces** the one before it (see ``handlers.stages``): the
+preview card is deleted once the progress message is up, the progress message is
+deleted once the file (or the error card) is up. The chat therefore shows one
+status at a time, and only the result — the file, or the error with its format
+buttons — stays behind.
 
 Two entry points:
 
@@ -28,7 +28,6 @@ from pathlib import Path
 from telegram import Update
 from telegram.ext import ContextTypes
 
-import card_message
 import download_card
 import event_client
 import progress_card
@@ -41,7 +40,7 @@ from koyura_client import (
     start_download,
 )
 
-from . import config, stats, texts
+from . import config, sessions, stages, stats, texts
 
 logger = logging.getLogger(__name__)
 
@@ -168,12 +167,25 @@ class Job:
 
 
 def fallback_sender(bot, chat_id: int):
-    """Build the hook a card calls when it can no longer be edited."""
+    """Build the hook a stage calls when it can no longer edit its message."""
 
     async def send(text: str) -> None:
         await bot.send_message(chat_id=chat_id, text=text, parse_mode="MarkdownV2")
 
     return send
+
+
+def retry_markup(info: dict, url_hash: str | None):
+    """``markup_factory(message_id)`` for the format keyboard of a failed card.
+
+    A missing hash means there is nothing to rebuild the buttons from, and the
+    error message is then sent without a keyboard.
+    """
+    if not url_hash:
+        return None
+    return lambda message_id: download_card.build_format_keyboard(
+        info, message_id, url_hash
+    )
 
 
 async def run_download(
@@ -191,10 +203,10 @@ async def run_download(
     started_at: float,
     direct: bool = False,
     url_hash: str | None = None,
-    card=None,
+    tracker=None,
     entry: dict | None = None,
 ) -> None:
-    """Start a job, keep the card updated and finish it with the file itself.
+    """Start a job, move it through its stages and finish it with the file.
 
     ``entry`` is the picker session; it is unlocked in a ``finally`` so a failed
     download gives the format buttons back instead of leaving the card dead.
@@ -212,44 +224,46 @@ async def run_download(
         started_at=started_at,
         url_hash=url_hash,
     )
-    if card is None:
-        card = card_message.CardMessage(
+    if tracker is None:
+        tracker = stages.StageTracker(
             context.bot,
             chat_id,
             status_message_id,
             photo=bool((entry or {}).get("photo", True)),
-            on_fallback=fallback_sender(context.bot, chat_id),
         )
 
     try:
-        await _advance(job, context, card, direct=direct)
+        await _advance(job, context, tracker, direct=direct)
     finally:
         if entry is not None:
             entry["job_active"] = False
 
 
-async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, card, *, direct: bool) -> None:
-    """The stages of one download, each rewriting the same card."""
+async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direct: bool) -> None:
+    """The stages of one download, each replacing the previous message."""
 
     async def fail(message: str, *, retry_hint: bool = True) -> None:
-        """Show a failure and give the format buttons back."""
+        """Replace the status with the failure and give the format buttons back."""
         await report_failure(
-            card,
+            stage,
             job.info,
             message,
-            job.status_message_id,
             job.url_hash,
             retry_hint=retry_hint,
         )
+        # The error card is a new message with its own buttons, so the session
+        # has to follow it — otherwise "tap a format to try again" on a card
+        # posted a second ago would answer "session expired".
+        _rehome_session(job, stage)
         stats.record_error()
 
-    # Stage 1 -> 2: the preview becomes the progress card. The buttons go away
-    # so the same message cannot start a second job.
-    await card.edit_caption(
-        progress_card.build_status_caption(job.info, texts.STARTING),
-        reply_markup=None,
+    # Stage 1 -> 2: the preview card goes, a progress message arrives. The
+    # picker's session stays keyed to the old message, so a tap that was already
+    # in flight is still recognised ("already downloading" rather than
+    # "expired").
+    await stage.replace_text(
+        progress_card.build_status_caption(job.info, texts.STARTING)
     )
-    await card.clear_keyboard()
 
     try:
         accepted = await start_download(
@@ -263,8 +277,8 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, card, *, direct
             size_bytes=size_hint(job.info, job.fmt, job.format_id, job.height),
         )
     except KoyuraBusy as refusal:
-        # A refusal has its own wording: the wait is known and the same buttons
-        # are still on screen, so "tap a format to try again" is noise.
+        # A refusal has its own wording: the wait is known and the format
+        # buttons come back with the error card, so "tap a format" is noise.
         await fail(progress_card.busy_message(refusal), retry_hint=False)
         return
     except KoyuraServiceDown:
@@ -279,22 +293,21 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, card, *, direct
         await fail(texts.UNEXPECTED_ANSWER)
         return
 
-    # A queued job keeps the same card and shows its place; the poll loop below
-    # turns the wait into the usual progress as soon as a slot frees up.
+    # A queued job keeps the same message and shows its place; the poll loop
+    # below turns the wait into the usual progress as soon as a slot frees up.
     if accepted.get("status") == "queued":
-        await card.edit_caption(
+        await stage.edit(
             progress_card.build_queued_caption(
                 job.info,
                 accepted.get("queue_position"),
                 accepted.get("wait_seconds"),
                 approximate=bool(accepted.get("queue_estimate_approximate", True)),
-            ),
-            reply_markup=None,
+            )
         )
 
     await _announce_start(job, job_id)
 
-    status = await poll_until_finished(job, job_id, card)
+    status = await poll_until_finished(job, job_id, stage)
     if status is None:
         stats.record_error()
         return
@@ -306,7 +319,16 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, card, *, direct
         )
         return
 
-    await _deliver(job, job_id, card, context.bot, status, direct=direct)
+    await _deliver(job, job_id, stage, context.bot, status, direct=direct)
+
+
+def _rehome_session(job: Job, stage) -> None:
+    """Point the picker session at the message that carries the buttons now."""
+    if not job.url_hash or stage.message_id is None:
+        return
+    sessions.rebind(
+        job.chat_id, job.status_message_id, job.url_hash, stage.message_id
+    )
 
 
 async def _announce_start(job: Job, job_id: str) -> None:
@@ -329,8 +351,8 @@ async def _announce_start(job: Job, job_id: str) -> None:
 # Polling
 # ---------------------------------------------------------------------------
 
-async def poll_until_finished(job: Job, job_id: str, card) -> dict | None:
-    """Poll the engine every couple of seconds, rewriting the card as it goes.
+async def poll_until_finished(job: Job, job_id: str, stage) -> dict | None:
+    """Poll the engine every couple of seconds, rewriting the progress message.
 
     Caption edits are throttled (``progress_card.ProgressThrottle``) so a fast
     job does not hit Telegram's edit limit, while the dashboard still receives
@@ -349,9 +371,7 @@ async def poll_until_finished(job: Job, job_id: str, card) -> dict | None:
         try:
             status = await poll_status(job_id)
         except KoyuraServiceDown:
-            await report_failure(
-                card, job.info, texts.SERVICE_DOWN, job.status_message_id, None
-            )
+            await report_failure(stage, job.info, texts.SERVICE_DOWN)
             await event_client.send_download_error(
                 job_id=job_id, error_message=texts.EVENT_SERVICE_DOWN
             )
@@ -366,7 +386,7 @@ async def poll_until_finished(job: Job, job_id: str, card) -> dict | None:
             return status
 
         if state == "queued":
-            await _show_queue_state(card, job.info, status, throttle)
+            await _show_queue_state(stage, job.info, status, throttle)
             continue
 
         progress = status.get("progress")
@@ -393,26 +413,25 @@ async def poll_until_finished(job: Job, job_id: str, card) -> dict | None:
         elapsed = progress_card.as_number(progress.get("elapsed"))
         if elapsed is None:
             elapsed = time.time() - job.started_at
-        await card.edit_caption(
+        await stage.edit(
             progress_card.build_progress_caption(
                 job.info,
                 progress,
                 stage="downloading",
                 quality=job.quality,
                 elapsed=elapsed,
-            ),
-            reply_markup=None,
+            )
         )
 
-    await report_failure(card, job.info, texts.TIMED_OUT, job.status_message_id, None)
+    await report_failure(stage, job.info, texts.TIMED_OUT)
     await event_client.send_download_error(
         job_id=job_id, error_message=texts.EVENT_TIMED_OUT
     )
     return None
 
 
-async def _show_queue_state(card, info: dict, status: dict, throttle) -> None:
-    """Rewrite the card with the job's place in the queue.
+async def _show_queue_state(stage, info: dict, status: dict, throttle) -> None:
+    """Rewrite the progress message with the job's place in the queue.
 
     The same throttle as the progress caption applies, so a job moving up the
     queue cannot spam Telegram with edits.
@@ -421,14 +440,13 @@ async def _show_queue_state(card, info: dict, status: dict, throttle) -> None:
     wait = progress_card.as_number(status.get("wait_seconds"))
     if not throttle.should_update(position, wait):
         return
-    await card.edit_caption(
+    await stage.edit(
         progress_card.build_queued_caption(
             info,
             position,
             wait,
             approximate=bool(status.get("queue_estimate_approximate", True)),
-        ),
-        reply_markup=None,
+        )
     )
 
 
@@ -460,14 +478,12 @@ def file_name(job: Job, status: dict, local: Path) -> str:
 
 
 async def _deliver(
-    job: Job, job_id: str, card, bot, status: dict, *, direct: bool
+    job: Job, job_id: str, stage, bot, status: dict, *, direct: bool
 ) -> None:
-    """Put the finished file in the chat, in the card when possible."""
+    """Post the finished file as its own message and drop the progress card."""
     local = local_file(status)
     if local is None:
-        await report_failure(
-            card, job.info, texts.FILE_MISSING, job.status_message_id, job.url_hash
-        )
+        await report_failure(stage, job.info, texts.FILE_MISSING, job.url_hash)
         stats.record_error()
         await event_client.send_download_error(
             job_id=job_id, error_message=texts.EVENT_FILE_MISSING
@@ -489,20 +505,11 @@ async def _deliver(
         duration=status.get("duration"),
     )
 
-    # Stage 3: the card itself becomes the file. When that is impossible the
-    # file is sent as a new message, so the download is never lost.
-    in_place = await _replace_media(
-        card,
-        local,
-        filename=filename,
-        fmt=job.fmt,
-        info=job.info,
-        caption=caption,
-        status=status,
-        height=height,
-    )
-    if not in_place:
-        uploaded = await _send_file(
+    # Stage 3: the file replaces the progress message. It is uploaded first and
+    # the progress message is deleted only after Telegram accepted it, so a
+    # failed upload leaves something on screen for the error card.
+    delivered = await stage.finish_with_file(
+        lambda: _send_file(
             bot,
             job.chat_id,
             local,
@@ -513,26 +520,15 @@ async def _deliver(
             status=status,
             height=height,
         )
-        if not uploaded:
-            await report_failure(
-                card, job.info, texts.UPLOAD_FAILED, job.status_message_id, job.url_hash
-            )
-            stats.record_error()
-            await event_client.send_download_error(
-                job_id=job_id, error_message=texts.EVENT_UPLOAD_FAILED
-            )
-            unlink_quietly(local)
-            return
-        # The card is still the preview/progress message: retire it so the chat
-        # keeps showing the file and not a stale percentage.
-        await card.edit_caption(
-            download_card.build_file_caption(
-                job.info,
-                quality=job.quality,
-                size_bytes=size_bytes,
-                duration=status.get("duration"),
-            ),
+    )
+    if not delivered.ok:
+        await report_failure(stage, job.info, texts.UPLOAD_FAILED, job.url_hash)
+        stats.record_error()
+        await event_client.send_download_error(
+            job_id=job_id, error_message=texts.EVENT_UPLOAD_FAILED
         )
+        unlink_quietly(local)
+        return
 
     stats.record_download()
     with contextlib.suppress(Exception):
@@ -543,54 +539,8 @@ async def _deliver(
             filename=filename,
         )
 
-    if not in_place and not direct:
-        # Nothing to rewrite: the file already arrived as its own message.
-        logger.debug("Delivered %s as a new message (card could not be edited)", filename)
+    logger.debug("Delivered %s as its own message (progress card retired)", filename)
     unlink_quietly(local)
-
-
-async def _replace_media(
-    card,
-    local: Path,
-    *,
-    filename: str,
-    fmt: str,
-    info: dict,
-    caption: str,
-    status: dict,
-    height: int | None,
-) -> bool:
-    """Turn the card into the finished file with ``editMessageMedia``.
-
-    Returns False when the edit did not happen, in which case the caller sends
-    the file as a separate message.
-    """
-    if getattr(card, "broken", False):
-        return False
-    duration = status.get("duration")
-    try:
-        with open(local, "rb") as handle:
-            # The handle goes in as ``media`` at construction time: Telegram
-            # objects are frozen, so it cannot be assigned afterwards.
-            media = card_message.build_input_media(
-                handle,
-                path=local,
-                fmt=fmt,
-                filename=filename,
-                caption=caption,
-                duration=int(duration) if duration else None,
-                width=status.get("width"),
-                height=height,
-                title=str(info.get("title") or "") or None,
-                performer=str(info.get("channel") or info.get("uploader") or "") or None,
-            )
-            result = await card.edit_media(media)
-    except Exception as exc:  # noqa: BLE001 - a fallback upload must still run
-        logger.info("In-place media edit failed for %s: %s", local.name, exc)
-        return False
-    if not result.ok and not result.ignored:
-        logger.info("Card media edit did not apply: %s", result.detail or result.reason)
-    return bool(result.ok)
 
 
 async def _send_file(
@@ -604,8 +554,11 @@ async def _send_file(
     caption: str,
     status: dict,
     height: int | None,
-) -> bool:
-    """Send the file under a human name, retrying once on a transient failure."""
+):
+    """Send the file under a human name, retrying once on a transient failure.
+
+    Returns the posted message, or ``None`` when both attempts failed.
+    """
     duration = status.get("duration")
     seconds = int(duration) if duration else None
     performer = str(info.get("channel") or info.get("uploader") or "") or None
@@ -615,7 +568,7 @@ async def _send_file(
             with open(local, "rb") as handle:
                 suffix = local.suffix.lower()
                 if fmt == "audio" or suffix == ".mp3":
-                    await bot.send_audio(
+                    return await bot.send_audio(
                         chat_id=chat_id,
                         audio=handle,
                         filename=filename,
@@ -625,8 +578,8 @@ async def _send_file(
                         performer=performer,
                         duration=seconds,
                     )
-                elif suffix == ".mp4":
-                    await bot.send_video(
+                if suffix == ".mp4":
+                    return await bot.send_video(
                         chat_id=chat_id,
                         video=handle,
                         filename=filename,
@@ -637,22 +590,20 @@ async def _send_file(
                         height=height,
                         duration=seconds,
                     )
-                else:
-                    await bot.send_document(
-                        chat_id=chat_id,
-                        document=handle,
-                        filename=filename,
-                        caption=caption,
-                        parse_mode="MarkdownV2",
-                    )
-            return True
+                return await bot.send_document(
+                    chat_id=chat_id,
+                    document=handle,
+                    filename=filename,
+                    caption=caption,
+                    parse_mode="MarkdownV2",
+                )
         except Exception:
             if attempt == 0:
                 logger.warning("Upload failed, retrying once")
                 await asyncio.sleep(1)
             else:
                 logger.exception("Upload failed after retry")
-    return False
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -660,46 +611,16 @@ async def _send_file(
 # ---------------------------------------------------------------------------
 
 async def report_failure(
-    card,
+    stage,
     info: dict,
     message: str,
-    message_id: int,
-    url_hash: str | None,
+    url_hash: str | None = None,
     *,
     retry_hint: bool = True,
 ) -> None:
-    """Show a friendly failure and put the format buttons back."""
+    """Replace the status message with the failure and its format buttons."""
     text = progress_card.build_error_caption(info, message, retry_hint=retry_hint)
-    markup = None
-    if url_hash:
-        try:
-            markup = card_message.retry_keyboard(info, message_id, url_hash)
-        except Exception:  # noqa: BLE001 - the message matters more than buttons
-            logger.debug("Could not rebuild the format keyboard", exc_info=True)
-
-    if getattr(card, "broken", False):
-        # The card cannot be edited anymore; the fallback is a single message
-        # that carries both the reason and the buttons.
-        await _send_error_fallback(card, text, markup)
-        return
-
-    result = await card.edit_caption(text, reply_markup=markup)
-    if not result.ok and result.unrecoverable:
-        # ``edit_caption`` already posted the text as a fallback; only the
-        # buttons are missing at that point.
-        await _send_error_fallback(card, text, markup)
-
-
-async def _send_error_fallback(card, text: str, markup) -> None:
-    try:
-        await card.bot.send_message(
-            chat_id=card.chat_id,
-            text=text,
-            parse_mode="MarkdownV2",
-            reply_markup=markup,
-        )
-    except Exception:
-        logger.debug("Error message fallback failed", exc_info=True)
+    await stage.finish_with_text(text, markup_factory=retry_markup(info, url_hash))
 
 
 def unlink_quietly(path: Path) -> None:
@@ -724,20 +645,23 @@ async def run_direct(
 ) -> None:
     """Download without the picker: fetch info, then the usual stages.
 
-    The command's own status message is the card. It has no media and no
-    buttons, so every stage edits text.
+    The command's own status message is the first stage. It has no media and no
+    buttons, so every replacement is a text message until the file arrives.
     """
     user = update.effective_user
     if user is None:
         return
+    stage = stages.StageTracker(
+        context.bot, status_message.chat_id, status_message.message_id
+    )
     try:
         info = await get_info(url)
     except KoyuraServiceDown:
-        await _edit_or_ignore(status_message, texts.SERVICE_DOWN)
+        await stage.edit(texts.SERVICE_DOWN)
         stats.record_error()
         return
     except KoyuraError as error:
-        await _edit_or_ignore(status_message, texts.engine_error(error))
+        await stage.edit(texts.engine_error(error))
         stats.record_error()
         return
 
@@ -746,13 +670,6 @@ async def run_direct(
         found = find_format(info, format_id)
         height = found.get("height") if found else None
 
-    card = card_message.CardMessage(
-        context.bot,
-        status_message.chat_id,
-        status_message.message_id,
-        photo=False,
-        on_fallback=fallback_sender(context.bot, status_message.chat_id),
-    )
     await run_download(
         context=context,
         chat_id=status_message.chat_id,
@@ -766,16 +683,5 @@ async def run_direct(
         username=user.username or str(user.id),
         started_at=time.time(),
         direct=True,
-        card=card,
+        tracker=stage,
     )
-
-
-async def _edit_or_ignore(message, text: str) -> None:
-    """Edit a status message, tolerating one the user already deleted."""
-    try:
-        if getattr(message, "photo", None):
-            await message.edit_caption(caption=text)
-        else:
-            await message.edit_text(text)
-    except Exception:
-        logger.debug("Failed to edit message with: %s", text)
