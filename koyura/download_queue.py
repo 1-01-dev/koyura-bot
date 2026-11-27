@@ -697,6 +697,37 @@ class JobQueue:
             self._queued = [e for e in self._queued if e.job_id != job_id]
             return len(self._queued) != before
 
+    def acquire(self, job_id: str, *, kind: str = "video") -> bool:
+        """Take a slot for work that is not a fresh download (a conversion).
+
+        A conversion of an already-downloaded file must respect the same slot
+        budget as a download: the second vCPU is for the *next* user, not for a
+        second x264 pass. The caller polls until this answers ``True`` and then
+        calls :meth:`finish` when the work is done, exactly like a job.
+
+        ``kind`` is recorded as ``transcode`` so the panel's queue view shows
+        what is actually holding the slot.
+        """
+        with self._lock:
+            limits = self._limits
+            self._queued = [e for e in self._queued if e.job_id != job_id]
+            if job_id in self._active:
+                return True
+            if len(self._active) >= limits.max_concurrent:
+                return False
+            now = self._clock()
+            estimate, approximate = self.estimator.estimate(kind)
+            self._active[job_id] = QueueEntry(
+                job_id=job_id,
+                user_id=None,
+                kind=kind,
+                estimate_seconds=estimate,
+                approximate=approximate,
+                enqueued_at=now,
+                started_at=now,
+            )
+            return True
+
     def set_on_expire(self, callback: Callable[[str, str], None] | None) -> None:
         with self._lock:
             self._on_expire = callback

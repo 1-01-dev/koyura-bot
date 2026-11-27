@@ -29,6 +29,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 import download_queue
 import media_meta
+import transcode
 from url_safety import UnsafeURLError, validate_url
 
 logger = logging.getLogger("koyura.engine")
@@ -98,6 +99,13 @@ estimator = download_queue.Estimator(
 # stalling on fragmented ``twimg`` responses; set ``HLS_DOWNLOADER=ffmpeg`` to
 # get that behaviour back at the cost of live progress.
 HLS_DOWNLOADER = os.environ.get("HLS_DOWNLOADER", "native").strip().lower()
+
+# Conversion policy: see ``transcode.py``. ``off`` is the default because a
+# VP9/AV1 -> H.264 pass costs ~180% CPU on a two-vCPU host and the bot can send
+# the same file as a document instead, which arrives intact.
+TRANSCODE_MODE = transcode.mode_from_env()
+TRANSCODE_MAX_MB = transcode.max_mb_from_env()
+transcode_stats = transcode.TranscodeStats(transcode.default_stats_path())
 
 # In-memory job registry. The engine keeps no state on disk; the bot treats a lost
 # job (404) as a failed download and the dashboard marks it interrupted.
@@ -787,7 +795,12 @@ def _do_download(job_id: str, url: str, format_choice: str, format_id: str | Non
             return
 
     if chosen.endswith(".mp4"):
-        _make_telegram_compatible(chosen)
+        job = jobs.get(job_id, {}) or {}
+        _make_telegram_compatible(
+            chosen,
+            job_id=job_id,
+            force=str(job.get("transcode") or "") == "force",
+        )
     elif chosen.endswith(".mp3"):
         _tag_audio(chosen, jobs.get(job_id, {}) or {})
 
@@ -901,38 +914,117 @@ def _tag_audio(chosen: str, job: dict) -> None:
         _remove_quietly(cover)
 
 
-def _make_telegram_compatible(chosen: str) -> None:
-    """Transcode AV1/VP9 to H.264, otherwise move the moov atom to the front."""
+def _probe_vcodec(path: str) -> str:
+    """The first video stream's codec name (``h264``/``vp9``/``av1``), or ""."""
     rc, stdout, _, _ = _run_capture(
         [
             "ffprobe", "-v", "error", "-select_streams", "v:0",
             "-show_entries", "stream=codec_name",
-            "-of", "default=noprint_wrappers=1:nokey=1", chosen,
+            "-of", "default=noprint_wrappers=1:nokey=1", path,
         ],
         timeout=15,
     )
-    vcodec = (stdout or "").strip().lower() if rc == 0 else ""
+    return (stdout or "").strip().lower() if rc == 0 else ""
 
-    if vcodec in ("av1", "vp9", "vp8"):
-        transcoded = chosen + ".h264.mp4"
-        rc, _, _, timed_out = _run_capture(
-            [
-                "ffmpeg", "-y", "-i", chosen,
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-                "-c:a", "aac", "-b:a", "128k",
-                "-movflags", "+faststart",
-                transcoded,
-            ],
-            timeout=600,
+
+def _convert_to_h264(job_id: str, chosen: str, duration: float | None) -> bool:
+    """Run the one CPU-bounded x264 pass; True when it replaced the original.
+
+    Serialised by ``transcode.conversion_lock`` so two jobs can never convert at
+    the same time whatever the queue's slot count is, and ``-threads 1`` keeps
+    the pass inside a single core — the host's load average must stay under its
+    90% limit even while another download runs.
+
+    ``-progress pipe:1`` writes ``out_time_us=…`` lines to stdout, which is how
+    ``/api/status`` reports the ``converting`` stage's percentage; stderr is
+    drained by the same call so ffmpeg can never block on a full pipe.
+    """
+    transcoded = chosen + ".h264.mp4"
+    cmd = transcode.ffmpeg_command(chosen, transcoded)
+    started = time.time()
+    percent = 0.0
+
+    with transcode.conversion_lock():
+        _job_update(job_id, stage="converting", stage_updated_at=started)
+        logger.info("Job %s: converting to H.264 (threads=%s)",
+                    job_id, transcode.VIDEO_THREADS)
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
         )
-        if timed_out:
-            logger.warning("Transcode timed out for %s", chosen)
-        if rc == 0 and os.path.exists(transcoded) and os.path.getsize(transcoded) > 0:
-            os.replace(transcoded, chosen)
-        elif os.path.exists(transcoded):
-            _remove_quietly(transcoded)
-        return
+        timed_out = threading.Event()
 
+        def _kill_on_timeout() -> None:
+            timed_out.set()
+            _kill_process_group(process)
+
+        # The conversion shares the job's hard deadline: a stuck encoder must
+        # not hold the queue slot for ever.
+        timer = threading.Timer(max(120, DOWNLOAD_TIMEOUT // 3), _kill_on_timeout)
+        timer.daemon = True
+        timer.start()
+
+        try:
+            if process.stdout is None:
+                process.wait()
+            else:
+                for raw_line in process.stdout:
+                    payload = transcode.parse_progress_line(raw_line)
+                    if payload is None:
+                        logger.debug("Job %s: ffmpeg %s", job_id, raw_line.strip()[:200])
+                        continue
+                    current = transcode.percent_from(payload["out_time_us"], duration)
+                    if current is not None and current >= percent:
+                        percent = current
+                        _job_update(
+                            job_id,
+                            progress={
+                                "percent": percent,
+                                "stage": "converting",
+                                "elapsed": round(time.time() - started, 1),
+                            },
+                        )
+                process.wait()
+        finally:
+            timer.cancel()
+            if process.poll() is None:
+                _kill_process_group(process)
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=5)
+            if process.stderr is not None:
+                with contextlib.suppress(Exception):
+                    process.stderr.read()
+
+        elapsed = time.time() - started
+        if timed_out.is_set():
+            logger.warning("Job %s: conversion timed out", job_id)
+        if process.returncode == 0 and os.path.exists(transcoded) and os.path.getsize(transcoded) > 0:
+            os.replace(transcoded, chosen)
+            transcode_stats.record(elapsed, duration)
+            _job_update(
+                job_id,
+                # The delivered bytes are H.264 now, whatever the user picked:
+                # the bot must send a video, not a document.
+                vcodec="h264",
+                converted=True,
+                send_as_document=False,
+                stage=None,
+                stage_updated_at=None,
+            )
+            return True
+
+    if os.path.exists(transcoded):
+        _remove_quietly(transcoded)
+    _job_update(job_id, converted=False, stage=None, stage_updated_at=None)
+    logger.warning("Job %s: conversion failed, keeping the original file", job_id)
+    return False
+
+
+def _faststart(chosen: str) -> None:
+    """Move the moov atom to the front so Telegram can stream the MP4."""
     faststart_tmp = chosen + ".fs.mp4"
     rc, _, _, _ = _run_capture(
         ["ffmpeg", "-y", "-i", chosen, "-c", "copy", "-movflags", "+faststart", faststart_tmp],
@@ -942,6 +1034,93 @@ def _make_telegram_compatible(chosen: str) -> None:
         os.replace(faststart_tmp, chosen)
     elif os.path.exists(faststart_tmp):
         _remove_quietly(faststart_tmp)
+
+
+def _make_telegram_compatible(
+    chosen: str,
+    *,
+    job_id: str | None = None,
+    force: bool = False,
+    duration: float | None = None,
+) -> bool:
+    """Apply the conversion policy, otherwise just move the moov atom.
+
+    Returns True when the file was converted (so the caller can record that the
+    delivered bytes are H.264 whatever the user picked). ``force`` is the user's
+    explicit *Convert* tap and overrides ``TRANSCODE_MODE``; without it the mode
+    decides, and ``off`` (the default) never converts on its own.
+
+    A conversion that the policy does **not** ask for is not silent: the job
+    keeps its codec so ``/api/status`` can tell the bot to send a document
+    instead of a video with a broken preview.
+    """
+    vcodec = _probe_vcodec(chosen)
+    try:
+        size = os.path.getsize(chosen)
+    except OSError:
+        size = None
+
+    if transcode.should_convert(
+        vcodec,
+        mode=TRANSCODE_MODE,
+        size_bytes=size,
+        max_mb=TRANSCODE_MAX_MB,
+        forced=force,
+    ):
+        if job_id is None:
+            logger.info(
+                "Converting %s outside a job (no progress reported)",
+                os.path.basename(chosen),
+            )
+            return _convert_untracked(chosen, duration)
+        if duration is None:
+            # ffmpeg's ``out_time_us`` only becomes a percentage with a total.
+            duration = _probe_media(chosen).get("duration")
+        return _convert_to_h264(job_id, chosen, duration)
+
+    reason = transcode.conversion_reason(
+        vcodec,
+        mode=TRANSCODE_MODE,
+        size_bytes=size,
+        max_mb=TRANSCODE_MAX_MB,
+        forced=force,
+    )
+    if job_id:
+        _job_update(
+            job_id,
+            vcodec=transcode.codec_family(vcodec) or vcodec or None,
+            converted=False,
+            send_as_document=bool(reason and reason != "compatible"),
+        )
+    if reason and reason != "compatible":
+        logger.info(
+            "Leaving %s as %s (%s, mode=%s, %s MB)",
+            os.path.basename(chosen), vcodec or "unknown", reason,
+            TRANSCODE_MODE, round((size or 0) / transcode.MB, 1),
+        )
+
+    _faststart(chosen)
+    return False
+
+
+def _convert_untracked(chosen: str, duration: float | None) -> bool:
+    """Convert a file that belongs to no job (the loader's direct path)."""
+    transcoded = chosen + ".h264.mp4"
+    started = time.time()
+    with transcode.conversion_lock():
+        rc, _, _, timed_out = _run_capture(
+            transcode.ffmpeg_command(chosen, transcoded),
+            timeout=max(120, DOWNLOAD_TIMEOUT // 3),
+        )
+    if timed_out:
+        logger.warning("Conversion timed out for %s", chosen)
+    if rc == 0 and os.path.exists(transcoded) and os.path.getsize(transcoded) > 0:
+        os.replace(transcoded, chosen)
+        transcode_stats.record(time.time() - started, duration)
+        return True
+    if os.path.exists(transcoded):
+        _remove_quietly(transcoded)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -999,8 +1178,15 @@ def get_info():
         return jsonify({"error": "Could not parse video info"}), 400
 
     # The response shape lives in media_meta so it can be unit-tested and so
-    # the bot's card and the engine agree on every field name.
-    return jsonify(media_meta.build_info_payload(info))
+    # the bot's card and the engine agree on every field name. The conversion
+    # policy and its estimate travel with it: the bot only has to render them.
+    return jsonify(
+        media_meta.build_info_payload(
+            info,
+            transcode_info={"mode": TRANSCODE_MODE, "max_mb": TRANSCODE_MAX_MB},
+            estimate=transcode_stats.estimate,
+        )
+    )
 
 
 def _refusal(admission: download_queue.Admission):
@@ -1050,6 +1236,13 @@ def start_download():
         data.get("size_bytes") or data.get("filesize") or data.get("filesize_approx")
     )
 
+    # The chat's explicit "Convert" tap. It overrides ``TRANSCODE_MODE`` (which
+    # may be ``off``): the button is only drawn where the cost was explained.
+    transcode_choice = str(data.get("transcode") or "").strip().lower()
+    if transcode_choice not in ("", "force", "never"):
+        return jsonify({"error": "transcode must be 'force' or 'never'"}), 400
+    force_transcode = transcode_choice == "force"
+
     _prune_old_jobs()
 
     job_id = uuid.uuid4().hex[:10]
@@ -1065,6 +1258,7 @@ def start_download():
             "height_hint": height_hint,
             "format": format_choice,
             "format_id": format_id,
+            "transcode": "force" if force_transcode else "never",
             "user_id": user_id,
             "created": now,
             "started_at": None,
@@ -1168,9 +1362,11 @@ def check_status(job_id: str):
     position = job_queue.position_of(job_id)
     wait_seconds = job_queue.wait_for(job_id)
     status = snapshot.get("status")
+    stage = snapshot.get("stage")
     if status in ("done", "error"):
         position = None
         wait_seconds = None
+        stage = None
     entry = job_queue.entry(job_id)
     started_at = snapshot.get("started_at")
     elapsed = snapshot.get("elapsed")
@@ -1201,7 +1397,159 @@ def check_status(job_id: str):
         "total_bytes_estimate": snapshot.get("total_bytes_estimate"),
         "elapsed": elapsed,
         "queue_length": job_queue.queued_count(),
+        # Conversion facts (additive): the ``converting`` stage, the codec the
+        # delivered file actually has, and whether it must go out as a
+        # document. An older bot ignores them and behaves as before.
+        "stage": stage,
+        "vcodec": snapshot.get("vcodec"),
+        "converted": bool(snapshot.get("converted")),
+        "send_as_document": bool(snapshot.get("send_as_document")),
     })
+
+
+@app.route("/api/transcode/policy")
+def transcode_policy():
+    """The conversion policy and the measured estimate (additive endpoint).
+
+    The bot renders its "Convert (~4 min)" button from this, so a change of
+    ``TRANSCODE_MODE`` or a new EWMA sample is reflected without redeploying the
+    bot. Nothing here is a secret: a mode name, a size ceiling and a duration.
+    """
+    minutes = transcode.FALLBACK_MB_PER_MINUTE
+    return jsonify(
+        {
+            "mode": TRANSCODE_MODE,
+            "max_mb": TRANSCODE_MAX_MB,
+            "video_threads": transcode.VIDEO_THREADS,
+            "preset": transcode.FRAME_PRESET,
+            "fallback_mb_per_minute": minutes,
+            "fallback_speed_factor": transcode.FALLBACK_SPEED_FACTOR,
+            "stats": transcode_stats.snapshot(),
+        }
+    )
+
+
+def _format_of(job_id: str) -> str | None:
+    """The ``video``/``audio`` kind of a finished job, or its file extension."""
+    with _jobs_lock:
+        job = dict(jobs.get(job_id) or {})
+    if job:
+        return str(job.get("format") or "video")
+    return None
+
+
+def _wait_for_slot(job_id: str, timeout: float = 900.0) -> bool:
+    """Wait until the queue grants ``job_id`` a slot (polling, not blocking)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if job_queue.acquire(job_id, kind="transcode"):
+            return True
+        time.sleep(1.0)
+    return False
+
+
+@app.route("/api/transcode/<job_id>", methods=["POST"])
+def start_transcode(job_id: str):
+    """Convert an already-finished job's file to H.264 (explicit request only).
+
+    This is what the chat's *Convert* button calls when the download itself was
+    started with ``transcode=never`` (send as file): the user saw the file, then
+    asked for a playable copy. The work runs in a background thread so the call
+    answers immediately with the same ``/api/status`` vocabulary the bot already
+    polls — a new stage (``converting``), not a new client protocol.
+
+    The conversion takes a queue slot (``JobQueue.acquire``) and the process-wide
+    ``transcode.conversion_lock``, so it can never run next to a second conversion
+    and never next to more downloads than the slot budget allows.
+    """
+    with _jobs_lock:
+        job = jobs.get(job_id)
+        if job is None:
+            return jsonify({"error": "Job not found"}), 404
+        source = job.get("file")
+        fmt = str(job.get("format") or "video")
+        vcodec = job.get("vcodec")
+        already = bool(job.get("converted"))
+        in_flight = bool(job.get("transcoding"))
+
+    if fmt != "video":
+        return jsonify({"error": "Only a video job can be converted"}), 400
+    if in_flight:
+        return jsonify({"error": "A conversion is already running", "stage": "converting"}), 409
+    if already or not transcode.needs_conversion(vcodec):
+        return jsonify({"error": "This file is already playable", "vcodec": vcodec}), 400
+    if not source or not os.path.exists(source):
+        return jsonify({"error": "File not ready"}), 404
+
+    try:
+        size = os.path.getsize(source)
+    except OSError:
+        size = None
+
+    estimate, approximate = transcode_stats.estimate(size)
+    _job_update(
+        job_id,
+        transcoding=True,
+        stage="converting",
+        stage_updated_at=time.time(),
+        progress={"percent": 0.0, "stage": "converting", "elapsed": 0.0},
+    )
+
+    def _run() -> None:
+        acquired = _wait_for_slot(job_id)
+        try:
+            if not acquired:
+                _job_update(
+                    job_id,
+                    status="error",
+                    error="The server is busy; the conversion did not start",
+                    stage=None,
+                    transcoding=False,
+                )
+                return
+            duration = _probe_media(source).get("duration")
+            converted = _convert_to_h264(job_id, source, duration)
+            if not converted:
+                _job_update(job_id, transcoding=False, stage=None, stage_updated_at=None)
+                return
+            try:
+                final_size = os.path.getsize(source)
+            except OSError:
+                final_size = None
+            _job_update(
+                job_id,
+                transcoding=False,
+                vcodec="h264",
+                converted=True,
+                send_as_document=False,
+                file_size_bytes=final_size,
+                stage=None,
+                stage_updated_at=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced on /api/status
+            logger.exception("Conversion for job %s crashed", job_id)
+            _job_update(
+                job_id,
+                status="error",
+                error=f"Conversion failed: {exc}",
+                stage=None,
+                transcoding=False,
+            )
+        finally:
+            if acquired:
+                job_queue.finish(job_id, succeeded=True)
+
+    thread = threading.Thread(target=_run, name=f"transcode-{job_id}", daemon=True)
+    thread.start()
+    return jsonify(
+        {
+            "job_id": job_id,
+            "stage": "converting",
+            "estimate_seconds": int(round(estimate)),
+            "estimate_approximate": bool(approximate),
+            "mode": TRANSCODE_MODE,
+        }
+    ), 202
 
 
 @app.route("/api/file/<job_id>")

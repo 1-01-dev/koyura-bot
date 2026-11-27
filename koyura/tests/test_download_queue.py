@@ -441,3 +441,37 @@ class TestSnapshot:
 
         assert path == str(tmp_path / "state" / "koyura_queue_stats.json")
         assert (tmp_path / "state").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# acquire: a conversion takes a slot like any other work
+# ---------------------------------------------------------------------------
+
+class TestAcquireForConversions:
+    def test_a_conversion_takes_a_free_slot(self):
+        queue, _ = make_queue(Limits(max_concurrent=2))
+        assert queue.acquire("conv1", kind="transcode") is True
+        assert queue.active_count() == 1
+        entry = queue.entry("conv1")
+        assert entry is not None and entry.kind == "transcode"
+
+    def test_a_conversion_waits_when_every_slot_is_taken(self):
+        """One x264 pass at a time is a CPU budget, not a politeness rule."""
+        queue, _ = make_queue(Limits(max_concurrent=1), started=[])
+        queue.submit("download1", user_id=1)
+        assert queue.acquire("conv1", kind="transcode") is False
+        assert queue.active_count() == 1
+
+    def test_acquire_is_idempotent_for_a_job_that_already_holds_a_slot(self):
+        queue, _ = make_queue(Limits(max_concurrent=1))
+        queue.submit("job1", user_id=1)
+        assert queue.acquire("job1", kind="transcode") is True
+        assert queue.active_count() == 1
+
+    def test_finishing_a_conversion_frees_the_slot(self):
+        queue, started = make_queue(Limits(max_concurrent=1))
+        assert queue.acquire("conv1") is True
+        queue.finish("conv1")
+        assert queue.active_count() == 0
+        assert queue.submit("download2", user_id=2).accepted
+        assert started == ["download2"]
