@@ -138,6 +138,25 @@ The panel also detects the server (`os.cpu_count()`, `/proc/meminfo`, cgroup
 limits in a container), names the preset that fits and fills the form with it on
 one click.
 
+## Bot uploads
+
+| Variable | Required | Default | What it does |
+| --- | --- | --- | --- |
+| `MAX_SEND_MB` | no | `2000` | Largest file the bot offers and sends, in megabytes. |
+
+The bot refuses to offer a format it cannot deliver. `MAX_SEND_MB` is that
+ceiling: the format keyboard hides every format whose **known** size is above
+it, and hides the MP3 button when the audio estimate is above it. A format whose
+size yt-dlp did not report is still offered — the engine refuses it with its own
+`MAX_FILESIZE_MB`, and taking the choice away would be worse than one failed
+download.
+
+`2000` is the limit of the self-hosted Bot API server (`telegram-bot-api`, which
+lifts uploads to 2 GB). On the public `api.telegram.org` a bot may upload 20 MB,
+so set `MAX_SEND_MB=20` there. When everything is over the limit the bot says so
+instead of drawing an empty keyboard, and `/mp4` / `/best` fall back to the
+highest quality that fits, naming the quality they skipped in the caption.
+
 ## Cleanup (shared downloads volume)
 
 | Variable | Required | Default | What it does |

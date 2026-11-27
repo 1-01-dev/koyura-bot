@@ -28,6 +28,7 @@ Two things here are deliberately **not** translated:
 from __future__ import annotations
 
 import i18n
+import send_limit
 from i18n import DEFAULT_LANGUAGE, escape_md
 from i18n import t as _t
 
@@ -117,6 +118,33 @@ def language_prompt(lang: object = None) -> str:
 def mode_armed(fmt: str, lang: object = None) -> str:
     """The hint after tapping MP3/MP4: what will happen to the next link."""
     return md("mode.armed", lang, mode=mode_label(fmt, lang))
+
+
+# ---------------------------------------------------------------------------
+# The send limit
+# ---------------------------------------------------------------------------
+
+def send_limit_label(lang: object = None) -> str:
+    """The ceiling as the user reads it: ``2000 MB`` / ``2000 МБ``.
+
+    The unit is catalogued (``limit.unit``) so a Russian user does not read an
+    English abbreviation inside a Russian sentence.
+    """
+    return t("limit.unit", lang, mb=send_limit.MAX_SEND_MB)
+
+
+def limit_message(key: str, lang: object = None) -> str:
+    """A "this cannot be sent" line, MarkdownV2-escaped, with the limit filled in.
+
+    ``key`` is one of ``limit.all_too_big`` / ``limit.video_too_big`` /
+    ``limit.audio_too_big``; ``download_card.limit_notice_key`` picks it.
+    """
+    return md(key, lang, limit=send_limit_label(lang))
+
+
+def limit_note(quality: str, skipped: str, lang: object = None) -> str:
+    """The caption line explaining a quality that was lowered to fit."""
+    return t("limit.quality_selected", lang, quality=quality, skipped=skipped)
 
 
 # ---------------------------------------------------------------------------
@@ -272,10 +300,13 @@ __all__ = [
     "intake_notice",
     "language_name",
     "language_prompt",
+    "limit_message",
+    "limit_note",
     "md",
     "mode_armed",
     "mode_label",
     "platforms_report",
+    "send_limit_label",
     "settings_report",
     "stats_report",
     "t",

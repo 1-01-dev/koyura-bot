@@ -124,7 +124,9 @@ class TestRouting:
             (f"dl:11:{HASH}:137", "video", "137", 1080),
             (f"dl:11:{HASH}:mp3", "audio", None, None),
             (f"dl:11:{HASH}:audio", "audio", None, None),
-            (f"dl:11:{HASH}:best", "video", None, None),
+            # "best" is pinned to the highest sendable format, not left to the
+            # engine: the engine's best may be a file Telegram refuses.
+            (f"dl:11:{HASH}:best", "video", "137", 1080),
             # An id that is no longer in the preview is still forwarded.
             (f"dl:11:{HASH}:999", "video", "999", None),
         ],

@@ -165,6 +165,17 @@ EN: dict[str, str] = {
     "download.busy_user": "You already have a download running. Try again in {when}.",
     "download.busy_service": "The service is overloaded right now — try again in {when}.",
     "download.wait_default": "~2 min",
+    # -- the send limit (what Telegram will take) ---------------------------
+    "limit.unit": "{mb} MB",
+    "limit.all_too_big": (
+        "All available formats are over the send limit ({limit}). "
+        "Try another link or MP3."
+    ),
+    "limit.video_too_big": "This video is too large to send (limit {limit}).",
+    "limit.audio_too_big": "This audio is too large to send (limit {limit}).",
+    "limit.quality_selected": (
+        "Selected {quality}: {skipped} does not fit the send limit"
+    ),
     # -- queue -------------------------------------------------------------
     "queue.hint": "You can leave this chat — the file arrives here.",
     "queue.head": "In queue",
@@ -315,6 +326,17 @@ RU: dict[str, str] = {
     "download.busy_user": "У вас уже идёт загрузка. Повторите через {when}.",
     "download.busy_service": "Сервис перегружен — повторите через {when}.",
     "download.wait_default": "~2 мин",
+    # -- the send limit (what Telegram will take) ---------------------------
+    "limit.unit": "{mb} МБ",
+    "limit.all_too_big": (
+        "Все доступные форматы больше лимита отправки ({limit}). "
+        "Попробуйте другую ссылку или MP3."
+    ),
+    "limit.video_too_big": "Это видео слишком большое для отправки (лимит {limit}).",
+    "limit.audio_too_big": "Это аудио слишком большое для отправки (лимит {limit}).",
+    "limit.quality_selected": (
+        "Выбрано {quality}: {skipped} не влезает в лимит"
+    ),
     # -- queue -------------------------------------------------------------
     "queue.hint": "Чат можно закрыть — файл придёт сюда.",
     "queue.head": "В очереди",
