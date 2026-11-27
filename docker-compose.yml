@@ -36,6 +36,10 @@ services:
       JOB_TTL_SECONDS: ${JOB_TTL_SECONDS:-3600}
       # "native" keeps live progress; "ffmpeg" trades it for X/Twitter.
       HLS_DOWNLOADER: ${HLS_DOWNLOADER:-native}
+      # AV1/VP9 -> H.264 is a policy, not a default: the engine never converts
+      # unless the chat asked for a specific job (or the operator set always).
+      TRANSCODE_MODE: ${TRANSCODE_MODE:-off}
+      TRANSCODE_MAX_MB: ${TRANSCODE_MAX_MB:-300}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN is required}
       INTERNAL_API_AUTH_DISABLED: ${INTERNAL_API_AUTH_DISABLED:-false}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}

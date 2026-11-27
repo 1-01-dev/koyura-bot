@@ -306,6 +306,28 @@ def test_the_env_template_is_complete_enough_to_start():
         assert f"{variable}=" in template, variable
 
 
+def test_the_conversion_policy_is_documented_and_shipped_off():
+    """A default that encodes on a shared vCPU is a production incident.
+
+    The template, the compose file and the docs have to agree on one thing: a
+    fresh deployment does **not** convert AV1/VP9 to H.264. The mode is spelled
+    out in all three so an operator who wants it can find it.
+    """
+    template = (REPO_ROOT / ".env.example").read_text()
+    assert "TRANSCODE_MODE=off" in template
+    assert "TRANSCODE_MAX_MB=300" in template
+
+    compose = (COMPOSE_PATH).read_text()
+    assert "TRANSCODE_MODE: ${TRANSCODE_MODE:-off}" in compose
+    assert "TRANSCODE_MAX_MB: ${TRANSCODE_MAX_MB:-300}" in compose
+
+    docs = (REPO_ROOT / "docs" / "configuration.md").read_text()
+    for variable in ("TRANSCODE_MODE", "TRANSCODE_MAX_MB"):
+        assert f"`{variable}`" in docs, variable
+    for mode in ("`off`", "`auto`", "`always`"):
+        assert mode in docs, mode
+
+
 def test_the_compose_validation_step_never_reads_the_real_env():
     """CI builds the config from placeholders; a tracked .env would hide typos."""
     job = load(CI_PATH)["jobs"]["compose-config"]

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import re
 
+import transcode
+
 # Telegram limits a file name to roughly 60 readable characters; longer names
 # are cut with an ellipsis so the extension and quality tag stay visible.
 MAX_TITLE_CHARS = 60
@@ -135,12 +137,22 @@ def _quality_label(fmt: dict) -> str:
     return label
 
 
-def collect_formats(info: dict) -> list[dict]:
+def collect_formats(info: dict, estimate=None) -> list[dict]:
     """Best video format per height, highest quality first.
 
-    One entry per resolution: preferring a known file size (so the button can
-    show it) and then H.264, so a tap in Telegram always downloads something
-    that plays without a transcode.
+    One entry per resolution: H.264 wins over any other codec of the same
+    height, then a known file size (so the button can show it), then bitrate.
+    That is why a card offering "1080p" offers the ``avc1`` variant when one
+    exists, and never both 1080p variants side by side.
+
+    Formats that Telegram cannot play as a video are **not** hidden: they keep
+    an entry, marked with ``codec``/``codec_label`` and ``compatible: false``,
+    so the bot can label the button (``AV1 · 2160p · 2.3GB``) and send the file
+    as a document instead of losing the quality altogether.
+
+    ``estimate(size_bytes, duration)`` — the engine's conversion-time estimate —
+    is only called for formats that would actually need a conversion, so the
+    bot's "Convert (~4 min)" button carries a real number instead of a guess.
     """
     best_by_height: dict[int, dict] = {}
     best_score: dict[int, tuple] = {}
@@ -166,16 +178,31 @@ def collect_formats(info: dict) -> list[dict]:
         fmt = best_by_height[height]
         size = _known_size(fmt)
         label = _quality_label(fmt)
+        vcodec = fmt.get("vcodec")
+        family = transcode.codec_family(vcodec)
+        convertible = transcode.needs_conversion(vcodec)
         entry = {
             "id": str(fmt.get("format_id")),
             "label": label,
             "height": height,
             "ext": fmt.get("ext"),
-            "vcodec": fmt.get("vcodec"),
+            "vcodec": vcodec,
             "fps": fmt.get("fps"),
             "size_bytes": size,
             "size_label": format_filesize(size),
+            # Additive codec facts: the bot decides how to send the file from
+            # these, never by guessing from the container.
+            "codec": family,
+            "codec_label": transcode.CODEC_LABELS.get(family) if family else None,
+            "compatible": transcode.is_compatible(vcodec),
+            "convertible": convertible,
+            "transcode_estimate_seconds": None,
+            "transcode_estimate_approximate": None,
         }
+        if convertible and estimate is not None:
+            seconds, approximate = estimate(size, info.get("duration"))
+            entry["transcode_estimate_seconds"] = int(round(seconds))
+            entry["transcode_estimate_approximate"] = bool(approximate)
         # ``label`` keeps the historical "1080p" shape; ``button_label`` adds the
         # size for the inline keyboard.
         entry["button_label"] = (
@@ -228,8 +255,16 @@ def describe_audio(info: dict) -> dict | None:
 # /api/info payload
 # ---------------------------------------------------------------------------
 
-def build_info_payload(info: dict) -> dict:
-    """Assemble the additive ``/api/info`` response from a yt-dlp blob."""
+def build_info_payload(
+    info: dict, *, transcode_info: dict | None = None, estimate=None
+) -> dict:
+    """Assemble the additive ``/api/info`` response from a yt-dlp blob.
+
+    ``transcode_info`` is the engine's conversion policy
+    (``{"mode", "max_mb"}``) and ``estimate(size_bytes, duration)`` its
+    conversion-time model; both come from ``app.py``, which keeps this module
+    pure and unit-testable.
+    """
     categories = [str(c) for c in (info.get("categories") or []) if c]
     payload = {
         "title": info.get("title") or "",
@@ -245,8 +280,9 @@ def build_info_payload(info: dict) -> dict:
         "categories": categories,
         "upload_date": format_upload_date(info.get("upload_date")),
         "extractor": info.get("extractor") or "",
-        "formats": collect_formats(info),
+        "formats": collect_formats(info, estimate=estimate),
         "audio": describe_audio(info),
+        "transcode": transcode_info or {},
     }
     # Numeric fields yt-dlp may return as floats/None: keep them JSON friendly.
     for key in ("channel_follower_count", "view_count", "like_count", "comment_count"):

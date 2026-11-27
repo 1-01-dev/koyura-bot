@@ -67,11 +67,17 @@ sudo apt-get update
 sudo apt-get install -y python3-venv python3-pip ffmpeg
 ```
 
-`ffmpeg` and `ffprobe` are **required**: the engine's transcode/remux step and the
-`hls:ffmpeg` downloader call them by name, so they must be installed system-wide
-and resolvable through the unit's `Environment=PATH=` (`/usr/bin`). yt-dlp itself
-is invoked as `python -m yt_dlp` and does not depend on `PATH`. Python 3.12+ is
-required by the dashboard.
+`ffmpeg` and `ffprobe` are **required**: the engine's conversion/remux step and
+the `hls:ffmpeg` downloader call them by name, so they must be installed
+system-wide and resolvable through the unit's `Environment=PATH=` (`/usr/bin`).
+yt-dlp itself is invoked as `python -m yt_dlp` and does not depend on `PATH`.
+Python 3.12+ is required by the dashboard.
+
+A conversion is **not** part of a normal download: `TRANSCODE_MODE=off` (the
+default) only remuxes (`+faststart`), and the one CPU-bounded x264 pass runs
+only when the operator allowed it or the user pressed *Convert* in the chat.
+See [configuration](configuration.md#conversion-and-why-it-is-off-by-default)
+for the modes and the CPU budget.
 
 ### 2.2 Application and virtualenv
 

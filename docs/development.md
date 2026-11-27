@@ -65,8 +65,11 @@ fire-and-forget with a 2-second timeout and must never break a download.
 2. The bot validates the URL and asks the engine for metadata.
 3. The bot shows the thumbnail and format buttons; MP4 opens a quality picker.
 4. The engine downloads with yt-dlp in its own process group and streams progress.
-5. AV1/VP9 output is transcoded to H.264, and other MP4s get `+faststart`, so
-   Telegram can stream them. MP3 output is tagged with title, artist and cover.
+5. AV1/VP9/VP8 output is converted to H.264 **only when the policy says so**
+   (`TRANSCODE_MODE`, off by default) or the user pressed *Convert*; otherwise
+   the file is delivered as a document and other MP4s still get `+faststart`,
+   so Telegram can stream them. MP3 output is tagged with title, artist and
+   cover.
 6. The bot uploads the file through the Bot API server and deletes the local
    copy; the cleanup task removes anything left behind.
 

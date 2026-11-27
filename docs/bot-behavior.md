@@ -295,6 +295,51 @@ The requested format is resolved before the job starts
   formats are over the send limit … try another link or MP3" when the audio
   still fits).
 
+### 4.6 Codecs Telegram may not play (AV1/VP9)
+
+Telegram never re-encodes an upload, so an AV1/VP9 file sent as a video can show
+a blurred frame with sound (iOS, VP9 in MP4) or nothing at all. Converting it on
+the server is possible but costs a core for minutes, so it is **never automatic**:
+see `TRANSCODE_MODE` in [configuration](configuration.md).
+
+The engine reports the codec facts per format (`codec`, `codec_label`,
+`compatible`, `convertible`, `transcode_estimate_seconds`) and its policy
+(`transcode.mode`). `bot/transcode_policy.py` turns them into three things:
+
+1. **the keyboard label** — an incompatible format keeps its button and is
+   marked: ``AV1 · 2160p · 2.3GB``, ``VP9 · 1440p · 451MB``. H.264 is preferred at
+the same height (one entry per height, `avc1` winning), so a card showing
+``1080p`` means the H.264 variant when the site offers one. No format is hidden
+because of its codec.
+2. **one line on the card**, when any offered format is incompatible, in the
+   chat's language:
+   *en* — “AV1/VP9 may not play on iPhone — those formats arrive as a file, or can
+   be converted to H.264.”; *ru* — “AV1/VP9 может не проигрываться на iPhone —
+   такие форматы приходят файлом, а можно сконвертировать в H.264.”
+3. **the question, before any download starts.** Tapping an AV1/VP9 button with
+   `TRANSCODE_MODE=off` (or `auto` above `TRANSCODE_MAX_MB`) does **not** start a
+   job: the card is replaced by
+   > Send 2160p (AV1) as a file, or convert it?
+
+   with two buttons:
+   * **Send as file** (`Отправить файлом`) — `transcode=never`; the file arrives
+     as a document with the usual caption;
+   * **Convert (~4 min)** (`Конвертировать (~4 мин)`) — `transcode=force`; the
+     engine converts and the card shows **Converting…** / **Конвертирую…** with
+     ffmpeg's percentage.
+
+   The estimate comes from the engine (an EWMA of its own conversions, falling
+   back to ~8 MB/minute of source) and rounds minutes **up**. The buttons carry
+   `dl:<message_id>:<url_hash>:file:<format_id>` and `…:conv:<format_id>` — five
+   fields, still inside Telegram's 64-byte `callback_data` limit; an id that
+   would not fit falls back to `best`, exactly like the format keyboard.
+
+With `TRANSCODE_MODE=always` a file converts without the question;
+`/mp4`/`/best` have no buttons, so they send an incompatible file as a document
+and say so in the caption (**“Sent as a file: this codec plays as a video only
+on some phones.”**). A converted file is uploaded with `sendVideo` even though
+the user picked an AV1/VP9 format: the bytes are H.264 by then.
+
 ---
 
 ## 5. User-visible texts
