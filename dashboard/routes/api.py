@@ -14,6 +14,8 @@ from pydantic import BaseModel
 import auth
 import bot_languages
 import db
+import message_catalog
+import message_templates
 import progress_fields
 
 logger = logging.getLogger(__name__)
@@ -184,11 +186,76 @@ async def bot_settings(request: Request) -> dict[str, Any]:
     stored = await db.get_settings(prefix=bot_languages.SETTING_PREFIX)
     settings = bot_languages.BotLanguages.from_row(stored)
     progress_stored = await db.get_settings(prefix=progress_fields.SETTING_PREFIX)
+    rows = await db.active_message_templates()
     return {
         "languages": list(settings.languages),
         "default_language": settings.default_language,
         "progress": progress_fields.ProgressFields.from_row(progress_stored).as_api(),
+        # ``{kind: {lang: body}}``: one active custom body per pair, or nothing
+        # at all. The bot renders the built-in default for every kind it does
+        # not find here, so an empty object is a valid answer.
+        "templates": message_templates.active_bodies(rows),
     }
+
+
+# ---------------------------------------------------------------------------
+# Message templates (internal read + admin preview)
+# ---------------------------------------------------------------------------
+
+@router.get("/api/message-templates")
+async def message_template_catalogue(request: Request) -> dict[str, Any]:
+    """The catalogue and the active bodies, for the bot and for debugging.
+
+    Same shared token as ``/api/bot-settings`` (which already carries the
+    ``templates`` object the bot uses); this endpoint adds the kind metadata the
+    contract test compares against ``bot/message_kinds.py``.
+    """
+    if not _internal_token_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    rows = await db.active_message_templates()
+    return {
+        "kinds": [
+            {
+                "id": kind.id,
+                "category": kind.category,
+                "media": kind.media,
+                "placeholders": list(kind.placeholders),
+            }
+            for kind in message_catalog.KINDS
+        ],
+        "templates": message_templates.active_bodies(rows),
+        "coverage": message_templates.coverage(rows),
+    }
+
+
+@router.post("/api/message-templates/preview")
+async def preview_message_template(
+    request: Request, user: str = Depends(require_admin)
+) -> dict[str, Any]:
+    """Render one body with the same code the bot uses, for the editor pane.
+
+    A broken body answers with ``error`` rather than a 4xx: the pane shows the
+    sentence, and the operator keeps typing. The body comes from the form (the
+    textarea may be unsaved), so there is nothing to look up in the database.
+    """
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid preview body")
+
+    kind = str(payload.get("kind") or "")
+    if message_catalog.get(kind) is None:
+        raise HTTPException(status_code=404, detail="Unknown message kind")
+
+    body = payload.get("body")
+    return message_templates.preview(
+        kind,
+        message_templates.normalise_lang(payload.get("lang")),
+        None if body is None else str(body),
+    )
 
 
 # ---------------------------------------------------------------------------

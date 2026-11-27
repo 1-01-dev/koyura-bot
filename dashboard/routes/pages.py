@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Request
+from starlette.datastructures import FormData
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
@@ -14,6 +15,8 @@ import auth
 import bot_languages
 import db
 import download_limits as limits_settings
+import message_catalog
+import message_templates
 import progress_fields
 
 router = APIRouter()
@@ -259,10 +262,143 @@ def _progress_context(stored: dict[str, str], error: str | None = None,
     }
 
 
+# ---------------------------------------------------------------------------
+# Message templates
+# ---------------------------------------------------------------------------
+
+TEMPLATE_DEFAULT_KIND = "welcome"
+
+
+def _template_defaults(kind: str | None, lang: str | None) -> tuple[str, str]:
+    """A kind and a language that exist, whatever the query string said."""
+    chosen_kind = message_catalog.get(kind) if kind else None
+    kind_id = chosen_kind.id if chosen_kind is not None else TEMPLATE_DEFAULT_KIND
+    return kind_id, message_templates.normalise_lang(lang)
+
+
+async def _templates_context(
+    *,
+    kind: str | None = None,
+    lang: str | None = None,
+    template_id: int | None = None,
+    draft: dict | None = None,
+    error: str | None = None,
+    notice: str | None = None,
+) -> dict:
+    """Everything the Message templates section renders.
+
+    One function for the GET and every POST that re-renders the page, so a
+    rejected submission shows the same kind list, language tabs and reference
+    table the successful page does. ``draft`` carries ``name``/``body`` that
+    were typed but not saved, so nothing is lost to a validation error.
+    """
+    kind_id, language = _template_defaults(kind, lang)
+    selected = message_catalog.get(kind_id)
+    assert selected is not None  # _template_defaults guarantees it
+
+    rows = await db.list_message_templates(kind=kind_id, lang=language)
+    active = next((row for row in rows if row.get("is_active")), None)
+
+    # ``template`` in the query string picks the row being edited. No value
+    # opens the active custom template (what the operator usually wants);
+    # ``0`` opens the built-in default, which is how a new body starts.
+    chosen = None
+    if template_id is not None and int(template_id) > 0:
+        chosen = next(
+            (row for row in rows if int(row["id"]) == int(template_id)), None
+        )
+        if chosen is None:
+            chosen = await db.get_message_template(int(template_id))
+            if chosen is not None and (
+                str(chosen.get("kind")) != kind_id or str(chosen.get("lang")) != language
+            ):
+                chosen = None
+    elif template_id is None and active is not None:
+        chosen = active
+
+    draft = draft or {}
+    editing = chosen is not None or bool(draft)
+    body = str(draft.get("body") or (chosen or {}).get("body") or selected.template(language))
+    name = str(draft.get("name") or (chosen or {}).get("name") or "")
+    preview = message_templates.preview(
+        kind_id, language, body if editing else None
+    )
+
+    active_rows = await db.active_message_templates()
+    covered = {
+        str(row.get("kind"))
+        for row in active_rows
+        if str(row.get("lang")) == language and row.get("is_active")
+    }
+    groups = []
+    for group in message_catalog.categories():
+        members = [
+            {
+                "id": member.id,
+                "title": member.title,
+                "custom": member.id in covered,
+            }
+            for member in group["kinds"]
+        ]
+        groups.append({"id": group["id"], "label": group["label"], "kinds": members})
+
+    return {
+        "template_groups": groups,
+        "template_kind": {
+            "id": selected.id,
+            "title": selected.title,
+            "media": selected.media,
+            "limit": selected.limit,
+            "budget": selected.budget,
+            "placeholders": selected.placeholder_objects(),
+            "default": selected.template(language),
+        },
+        "template_lang": language,
+        "template_languages": list(message_catalog.LANGUAGES),
+        "template_rows": [message_templates.Template.from_row(row) for row in rows],
+        "template_active_id": int(active["id"]) if active is not None else None,
+        "template_editor": {
+            "id": int(chosen["id"]) if chosen is not None else None,
+            "name": name,
+            "body": body,
+            "is_default": not editing,
+        },
+        "template_preview": preview,
+        "template_coverage": message_templates.coverage(active_rows),
+        "template_covered_lang": len(covered),
+        "template_total": len(message_catalog.KINDS),
+        "template_error": error,
+        "template_notice": notice,
+    }
+
+
+def _templates_redirect(
+    kind: str, lang: str, *, template_id: int | None = None, notice: str | None = None
+) -> RedirectResponse:
+    """Back to the section with the same kind, language and template selected."""
+    query = f"kind={kind}&lang={lang}"
+    if template_id is not None:
+        query += f"&template={int(template_id)}"
+    if notice:
+        query += f"&templates_notice={notice}"
+    return RedirectResponse(url=f"/admin?{query}", status_code=303)
+
+
+async def _templates_error(
+    request: Request, user: str, message: str, **context
+) -> Response:
+    """Re-render /admin with a template error and the submitted draft."""
+    body = await _admin_error_context(user, message, scope="templates")
+    body.update(await _templates_context(error=message, **context))
+    return _render(request, "admin.html", body, status_code=400)
+
+
 @router.get("/admin", response_class=HTMLResponse)
 async def admin_page(
     request: Request, saved: int = 0, languages_saved: int = 0,
-    progress_saved: int = 0,
+    progress_saved: int = 0, templates_saved: int = 0,
+    kind: str | None = None, lang: str | None = None,
+    template: int | None = None, templates_notice: str | None = None,
 ) -> Response:
     user = _require_user(request)
     if not user:
@@ -324,6 +460,19 @@ async def admin_page(
         if progress_saved and not context.get("progress_error")
         else None
     )
+
+    context.update(
+        await _templates_context(
+            kind=kind,
+            lang=lang,
+            template_id=template,
+            notice=templates_notice,
+        )
+    )
+    if templates_saved and not context.get("template_error"):
+        context["template_notice"] = (
+            "Template saved and activated. The bot picks it up within a minute."
+        )
     return _render(request, "admin.html", context)
 
 
@@ -498,14 +647,204 @@ async def save_progress(request: Request) -> Response:
     return RedirectResponse(url="/admin?progress_saved=1", status_code=303)
 
 
-async def _admin_error_context(user: str, message: str) -> dict:
-    """Shared context for an admin page that has to show a message."""
+# ---------------------------------------------------------------------------
+# Message templates — the four actions of the section
+# ---------------------------------------------------------------------------
+
+async def _template_request(
+    request: Request,
+) -> tuple[str, FormData] | Response:
+    """Common prologue: the session and the CSRF token, or a rendered refusal."""
+    user = _require_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    form = await request.form()
+    submitted = str(form.get(auth.CSRF_FORM_FIELD, ""))
+    if not auth.verify_csrf(request, submitted):
+        return _render(
+            request,
+            "admin.html",
+            await _admin_error_context(
+                user,
+                "Your session expired. Reload the page and try again.",
+                scope="templates",
+            ),
+            status_code=403,
+        )
+    return user, form
+
+
+@router.post("/admin/templates/save")
+async def save_message_template(request: Request) -> Response:
+    """Validate and store a body, then make it the active one for its pair.
+
+    An unknown placeholder (and an empty body or a missing name) is refused with
+    the editor still holding what was typed — the message is not saved.
+    """
+    prologue = await _template_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    user, form = prologue
+
+    kind = str(form.get("kind") or "")
+    lang = message_templates.normalise_lang(form.get("lang"))
+    name = str(form.get("name") or "").strip()
+    body = str(form.get("body") or "")
+    template_id = str(form.get("template_id") or "").strip()
+
+    errors = message_templates.validate(body, kind, name=name)
+    if len(name) > message_templates.MAX_NAME:
+        errors.append(
+            f"Keep the name under {message_templates.MAX_NAME} characters."
+        )
+    if errors:
+        return await _templates_error(
+            request,
+            user,
+            " ".join(errors),
+            kind=kind,
+            lang=lang,
+            template_id=int(template_id) if template_id.isdigit() else None,
+            draft={"name": name, "body": body},
+        )
+
+    if template_id.isdigit():
+        await db.update_message_template(int(template_id), name=name, body=body)
+        await db.activate_message_template(int(template_id))
+        saved_id = int(template_id)
+    else:
+        saved_id = await db.create_message_template(
+            kind=kind, lang=lang, name=name, body=body, activate=True
+        )
+
+    logging.getLogger("koyura.dashboard").info(
+        "message template saved: %s/%s #%s (%d chars)",
+        kind,
+        lang,
+        saved_id,
+        len(body),
+    )
+    return _templates_redirect(kind, lang, template_id=saved_id)
+
+
+@router.post("/admin/templates/activate")
+async def activate_message_template(request: Request) -> Response:
+    """Make one stored body active; the previous one stays stored but inactive."""
+    prologue = await _template_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    user, form = prologue
+
+    template_id = str(form.get("template_id") or "")
+    row = (
+        await db.get_message_template(int(template_id))
+        if template_id.isdigit()
+        else None
+    )
+    if row is None:
+        return await _templates_error(
+            request, user, "That template no longer exists.", kind=None, lang=None
+        )
+    await db.activate_message_template(int(template_id))
+    return _templates_redirect(
+        str(row["kind"]), str(row["lang"]), template_id=int(template_id),
+        notice="Template activated.",
+    )
+
+
+@router.post("/admin/templates/duplicate")
+async def duplicate_message_template(request: Request) -> Response:
+    """Copy a body into a new, inactive template and open it in the editor."""
+    prologue = await _template_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    user, form = prologue
+
+    template_id = str(form.get("template_id") or "")
+    row = (
+        await db.get_message_template(int(template_id))
+        if template_id.isdigit()
+        else None
+    )
+    if row is None:
+        return await _templates_error(
+            request, user, "That template no longer exists.", kind=None, lang=None
+        )
+    name = f"{row['name']} (copy)"[: message_templates.MAX_NAME]
+    new_id = await db.create_message_template(
+        kind=str(row["kind"]),
+        lang=str(row["lang"]),
+        name=name,
+        body=str(row["body"]),
+        activate=False,
+    )
+    return _templates_redirect(
+        str(row["kind"]), str(row["lang"]), template_id=new_id,
+        notice="Template duplicated — edit it and save to activate.",
+    )
+
+
+@router.post("/admin/templates/delete")
+async def delete_message_template(request: Request) -> Response:
+    """Delete one stored body; the pair falls back to the built-in default."""
+    prologue = await _template_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    user, form = prologue
+
+    template_id = str(form.get("template_id") or "")
+    row = (
+        await db.get_message_template(int(template_id))
+        if template_id.isdigit()
+        else None
+    )
+    if row is None:
+        return await _templates_error(
+            request, user, "That template no longer exists.", kind=None, lang=None
+        )
+    await db.delete_message_template(int(template_id))
+    return _templates_redirect(
+        str(row["kind"]), str(row["lang"]), notice="Template deleted."
+    )
+
+
+@router.post("/admin/templates/reset")
+async def reset_message_templates(request: Request) -> Response:
+    """Drop every custom body for one pair: the bot renders the default again."""
+    prologue = await _template_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    _user, form = prologue
+
+    kind = str(form.get("kind") or "")
+    lang = message_templates.normalise_lang(form.get("lang"))
+    removed = await db.reset_message_templates(kind, lang)
+    return _templates_redirect(
+        kind,
+        lang,
+        notice=f"Reset to the built-in default ({removed} custom template(s) removed).",
+    )
+
+
+async def _admin_error_context(
+    user: str, message: str, *, scope: str | None = None
+) -> dict:
+    """Shared context for an admin page that has to show a message.
+
+    ``scope`` narrows the message to one panel: the templates routes render the
+    same page as /admin, and a good sentence under "Download limits" about a
+    message template would read like the wrong form failed.
+    """
     stored = await db.get_settings(prefix=limits_settings.SETTING_PREFIX)
     context = {"user": user, "active": "admin", "files": [], "downloads_bytes": 0,
                "max_disk_mb": 0, "disk_pct": 0}
-    context.update(_limits_context(stored, error=message))
-    context.update(_languages_context({}, error=message))
-    context.update(_progress_context({}, error=message))
+    context.update(_limits_context(stored, error=None if scope else message))
+    context.update(_languages_context({}, error=None if scope else message))
+    context.update(_progress_context({}, error=None if scope else message))
+    if scope == "templates":
+        context.update(await _templates_context(error=message))
+    else:
+        context.update(await _templates_context())
     return context
 
 

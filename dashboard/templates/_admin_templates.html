@@ -1,0 +1,204 @@
+{# Message templates — the visual builder.
+
+   A partial on purpose: /admin is being restructured, so this section stays out
+   of admin.html apart from one include line. It reuses the panel / limits /
+   language classes next to it (tokens, hairline cells, mono labels) and adds
+   only the few templates-* hooks the editor needs.
+
+   The whole section is a plain HTML form: the list, the language tabs and the
+   kind picker are links, the four actions are POST forms with the CSRF token,
+   and js/templates.js only adds the convenience (insert at the cursor, live
+   character count, debounced preview). With JS off the page still saves. #}
+<section class="card panel" id="templates-card"
+         data-kind="{{ template_kind.id }}" data-lang="{{ template_lang }}">
+  <div class="card-header panel-head">
+    <h2 class="card-title">Message templates</h2>
+    <div class="card-actions">
+      <span class="limits-meta mono" id="templates-coverage">
+        свои: {{ template_covered_lang }} / {{ template_total }} видов ·
+        {{ template_kind.media }} · лимит {{ template_kind.limit }} символов
+      </span>
+    </div>
+  </div>
+
+  <p class="limits-note" id="templates-note">
+    Текст любого сообщения бота: выберите вид слева, язык сверху и напишите
+    свой вариант. Встроенный шаблон (Default) только для чтения — сломать его
+    нельзя. Один активный шаблон на пару «вид + язык»; пустой, битый или
+    недоступный шаблон бот заменяет дефолтным и никогда не отправляет пустое
+    сообщение.
+  </p>
+
+  {% if template_error %}
+  <p class="form-error" role="alert" id="templates-error">{{ template_error }}</p>
+  {% endif %}
+  {% if template_notice %}
+  <p class="form-notice" role="status" id="templates-notice">{{ template_notice }}</p>
+  {% endif %}
+
+  <div class="templates-layout">
+    <nav class="templates-sidebar" aria-label="Виды сообщений">
+      {% for group in template_groups %}
+      <p class="templates-group mono">{{ group.label }}</p>
+      <ul class="templates-kinds">
+        {% for item in group.kinds %}
+        <li>
+          <a class="templates-kind{% if item.id == template_kind.id %} active{% endif %}"
+             href="/admin?kind={{ item.id }}&amp;lang={{ template_lang }}"
+             title="{{ item.title }}"><span>{{ item.title }}</span>{% if item.custom %}<span class="templates-dot" title="есть свой шаблон">●</span>{% endif %}</a>
+        </li>
+        {% endfor %}
+      </ul>
+      {% endfor %}
+    </nav>
+
+    <div class="templates-main">
+      <div class="templates-langbar" role="group" aria-label="Язык шаблона">
+        {% for code in template_languages %}
+        <a class="templates-lang mono{% if code == template_lang %} active{% endif %}"
+           href="/admin?kind={{ template_kind.id }}&amp;lang={{ code }}">{{ code }}</a>
+        {% endfor %}
+        <span class="templates-id mono">{{ template_kind.id }}</span>
+      </div>
+
+      <ul class="templates-list">
+        <li class="templates-row{% if template_active_id is none %} is-active{% endif %}">
+          <span class="templates-row-name">Default</span>
+          <span class="templates-row-meta mono">встроенный · только чтение</span>
+          {% if template_active_id is none %}
+          <span class="badge badge-platform mono">активен</span>
+          {% endif %}
+          <span class="templates-row-actions">
+            <a class="btn btn-secondary"
+               href="/admin?kind={{ template_kind.id }}&amp;lang={{ template_lang }}&amp;template=0">Открыть</a>
+          </span>
+        </li>
+        {% for row in template_rows %}
+        <li class="templates-row{% if row.active %} is-active{% endif %}">
+          <span class="templates-row-name">{{ row.name }}</span>
+          <span class="templates-row-meta mono">{{ row.body | length }} симв. · {{ row.updated_at }}</span>
+          {% if row.active %}
+          <span class="badge badge-platform mono">активен</span>
+          {% endif %}
+          <span class="templates-row-actions">
+            <a class="btn btn-secondary"
+               href="/admin?kind={{ template_kind.id }}&amp;lang={{ template_lang }}&amp;template={{ row.id }}">Открыть</a>
+            {% if not row.active %}
+            <form method="post" action="/admin/templates/activate" class="templates-inline-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <input type="hidden" name="template_id" value="{{ row.id }}" />
+              <button type="submit" class="btn btn-secondary">Активировать</button>
+            </form>
+            {% endif %}
+            <form method="post" action="/admin/templates/duplicate" class="templates-inline-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <input type="hidden" name="template_id" value="{{ row.id }}" />
+              <button type="submit" class="btn btn-secondary">Дублировать</button>
+            </form>
+            <form method="post" action="/admin/templates/delete" class="templates-inline-form"
+                  data-confirm="Удалить шаблон «{{ row.name }}»? Если он активен, бот вернётся к дефолту.">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <input type="hidden" name="template_id" value="{{ row.id }}" />
+              <button type="submit" class="btn btn-danger">Удалить</button>
+            </form>
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+
+      <form method="post" action="/admin/templates/save" id="template-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <input type="hidden" name="kind" value="{{ template_kind.id }}" />
+        <input type="hidden" name="lang" value="{{ template_lang }}" />
+        <input type="hidden" name="template_id" value="{{ template_editor.id or '' }}" />
+
+        <div class="templates-editor-head">
+          <label class="limits-label mono" for="template-name">Название</label>
+          <input class="limits-input" id="template-name" name="name"
+                 value="{{ template_editor.name }}" maxlength="80" required
+                 placeholder="Например, «Короткая карточка»" />
+          {% if template_editor.is_default %}
+          <span class="limits-meta mono">сохранение создаст свой шаблон</span>
+          {% endif %}
+        </div>
+
+        <div class="templates-placeholders" role="group" aria-label="Плейсхолдеры">
+          {% for placeholder in template_kind.placeholders %}
+          <button type="button" class="templates-chip mono"
+                  data-insert="{{ placeholder.token }}"
+                  title="{{ placeholder.summary }}">{{ placeholder.token }}</button>
+          {% endfor %}
+        </div>
+
+        <textarea id="template-body" name="body" rows="12" spellcheck="false"
+                  class="templates-textarea mono"
+                  data-limit="{{ template_kind.limit }}"
+                  aria-describedby="template-count template-warning">{{ template_editor.body }}</textarea>
+
+        <div class="templates-editor-foot">
+          <span class="limits-meta mono" id="template-count">{{ template_editor.body | length }} / {{ template_kind.limit }}</span>
+          <span class="form-error" id="template-warning" role="status" hidden></span>
+          <span class="limits-note mono">1024 — подпись к медиа, 4096 — обычный текст</span>
+        </div>
+
+        <div class="limits-actions">
+          <button type="submit" class="btn btn-primary" id="template-save">Сохранить и активировать</button>
+          <span class="limits-note mono">бот подхватит в течение минуты, без перезапуска</span>
+        </div>
+      </form>
+
+      <form method="post" action="/admin/templates/reset" class="templates-reset-form"
+            data-confirm="Удалить все свои шаблоны для «{{ template_kind.title }}» на языке {{ template_lang }} и вернуться к дефолту?">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <input type="hidden" name="kind" value="{{ template_kind.id }}" />
+        <input type="hidden" name="lang" value="{{ template_lang }}" />
+        <button type="submit" class="btn btn-danger">Сбросить к дефолту</button>
+      </form>
+
+      <div class="templates-preview">
+        <div class="templates-preview-head">
+          <h3 class="card-title">Предпросмотр</h3>
+          <span class="limits-meta mono" id="template-preview-meta">{{ template_preview.length }} символов</span>
+        </div>
+        <p class="form-error" id="template-preview-error" role="alert"
+           {% if not template_preview.error %}hidden{% endif %}>{{ template_preview.error or '' }}</p>
+        <pre class="templates-preview-body mono" id="template-preview"
+             {% if template_preview.error %}hidden{% endif %}>{{ template_preview.text }}</pre>
+        <p class="limits-note mono">Рендер тем же кодом, что и в боте, на реалистичных тестовых данных.</p>
+      </div>
+
+      <details class="templates-reference" open>
+        <summary class="card-title">Справочник плейсхолдеров</summary>
+        <table class="info-table templates-table">
+          <thead>
+            <tr>
+              <th scope="col">Плейсхолдер</th>
+              <th scope="col">Что подставляет</th>
+              <th scope="col">Пример</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for placeholder in template_kind.placeholders %}
+            <tr>
+              <td class="mono">{{ placeholder.token }}</td>
+              <td>{{ placeholder.summary }}</td>
+              <td class="mono">{{ placeholder.example }}</td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="3" class="empty-state">У этого сообщения нет плейсхолдеров — только текст.</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p class="limits-note">
+          Правила: неизвестный плейсхолдер — ошибка, шаблон не сохранится; пустое
+          значение убирает строку целиком; значения экранируются для MarkdownV2,
+          а свой текст — нет. Непарный <span class="mono">*</span>,
+          <span class="mono">_</span> или <span class="mono">`</span> не ломает
+          отправку: сообщение уйдёт как обычный текст.
+        </p>
+      </details>
+    </div>
+  </div>
+</section>
