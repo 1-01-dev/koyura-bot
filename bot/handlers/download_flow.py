@@ -28,6 +28,7 @@ from pathlib import Path
 from telegram import Update
 from telegram.ext import ContextTypes
 
+import cookie_help
 import download_card
 import event_client
 import progress_card
@@ -525,11 +526,21 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direc
         return
 
     if status.get("status") == "error":
-        await fail(
-            str(status.get("error") or texts.plain("download.unknown_error", job.lang))
-        )
+        # A spent cookie session has its own sentence: "add cookies for Reddit"
+        # is actionable, the raw yt-dlp line is not. The message is built from
+        # the service the engine named, so nothing here knows a site's name.
+        if cookie_help.needs_cookies(status):
+            detail = cookie_help.message(
+                status, user_id=job.user_id, lang=job.lang
+            )
+        else:
+            detail = str(
+                status.get("error") or texts.plain("download.unknown_error", job.lang)
+            )
+        await fail(detail)
         await event_client.send_download_error(
-            job_id=job_id, error_message=status.get("error", texts.EVENT_UNKNOWN_ERROR)
+            job_id=job_id,
+            error_message=status.get("error", texts.EVENT_UNKNOWN_ERROR),
         )
         return
 
