@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+import message_templates
 import send_limit
 import transcode_policy as policy
 
@@ -317,7 +318,45 @@ def card_meta_lines(info: dict, lang: object = None) -> list[str]:
     return lines
 
 
-def build_card(info: dict, *, lang: object = None) -> str:
+def card_values(info: dict, *, url: str | None = None, lang: object = None) -> dict[str, str]:
+    """The placeholders a custom ``card`` template may use, as plain strings.
+
+    Values stay **unescaped**: ``message_templates`` escapes them as it
+    substitutes, so ``@title`` is safe inside bold markers and a channel name
+    with a dot cannot break the caption.
+    """
+    channel = str(info.get("channel") or info.get("uploader") or "").strip()
+    handle = str(info.get("uploader_id") or "").strip()
+    if handle and not handle.startswith("@"):
+        handle = f"@{handle}"
+    if channel and handle and handle.lstrip("@").lower() not in channel.lower():
+        channel_line = f"{channel} · {handle}"
+    else:
+        channel_line = channel or handle
+    categories = [
+        str(c).strip() for c in (info.get("categories") or []) if str(c or "").strip()
+    ]
+    source = str(info.get("extractor_key") or info.get("extractor") or "").strip()
+    if not source and url:
+        source = str(url).split("://", 1)[-1].split("/", 1)[0]
+    return {
+        "title": str(info.get("title") or "").strip() or t("card.untitled", lang),
+        "uploader": str(info.get("uploader") or info.get("channel") or "").strip(),
+        "channel": channel_line,
+        "followers": format_count(info.get("channel_follower_count")) or "",
+        "duration": format_duration(info.get("duration")) or "",
+        "views": format_count(info.get("view_count")) or "",
+        "likes": format_count(info.get("like_count")) or "",
+        "comments": format_count(info.get("comment_count")) or "",
+        "category": ", ".join(categories[:2]),
+        "uploaded": format_upload_date(info.get("upload_date")) or "",
+        "source": source,
+        "url": str(url or info.get("webpage_url") or ""),
+        "meta": "\n".join(card_meta_lines(info, lang)),
+    }
+
+
+def build_card(info: dict, *, lang: object = None, url: str | None = None) -> str:
     """Render the whole preview card as a MarkdownV2 caption (<= 1024 chars).
 
     Only metadata is drawn. The formats and their sizes live on the keyboard,
@@ -341,7 +380,9 @@ def build_card(info: dict, *, lang: object = None) -> str:
     caption = "\n\n".join(block for block in blocks if block)
     if len(caption) > CAPTION_BUDGET:
         caption = caption[: CAPTION_BUDGET - 1].rstrip() + "…"
-    return caption
+    return message_templates.render(
+        "card", lang, card_values(info, url=url, lang=lang), caption, media="caption"
+    )
 
 
 def has_incompatible_formats(info: dict, *, limit_bytes: int | None = None) -> bool:
@@ -413,7 +454,9 @@ def build_format_keyboard(
     if offer.truncated:
         buttons.append(
             InlineKeyboardButton(
-                t("card.best_quality", lang),
+                message_templates.render_line(
+                    "card.best_quality", lang, t("card.best_quality", lang)
+                ),
                 callback_data=build_callback_data(msg_id, url_hash, "best"),
             )
         )
@@ -452,14 +495,21 @@ def build_transcode_keyboard(
     action = str(entry.get("id") or "best")
     eta = policy.format_eta(eta_seconds, lang) if eta_seconds else None
     convert_label = (
-        t("transcode.convert", lang, eta=eta)
+        message_templates.render_line(
+            "transcode.convert", lang, t("transcode.convert", lang, eta=eta), eta=eta
+        )
         if eta
         else t("transcode.convert_no_eta", lang)
     )
 
     buttons = []
     for verb, label in (
-        ("file", t("transcode.send_as_file", lang)),
+        (
+            "file",
+            message_templates.render_line(
+                "transcode.send_as_file", lang, t("transcode.send_as_file", lang)
+            ),
+        ),
         ("conv", convert_label),
     ):
         data = build_callback_data(msg_id, url_hash, f"{verb}:{action}")
@@ -485,7 +535,20 @@ def build_transcode_question(
         codec=policy.codec_label(entry) or "?",
     )
     note = t(policy.note_key(entry), lang)
-    return _bound("\n\n".join((headline, escape_md(question), escape_md(note))))
+    default = _bound("\n\n".join((headline, escape_md(question), escape_md(note))))
+    return message_templates.render(
+        "transcode.ask",
+        lang,
+        {
+            "title": str(info.get("title") or "").strip() or t("card.untitled", lang),
+            "question": question,
+            "quality": policy.quality_label(entry),
+            "codec": policy.codec_label(entry) or "?",
+            "note": note,
+        },
+        default,
+        media="caption",
+    )
 
 
 def _bound(caption: str) -> str:
@@ -561,4 +624,20 @@ def build_file_caption(
     if note:
         caption += f"\n{escape_md(note)}"
     caption += f"\n{escape_md(t('card.via', lang))}"
-    return caption[:CAPTION_BUDGET]
+    caption = caption[:CAPTION_BUDGET]
+    return message_templates.render(
+        "done",
+        lang,
+        {
+            "title": title,
+            "quality": quality or "",
+            "size": format_filesize(size_bytes) or "",
+            "duration": format_duration(
+                duration if duration is not None else info.get("duration")
+            )
+            or "",
+            "source": t("card.via", lang),
+        },
+        caption,
+        media="caption",
+    )

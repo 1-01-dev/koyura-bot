@@ -104,7 +104,9 @@ async def on_language_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if code not in config.languages:
         # A button from a message posted before the operator disabled a language.
         await query.answer(
-            texts.t("language.unknown", config.resolve(language.chosen(user.id))),
+            texts.plain(
+                "language.unknown", config.resolve(language.chosen(user.id))
+            ),
             show_alert=True,
         )
         return

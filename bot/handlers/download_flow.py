@@ -313,7 +313,7 @@ class Job:
         """
         if self.delivery != policy.SEND_FILE:
             return None
-        return texts.t("transcode.document", self.lang)
+        return texts.plain("transcode.document", self.lang)
 
 
 def fallback_sender(bot, chat_id: int):
@@ -471,7 +471,7 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direc
     # "expired").
     await stage.replace_text(
         progress_card.build_status_caption(
-            job.info, texts.t("stage.starting", job.lang), lang=job.lang
+            job.info, texts.plain("stage.starting", job.lang), lang=job.lang
         )
     )
 
@@ -493,7 +493,7 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direc
         await fail(progress_card.busy_message(refusal, lang=job.lang), retry_hint=False)
         return
     except KoyuraServiceDown:
-        await fail(texts.t("engine.down", job.lang))
+        await fail(texts.plain("engine.down", job.lang))
         return
     except KoyuraError as error:
         await fail(str(error))
@@ -501,7 +501,7 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direc
 
     job_id = str(accepted.get("job_id") or "")
     if not job_id:
-        await fail(texts.t("download.unexpected", job.lang))
+        await fail(texts.plain("download.unexpected", job.lang))
         return
 
     # A queued job keeps the same message and shows its place; the poll loop
@@ -526,7 +526,7 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direc
 
     if status.get("status") == "error":
         await fail(
-            str(status.get("error") or texts.t("download.unknown_error", job.lang))
+            str(status.get("error") or texts.plain("download.unknown_error", job.lang))
         )
         await event_client.send_download_error(
             job_id=job_id, error_message=status.get("error", texts.EVENT_UNKNOWN_ERROR)
@@ -589,7 +589,7 @@ async def poll_until_finished(job: Job, job_id: str, stage) -> dict | None:
             status = await poll_status(job_id)
         except KoyuraServiceDown:
             await report_failure(
-                stage, job.info, texts.t("engine.down", job.lang), lang=job.lang
+                stage, job.info, texts.plain("engine.down", job.lang), lang=job.lang
             )
             await event_client.send_download_error(
                 job_id=job_id, error_message=texts.EVENT_SERVICE_DOWN
@@ -650,7 +650,7 @@ async def poll_until_finished(job: Job, job_id: str, stage) -> dict | None:
         )
 
     await report_failure(
-        stage, job.info, texts.t("download.timed_out", job.lang), lang=job.lang
+        stage, job.info, texts.plain("download.timed_out", job.lang), lang=job.lang
     )
     await event_client.send_download_error(
         job_id=job_id, error_message=texts.EVENT_TIMED_OUT
@@ -715,7 +715,7 @@ async def _deliver(
         await report_failure(
             stage,
             job.info,
-            texts.t("download.file_missing", job.lang),
+            texts.plain("download.file_missing", job.lang),
             job.url_hash,
             lang=job.lang,
         )
@@ -764,7 +764,7 @@ async def _deliver(
         await report_failure(
             stage,
             job.info,
-            texts.t("download.upload_failed", job.lang),
+            texts.plain("download.upload_failed", job.lang),
             job.url_hash,
             lang=job.lang,
         )

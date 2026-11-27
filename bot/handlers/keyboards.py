@@ -17,7 +17,6 @@ Everything here is pure: no Telegram calls, no state.
 from __future__ import annotations
 
 import i18n
-from i18n import t
 
 from . import texts
 
@@ -136,7 +135,9 @@ def welcome(lang: object = None):
         ("mp4", "button.mp4"),
     )
     buttons = [
-        InlineKeyboardButton(t(label_key, lang), callback_data=welcome_data(action))
+        InlineKeyboardButton(
+            texts.button(label_key, lang), callback_data=welcome_data(action)
+        )
         for action, label_key in rows
     ]
     return InlineKeyboardMarkup(_rows(buttons))
@@ -152,7 +153,7 @@ def back(lang: object = None):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(t("nav.back", lang), callback_data=nav_data())]
+        [InlineKeyboardButton(texts.button("nav.back", lang), callback_data=nav_data())]
     ])
 
 

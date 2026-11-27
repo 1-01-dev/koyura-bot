@@ -27,10 +27,17 @@ Two things here are deliberately **not** translated:
 """
 from __future__ import annotations
 
+import bot_settings
 import i18n
+import message_templates
 import send_limit
 from i18n import DEFAULT_LANGUAGE, escape_md
 from i18n import t as _t
+
+# What ``@version`` says in the welcome/help/stats screens. Kept here rather
+# than in an environment variable: it is a fact about this build, not a
+# deployment knob.
+VERSION = "1.0"
 
 # ---------------------------------------------------------------------------
 # Protocol values (never translated)
@@ -68,13 +75,37 @@ EVENT_UNKNOWN_ERROR = "Unknown error"
 # ---------------------------------------------------------------------------
 
 def t(key: str, lang: object = None, /, **values: object) -> str:
-    """A catalogued line as plain text (cards, plain emitters)."""
+    """A catalogued line as plain text (cards, plain emitters).
+
+    Deliberately **not** templated: the same key is often a label inside a
+    larger caption (``card.views``, ``format.video``), and a custom body there
+    would be rendered inside another template's output.
+    """
     return _t(key, lang, **values)
 
 
 def md(key: str, lang: object = None, /, **values: object) -> str:
-    """A catalogued line escaped for ``parse_mode="MarkdownV2"``."""
-    return escape_md(_t(key, lang, **values))
+    """A catalogued line escaped for ``parse_mode="MarkdownV2"``.
+
+    A one-line message the owner can override in the panel (the registry keys
+    ``message_kinds`` by this i18n key): the custom body wins when it renders,
+    the catalogued line is the default.
+    """
+    return message_templates.render_line(
+        key, lang, escape_md(_t(key, lang, **values)), **values
+    )
+
+
+def plain(key: str, lang: object = None, /, **values: object) -> str:
+    """A catalogued line for a plain-text emitter (a ``query.answer`` toast)."""
+    return message_templates.render_plain_line(
+        key, lang, _t(key, lang, **values), **values
+    )
+
+
+def button(key: str, lang: object = None) -> str:
+    """A button label, custom template first (``buttons`` category)."""
+    return message_templates.render_line(key, lang, _t(key, lang))
 
 
 # ---------------------------------------------------------------------------
@@ -103,16 +134,41 @@ def mode_label(fmt: object, lang: object = None) -> str:
 # The welcome screen and the language screen
 # ---------------------------------------------------------------------------
 
+def enabled_language_names(lang: object = None) -> str:
+    """``English, Русский`` — the languages this deployment offers."""
+    settings = bot_settings.cached()
+    codes = settings.languages if settings is not None else i18n.LANGUAGES
+    return ", ".join(language_name(code) for code in codes)
+
+
+def platform_names() -> str:
+    """``YouTube, TikTok, …`` — the proper nouns, comma separated."""
+    return ", ".join(SUPPORTED_PLATFORMS)
+
+
 def welcome_text(lang: object = None) -> str:
     """The owner's welcome, verbatim, in the user's language."""
-    return escape_md("\n\n".join(
+    default = escape_md("\n\n".join(
         t(key, lang) for key in ("welcome.title", "welcome.body", "welcome.platforms")
     ))
+    return message_templates.render(
+        "welcome",
+        lang,
+        {
+            "languages": enabled_language_names(lang),
+            "platforms": platform_names(),
+            "version": VERSION,
+        },
+        default,
+    )
 
 
 def language_prompt(lang: object = None) -> str:
     """The first-contact screen: one line asking for the language."""
-    return md("language.prompt", lang)
+    default = escape_md(t("language.prompt", lang))
+    return message_templates.render(
+        "language.prompt", lang, {"languages": enabled_language_names(lang)}, default
+    )
 
 
 def mode_armed(fmt: str, lang: object = None) -> str:
@@ -143,8 +199,14 @@ def limit_message(key: str, lang: object = None) -> str:
 
 
 def limit_note(quality: str, skipped: str, lang: object = None) -> str:
-    """The caption line explaining a quality that was lowered to fit."""
-    return t("limit.quality_selected", lang, quality=quality, skipped=skipped)
+    """The caption line explaining a quality that was lowered to fit.
+
+    Plain text: the ``done`` caption escapes it as one of its own lines, and the
+    owner can override the sentence in the panel.
+    """
+    return plain(
+        "limit.quality_selected", lang, quality=quality, skipped=skipped
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +223,15 @@ def _heading(lang: object, key: str) -> str:
 
 def help_text(lang: object = None) -> str:
     """The /help answer, assembled from catalogued lines."""
+    return message_templates.render(
+        "help",
+        lang,
+        {"platforms": platform_names(), "version": VERSION},
+        _help_default(lang),
+    )
+
+
+def _help_default(lang: object = None) -> str:
     blocks = [
         _heading(lang, "help.title"),
         _bullets(lang, "help.step1", "help.step2", "help.step3", "help.step4"),
@@ -184,7 +255,14 @@ def platforms_report(lang: object = None) -> str:
     lines = [t("platforms.header", lang), ""]
     lines.extend(f"  {name}" for name in SUPPORTED_PLATFORMS)
     lines.append(f"  {t('platforms.more', lang)}")
-    return escape_md("\n".join(lines))
+    default = escape_md("\n".join(lines))
+    listing = "\n".join(f"  {name}" for name in SUPPORTED_PLATFORMS)
+    return message_templates.render(
+        "platforms",
+        lang,
+        {"platforms": listing, "count": len(SUPPORTED_PLATFORMS)},
+        default,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +298,21 @@ def stats_report(
         t("stats.line", lang, label=t(label_key, lang), value=value)
         for label_key, value in rows
     )
-    return escape_md("\n".join(lines))
+    default = escape_md("\n".join(lines))
+    return message_templates.render(
+        "stats",
+        lang,
+        {
+            "uptime": uptime,
+            "downloads": downloads,
+            "errors": errors,
+            "cached": cached_files,
+            "disk": f"{disk_mb:.1f} MB",
+            "sessions": sessions,
+            "version": VERSION,
+        },
+        default,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +353,18 @@ def settings_report(
         "",
         t("settings.language_hint", lang),
     ])
-    return escape_md("\n".join(lines))
+    default = escape_md("\n".join(lines))
+    return message_templates.render(
+        "settings",
+        lang,
+        {
+            "quality": quality,
+            "format": format_label(fmt, lang),
+            "language": language_name(language),
+            "mode": next_link,
+        },
+        default,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +397,9 @@ __all__ = [
     "FORMAT_OPTIONS",
     "QUALITY_OPTIONS",
     "SUPPORTED_PLATFORMS",
+    "VERSION",
+    "button",
+    "enabled_language_names",
     "escape_md",
     "format_label",
     "help_text",
@@ -305,6 +411,8 @@ __all__ = [
     "md",
     "mode_armed",
     "mode_label",
+    "plain",
+    "platform_names",
     "platforms_report",
     "send_limit_label",
     "settings_report",

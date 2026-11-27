@@ -21,6 +21,7 @@ import math
 import time
 
 import download_card
+import message_templates
 import progress_fields as fields_module
 from i18n import escape_md, t
 
@@ -323,7 +324,23 @@ def build_progress_caption(
     if not lines:
         # Every switch is off (title and bar included): say what is happening.
         lines.append(download_card.escape_md(label))
-    return _bounded(lines)
+    return message_templates.render(
+        "progress",
+        lang,
+        {
+            "title": str(info.get("title") or "").strip() or t("card.download", lang),
+            "stage": label,
+            "quality": quality or "",
+            "bar": progress_bar(percent) if percent is not None else "",
+            "percent": f"{percent:.0f}%" if percent is not None else "",
+            "size": _size_fact(progress) or "",
+            "speed": _speed_fact(progress) or "",
+            "eta": format_eta(derive_eta(progress)) or "",
+            "elapsed": format_eta(elapsed) or "",
+        },
+        _bounded(lines),
+        media="caption",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +365,19 @@ def build_error_caption(
     ]
     if retry_hint:
         lines.append(escape_md(t("download.retry_hint", lang)))
-    return _bounded(lines)
+    return message_templates.render(
+        "error",
+        lang,
+        {
+            "title": str(info.get("title") or "").strip() or t("card.download", lang),
+            "error": detail,
+            "retry_hint": t("download.retry_hint", lang) if retry_hint else "",
+            "url": "",
+            "limit": "",
+        },
+        _bounded(lines),
+        media="caption",
+    )
 
 
 def build_status_caption(info: dict, text: str, *, lang: object = None) -> str:
@@ -403,7 +432,18 @@ def build_queued_caption(
     if approximate and wait:
         lines.append(escape_md(t("queue.estimated", lang)))
     lines.append(escape_md(t(QUEUE_HINT_KEY, lang)))
-    return _bounded(lines)
+    return message_templates.render(
+        "queued",
+        lang,
+        {
+            "title": str(info.get("title") or "").strip() or t("card.download", lang),
+            "position": head,
+            "wait": wait or "",
+            "hint": t(QUEUE_HINT_KEY, lang),
+        },
+        _bounded(lines),
+        media="caption",
+    )
 
 
 def busy_message(
@@ -423,9 +463,11 @@ def busy_message(
     if seconds is not None:
         wait = seconds
     when = format_queue_wait(wait, lang) or t("download.wait_default", lang)
-    if code == "user_busy":
-        return f"You already have a download running. Try again in {when}."
-    return f"The service is overloaded right now — try again in {when}."
+    kind = "download.busy_user" if code == "user_busy" else "download.busy_service"
+    # Plain: the caller escapes the sentence with the caption around it.
+    return message_templates.render_plain_line(
+        kind, lang, t(kind, lang, when=when), when=when
+    )
 
 
 # ---------------------------------------------------------------------------
