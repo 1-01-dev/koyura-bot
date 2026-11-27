@@ -158,12 +158,12 @@
            autocapitalize="off"
            spellcheck="false"
            aria-describedby="proxy-check-hint" />
-    <span class="limits-hint" id="proxy-check-hint">
-      one request to api.ipify.org through the proxy · 10 s timeout
-    </span>
     <button type="submit" class="btn btn-secondary" id="proxy-check">
       Check
     </button>
+    <span class="limits-hint" id="proxy-check-hint">
+      one request to api.ipify.org through the proxy · 10 s timeout
+    </span>
   </form>
 
   {% if egress_probe %}
@@ -231,7 +231,7 @@
   {% endif %}
 
   <form method="post" action="/admin/proxy/wireguard"
-        enctype="multipart/form-data" id="wireguard-form" class="cookies-add">
+        enctype="multipart/form-data" id="wireguard-form" class="wireguard-upload">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
     <div class="cookies-cell cookies-cell--file">
       <label class="limits-label mono" for="wg-file">WireGuard config</label>

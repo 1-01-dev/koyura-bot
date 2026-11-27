@@ -2391,6 +2391,8 @@
 
 .proxy-check {
   display: grid;
+  /* label / input+button / hint: the button sits beside the field it submits,
+     not under the hint that explains it. */
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
   gap: 8px 12px;
@@ -2398,17 +2400,33 @@
   border-top: 1px solid var(--line);
 }
 
-.proxy-check > .limits-label,
-.proxy-check > .limits-hint {
+.proxy-check > .limits-label {
   grid-column: 1 / -1;
 }
 
 .proxy-check > .limits-hint {
+  grid-column: 1 / -1;
   margin-top: 0;
 }
 
 .proxy-check .btn {
   min-height: 44px;
+  padding: 0 22px;
+}
+
+/* The upload row reuses the cookie cells: a file field and its button, with
+   the button sized to its label rather than to the row. */
+.wireguard-upload {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  padding: 14px 16px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.wireguard-upload .cookies-add-btn {
+  min-width: 96px;
 }
 
 @media (max-width: 600px) {
@@ -2421,11 +2439,13 @@
     border-bottom: 0;
   }
 
-  .proxy-check {
+  .proxy-check,
+  .wireguard-upload {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .proxy-check .btn {
+  .proxy-check .btn,
+  .wireguard-upload .cookies-add-btn {
     width: 100%;
   }
 }
