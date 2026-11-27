@@ -35,10 +35,36 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
         <span>Errors</span>
       </a>
-      <a href="/admin" class="nav-item{% if active == 'admin' %} active{% endif %}" aria-current="{{ 'page' if active == 'admin' else 'false' }}">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
-        <span>Admin</span>
-      </a>
+
+      {# Admin is a group, not a row: the parent is a disclosure button (Enter and
+         Space work with no JS at all) and the four sub-pages are its children.
+         The server renders the group open on every /admin/* page, so the current
+         sub-page is never hidden; shell.js only remembers a deliberate collapse
+         and keeps aria-expanded in sync with what is on screen. #}
+      {% set admin_active = active == 'admin' %}
+      <div class="nav-group{% if admin_active %} is-active is-open{% endif %}"
+           data-nav-group="admin"
+           data-nav-active="{{ 'true' if admin_active else 'false' }}">
+        <button type="button"
+                class="nav-item nav-group-toggle{% if admin_active %} active{% endif %}"
+                id="nav-admin-toggle"
+                aria-expanded="{{ 'true' if admin_active else 'false' }}"
+                aria-controls="nav-admin-children"
+                aria-current="{{ 'true' if admin_active else 'false' }}">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
+          <span>Admin</span>
+          <span class="nav-caret" aria-hidden="true"></span>
+        </button>
+        <ul class="nav-children" id="nav-admin-children">
+          {% for item in admin_links %}
+          <li>
+            <a href="{{ item.href }}"
+               class="nav-item nav-child{% if item.key == admin_section %} active{% endif %}"
+               aria-current="{{ 'page' if item.key == admin_section else 'false' }}"><span>{{ item.label }}</span></a>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
     </nav>
     <div class="sidebar-bottom">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-pressed="false">Invert color · dark</button>

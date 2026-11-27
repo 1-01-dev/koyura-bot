@@ -271,13 +271,13 @@ class TestStorage:
 class TestAdminPage:
     def test_page_requires_login(self):
         fresh = TestClient(app)
-        resp = fresh.get("/admin", follow_redirects=False)
+        resp = fresh.get("/admin/limits", follow_redirects=False)
         assert resp.status_code == 303
         assert resp.headers["location"] == "/login"
 
     def test_section_renders_every_field_and_its_csrf(self):
         c = _login(TestClient(app))
-        html = c.get("/admin").text
+        html = c.get("/admin/limits").text
         for field in download_limits.FIELD_NAMES:
             assert f'name="{field}"' in html, field
         assert 'id="limits-form"' in html
@@ -287,7 +287,7 @@ class TestAdminPage:
 
     def test_page_lists_the_presets_and_names_the_recommended_one(self):
         c = _login(TestClient(app))
-        html = c.get("/admin").text
+        html = c.get("/admin/limits").text
         for preset in download_limits.PRESETS:
             assert preset.label in html
         assert "recommended" in html
@@ -295,7 +295,7 @@ class TestAdminPage:
 
     def test_page_has_no_inline_handlers(self):
         c = _login(TestClient(app))
-        html = c.get("/admin").text
+        html = c.get("/admin/limits").text
         assert "onclick=" not in html
         assert "<script>" not in html
 
@@ -325,7 +325,7 @@ class TestAdminPage:
             _form(max_concurrent="4", per_user_active="2", max_queue_length="12"), c
         )
         assert resp.status_code == 303
-        assert resp.headers["location"] == "/admin?saved=1"
+        assert resp.headers["location"] == "/admin/limits?saved=1"
 
         async def _read():
             return await db.get_settings(prefix="download_limits.")
@@ -391,7 +391,7 @@ class TestAdminPage:
     def test_the_saved_values_are_rendered_back_into_the_form(self):
         c = _login(TestClient(app))
         _post_form(_form(max_concurrent="3", max_wait_seconds="200"), c)
-        html = c.get("/admin").text
+        html = c.get("/admin/limits").text
         assert 'name="max_concurrent"' in html
         assert 'value="3"' in html
         assert 'value="200"' in html

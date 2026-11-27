@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+
+{% block title %} — admin · system{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">System</h1>
+  <p class="page-meta mono">Files · disk · purge</p>
+</div>
+
+{% include "_admin_tabs.html" %}
+
+<!-- One panel per block: each owns its frame and its header strip, and the
+     stack supplies the gap between them. -->
+<div class="panel-stack">
+
+<!-- Disk Management -->
+<section class="card panel">
+  <div class="card-header panel-head">
+    <h2 class="card-title">Disk management</h2>
+    <div class="card-actions">
+      <button type="button" class="btn btn-secondary" data-action="delete-selected">Delete selected</button>
+      <button type="button" class="btn btn-danger" data-action="purge-open">Purge all</button>
+    </div>
+  </div>
+
+  <div class="disk-summary">
+    <span class="text-secondary">Downloads: <span class="mono">{{ downloads_label }}</span></span>
+    <span class="text-secondary">Limit: <span class="mono">{{ "%.1f"|format(max_disk_mb / 1024) }} GB</span></span>
+    <span class="text-secondary">Usage: <span class="mono">{{ disk_pct }}%</span></span>
+  </div>
+
+  <div class="table-scroll">
+    <table class="data-table" id="file-table">
+      <thead>
+        <tr>
+          <th class="col-check">
+            <input type="checkbox" id="select-all" />
+          </th>
+          <th>Filename</th>
+          <th class="num">Size</th>
+          <th>Type</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if files %}
+          {% for f in files %}
+          <tr>
+            <td class="col-check">
+              <input type="checkbox" class="file-check" value="{{ f.name }}" />
+            </td>
+            <td class="mono">{{ f.name }}</td>
+            <td class="mono num">{{ f.size_label }}</td>
+            <td>
+              {% if f.is_dir %}
+                <span class="badge badge-platform">dir</span>
+              {% else %}
+                <span class="text-secondary">file</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr>
+            <td colspan="4" class="empty-state">
+              <span class="glyph" aria-hidden="true">空</span>
+              No files in downloads directory.
+            </td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- System Info -->
+<section class="card panel">
+  <div class="card-header panel-head">
+    <h2 class="card-title">System info</h2>
+  </div>
+  <table class="info-table">
+    <tbody>
+      <tr>
+        <td class="info-key">Files in downloads</td>
+        <td class="mono">{{ files|length }}</td>
+      </tr>
+      <tr>
+        <td class="info-key">Space used by downloads</td>
+        <td class="mono">{{ space_label }}</td>
+      </tr>
+      <tr>
+        <td class="info-key">Cleanup limit</td>
+        <td class="mono">{{ max_disk_mb }} MB ({{ "%.1f"|format(max_disk_mb / 1024) }} GB)</td>
+      </tr>
+      <tr>
+        <td class="info-key">Usage</td>
+        <td class="mono">{{ disk_pct }}%</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+</div>
+<!-- /panel-stack -->
+
+<!-- Purge Modal -->
+<div class="modal-overlay" id="purge-modal" role="dialog" aria-modal="true" aria-labelledby="purge-modal-title" hidden>
+  <div class="modal-card modal-card--danger">
+    <h2 class="modal-title" id="purge-modal-title">Purge all files</h2>
+    <p class="modal-body">This will permanently delete <strong>all files</strong> in the downloads directory. This action cannot be undone.</p>
+    <p class="modal-body">Type <strong>PURGE</strong> to confirm:</p>
+    <input type="text" id="purge-confirm" class="filter-input" placeholder="PURGE" autocomplete="off" aria-label="Type PURGE to confirm" />
+    <div class="modal-actions">
+      <button type="button" class="btn btn-secondary" data-action="purge-close">Cancel</button>
+      <button type="button" class="btn btn-danger" data-action="purge-confirm">Purge all files</button>
+    </div>
+  </div>
+</div>
+{% endblock %}

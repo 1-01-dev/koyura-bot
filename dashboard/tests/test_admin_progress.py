@@ -6,8 +6,8 @@ Two layers, each pinned where it can actually break:
   ``X-Internal-Token``, which is how ``bot/progress_fields.py`` learns the set
   (``bot/bot_settings.py`` caches the answer for under a minute);
 * the panel — the section is a partial (``_admin_progress.html``) included by
-  ``admin.html`` in one line, so the /admin restructuring and this feature do
-  not edit the same regions. That single include line and the panel frame are
+  ``admin_bot.html`` in one line, so the rest of the page and this feature
+  do not edit the same regions. That single include line and the panel frame are
   asserted, not just the markup.
 
 The model itself (defaults, parse, storage rows) is covered by
@@ -44,7 +44,7 @@ app = create_app()
 
 DASHBOARD_DIR = Path(__file__).resolve().parents[1]
 TEMPLATES = DASHBOARD_DIR / "templates"
-ADMIN_TEMPLATE = TEMPLATES / "admin.html"
+ADMIN_TEMPLATE = TEMPLATES / "admin_bot.html"
 PARTIAL = TEMPLATES / "_admin_progress.html"
 
 
@@ -151,7 +151,7 @@ class TestBotSettingsApi:
 
 class TestAdminSection:
     def test_the_section_is_on_the_admin_page(self, admin):
-        page = admin.get("/admin")
+        page = admin.get("/admin/bot")
         assert page.status_code == 200
         body = page.text
         assert 'id="progress-card"' in body
@@ -163,7 +163,7 @@ class TestAdminSection:
         assert 'name="csrf_token"' in body
 
     def test_every_checkbox_has_a_label_and_a_hint(self, admin):
-        body = admin.get("/admin").text
+        body = admin.get("/admin/bot").text
         for name, label, hint, _default in progress_fields.FIELDS:
             assert f'for="progress-{name}"' in body
             assert label in body
@@ -173,7 +173,7 @@ class TestAdminSection:
             assert first_words.replace("&", "&amp;") in body
 
     def test_the_defaults_are_ticked(self, admin):
-        body = admin.get("/admin").text
+        body = admin.get("/admin/bot").text
         title_tag = body.split('id="progress-show_title"')[1].split(">")[0]
         bar_tag = body.split('id="progress-show_bar"')[1].split(">")[0]
         speed_tag = body.split('id="progress-show_speed"')[1].split(">")[0]
@@ -182,7 +182,7 @@ class TestAdminSection:
         assert "checked" not in speed_tag
 
     def test_the_section_lives_in_its_own_partial(self):
-        """Kept out of admin.html so the /admin restructuring does not conflict."""
+        """Kept out of admin_bot.html so the page and this section stay apart."""
         assert PARTIAL.exists()
         assert '{% include "_admin_progress.html" %}' in ADMIN_TEMPLATE.read_text()
 
@@ -203,8 +203,13 @@ class TestAdminSection:
         assert "_admin_progress.html" in stack
 
     def test_the_include_sits_after_the_languages_panel(self):
+        """Order on the page is the order of the includes: languages, progress,
+        messages. The languages panel moved to its own partial in the same
+        split, so it is its include line that has to come first."""
         body = ADMIN_TEMPLATE.read_text()
-        assert body.index('id="languages-card"') < body.index("_admin_progress.html")
+        assert body.index('"_admin_languages.html"') < body.index("\"_admin_progress.html\"")
+        languages = TEMPLATES / "_admin_languages.html"
+        assert 'id="languages-card"' in languages.read_text()
 
     def test_the_partial_brings_no_inline_script_or_style(self):
         text = PARTIAL.read_text()
@@ -213,7 +218,7 @@ class TestAdminSection:
         assert "<style>" not in text
 
     def test_the_state_line_names_what_is_shown(self, admin):
-        assert "shown: title,bar" in admin.get("/admin").text
+        assert "shown: title,bar" in admin.get("/admin/bot").text
 
     def test_saving_persists_and_redirects(self, admin):
         response = admin.post(
@@ -225,7 +230,7 @@ class TestAdminSection:
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert response.headers["location"] == "/admin?progress_saved=1"
+        assert response.headers["location"] == "/admin/bot?progress_saved=1"
         stored = asyncio.run(_stored())
         assert stored["bot_progress.show_percent"] == "true"
         assert stored["bot_progress.show_speed"] == "true"
@@ -287,7 +292,7 @@ class TestAdminSection:
 
     def test_the_section_does_not_disturb_the_languages_form(self, admin):
         """Two sections, two forms, one page: each keeps its own action."""
-        body = admin.get("/admin").text
+        body = admin.get("/admin/bot").text
         assert 'action="/admin/languages"' in body
         assert 'action="/admin/progress"' in body
         # Saving one leaves the other alone: no languages row was written, so

@@ -116,7 +116,11 @@ def _without_token_blocks(css: str) -> str:
 # 1. The link dialog
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("path", ["/history", "/errors", "/", "/admin"])
+@pytest.mark.parametrize(
+    "path",
+    ["/history", "/errors", "/",
+     "/admin/storage", "/admin/limits", "/admin/bot", "/admin/system"],
+)
 def test_every_page_carries_the_link_dialog(path: str):
     """One dialog in base.html: the tables share it, so it must exist
     everywhere the base template renders, not only on the two tables."""
@@ -323,24 +327,34 @@ def test_the_hamburger_keeps_its_id_and_control_attributes():
 
 
 # ---------------------------------------------------------------------------
-# 5. /admin: one panel per block
+# 5. /admin: one panel per block, one page per section
 # ---------------------------------------------------------------------------
 
 def test_admin_groups_its_blocks_into_separate_panels():
-    html = _page("/admin")
-    assert 'class="panel-stack"' in html
-    # Disk management, System info, Download limits and Bot languages: one
-    # frame and one header strip each, so the next panel costs no CSS.
-    assert html.count('class="card panel"') >= 4
-    assert html.count('class="card panel" id="limits-card"') == 1
-    assert html.count('class="card panel" id="languages-card"') == 1
-    for title in ("Disk management", "System info", "Download limits", "Bot languages"):
-        assert title in html
-    assert html.count('class="card-header panel-head"') >= 4
+    """Every admin page is a stack of the same ``card panel``, and a panel
+    belongs to exactly one page — that is what the split bought."""
+    pages = ("/admin/storage", "/admin/limits", "/admin/bot", "/admin/system")
+    for path in pages:
+        html = _page(path)
+        assert 'class="panel-stack"' in html, path
+        assert html.count('class="card panel"') >= 1, path
+        assert html.count('class="card-header panel-head"') >= 1, path
+
+    system = _page("/admin/system")
+    for title in ("Disk management", "System info"):
+        assert title in system
+    assert 'id="file-table"' in system
+    assert _page("/admin/limits").count('class="card panel" id="limits-card"') == 1
+    assert _page("/admin/bot").count('class="card panel" id="languages-card"') == 1
+    assert 'id="progress-card"' in _page("/admin/bot")
+    assert 'id="templates-card"' in _page("/admin/bot")
+    # The disk panels and the limits form are not on the same page any more.
+    assert "Download limits" not in system
+    assert "Disk management" not in _page("/admin/limits")
 
 
 def test_admin_keeps_the_limits_form_contract():
-    html = _page("/admin")
+    html = _page("/admin/limits")
     assert 'action="/admin/limits"' in html
     assert html.count('name="csrf_token"') >= 1
     assert html.count('data-action="limit-preset"') == 4

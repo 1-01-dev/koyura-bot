@@ -1,9 +1,10 @@
 {# Progress fields — which lines the bot draws in its progress message.
 
-   A partial on purpose: /admin is being restructured, so this section stays out
-   of admin.html apart from one include line. The markup reuses the limits /
-   languages classes inside a ``card panel`` frame, exactly like the panels next
-   to it, so it inherits the existing tokens and needs no new styles. #}
+   A partial on purpose: /admin/bot holds one include line and nothing else, so
+   this panel can change without touching the page around it. The markup reuses
+   the limits / languages classes inside a ``card panel`` frame, exactly like
+   the panels next to it, so it inherits the existing tokens and needs no new
+   styles. #}
 <section class="card panel" id="progress-card">
   <div class="card-header panel-head">
     <h2 class="card-title">Progress fields</h2>

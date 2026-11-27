@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +32,9 @@ def _render(request: Request, template: str, context: dict, status_code: int = 2
     body = dict(context)
     body["csrf_token"] = token
     body["request"] = request
+    # Pages outside /admin render the sidebar too; an empty key keeps the
+    # Admin group closed instead of raising on the missing variable.
+    body.setdefault("admin_section", "")
     html = templates.env.get_template(template).render(**body)
     response = HTMLResponse(content=html, status_code=status_code)
     auth.set_csrf_cookie(response, token, request)
@@ -381,29 +385,106 @@ def _templates_redirect(
         query += f"&template={int(template_id)}"
     if notice:
         query += f"&templates_notice={notice}"
-    return RedirectResponse(url=f"/admin?{query}", status_code=303)
+    return RedirectResponse(url=f"/admin/bot?{query}", status_code=303)
 
 
 async def _templates_error(
     request: Request, user: str, message: str, **context
 ) -> Response:
-    """Re-render /admin with a template error and the submitted draft."""
-    body = await _admin_error_context(user, message, scope="templates")
-    body.update(await _templates_context(error=message, **context))
-    return _render(request, "admin.html", body, status_code=400)
+    """Re-render /admin/bot with a template error and the submitted draft."""
+    return await _bot_page(
+        request, user, template_error=message, status_code=400, **context
+    )
 
 
-@router.get("/admin", response_class=HTMLResponse)
-async def admin_page(
-    request: Request, saved: int = 0, languages_saved: int = 0,
-    progress_saved: int = 0, templates_saved: int = 0,
-    kind: str | None = None, lang: str | None = None,
-    template: int | None = None, templates_notice: str | None = None,
+# ---------------------------------------------------------------------------
+# Admin: one page per section
+# ---------------------------------------------------------------------------
+
+#: The sub-pages under /admin, in sidebar order. ``base.html`` and the in-page
+#: tab strip both loop over this, so a new section is one row here plus a
+#: template — the navigation cannot drift from the routes.
+ADMIN_SECTIONS: tuple[dict[str, str], ...] = (
+    {"key": "storage", "label": "Storage", "href": "/admin/storage"},
+    {"key": "limits", "label": "Limits", "href": "/admin/limits"},
+    {"key": "bot", "label": "Bot settings", "href": "/admin/bot"},
+    {"key": "system", "label": "System", "href": "/admin/system"},
+)
+
+ADMIN_SECTION_TEMPLATES = {
+    "storage": "admin_storage.html",
+    "limits": "admin_limits.html",
+    "bot": "admin_bot.html",
+    "system": "admin_system.html",
+}
+
+#: Where a bare ``/admin`` lands. System is the page that only reads: the first
+#: question a fresh visit asks is "is this box healthy", and the answer must not
+#: depend on a settings row or on a half-finished section.
+ADMIN_HOME = "system"
+
+#: Which query string belongs to which section. Old links and old redirects
+#: have exactly two shapes — ``?saved=1`` and ``?kind=…&lang=…`` — and both must
+#: keep working now that the page they point at has moved.
+ADMIN_SECTION_PARAMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("limits", ("saved",)),
+    (
+        "bot",
+        (
+            "languages_saved",
+            "progress_saved",
+            "templates_saved",
+            "kind",
+            "lang",
+            "template",
+            "templates_notice",
+        ),
+    ),
+)
+
+templates.env.globals["admin_links"] = ADMIN_SECTIONS
+
+
+def _admin_home_for(query: Iterable[str]) -> str:
+    """The section a legacy ``/admin?…`` link belongs to."""
+    present = set(query)
+    for section, names in ADMIN_SECTION_PARAMS:
+        if present.intersection(names):
+            return section
+    return ADMIN_HOME
+
+
+def _render_admin(
+    request: Request, section: str, context: dict, status_code: int = 200
 ) -> Response:
-    user = _require_user(request)
-    if not user:
-        return RedirectResponse(url="/login", status_code=303)
+    """Render one sub-page; the section drives the sidebar and the tab strip."""
+    body = dict(context)
+    body["active"] = "admin"
+    body["admin_section"] = section
+    return _render(request, ADMIN_SECTION_TEMPLATES[section], body, status_code)
 
+
+def _human_size(value: int, *, gb_decimals: int = 1, kb_fallback: bool = False) -> str:
+    """A byte count with the largest unit that still reads as a number.
+
+    The three places that print a size differ only in two details — how many
+    decimals a gigabyte keeps and whether a sub-megabyte value is still worth a
+    fraction or is clearer as raw bytes — so they share one ladder instead of
+    three near-identical branches in the templates.
+    """
+    if value >= 1073741824:
+        return f"{value / 1073741824:.{gb_decimals}f} GB"
+    if value >= 1048576:
+        return f"{value / 1048576:.1f} MB"
+    if kb_fallback:
+        return f"{value / 1024:.1f} KB"
+    if value >= 1024:
+        return f"{value / 1024:.1f} KB"
+    return f"{value} B"
+
+
+def _system_context() -> dict:
+    """Files in ``DOWNLOADS_PATH`` and the numbers the disk panels print."""
     downloads_path = Path(os.environ.get("DOWNLOADS_PATH", "/downloads"))
     files = []
     downloads_bytes = 0
@@ -415,7 +496,12 @@ async def admin_page(
                     if item.is_file():
                         downloads_bytes += stat.st_size
                     files.append(
-                        {"name": item.name, "size": stat.st_size, "is_dir": item.is_dir()}
+                        {
+                            "name": item.name,
+                            "size": stat.st_size,
+                            "size_label": _human_size(stat.st_size),
+                            "is_dir": item.is_dir(),
+                        }
                     )
                 except OSError:
                     continue
@@ -428,52 +514,163 @@ async def admin_page(
         max_disk_mb = 5000
     max_disk_bytes = max_disk_mb * 1024 * 1024
     disk_pct = round(downloads_bytes / max_disk_bytes * 100, 1) if max_disk_bytes else 0
-
-    stored = await db.get_settings(prefix=limits_settings.SETTING_PREFIX)
-    context = {
-        "user": user,
-        "active": "admin",
+    return {
         "files": files,
         "downloads_bytes": downloads_bytes,
+        # The disk summary never drops below a kilobyte; the System info row
+        # keeps two decimals per gigabyte and falls back to raw bytes.
+        "downloads_label": _human_size(downloads_bytes, kb_fallback=True),
+        "space_label": _human_size(downloads_bytes, gb_decimals=2),
         "max_disk_mb": max_disk_mb,
         "disk_pct": disk_pct,
     }
-    context.update(_limits_context(stored))
-    context["limits_notice"] = (
-        "Limits saved and applied to the engine."
-        if saved and not context.get("limits_error")
-        else None
-    )
 
-    languages_stored = await db.get_settings(prefix=bot_languages.SETTING_PREFIX)
-    context.update(_languages_context(languages_stored))
+
+async def _bot_context(
+    *,
+    languages_error: str | None = None,
+    progress_error: str | None = None,
+    template_error: str | None = None,
+    **template_kwargs,
+) -> dict:
+    """The three panels of /admin/bot, with at most one showing a failure."""
+    stored_languages = await db.get_settings(prefix=bot_languages.SETTING_PREFIX)
+    stored_progress = await db.get_settings(prefix=progress_fields.SETTING_PREFIX)
+    context: dict = {}
+    context.update(_languages_context(stored_languages, error=languages_error))
+    context.update(_progress_context(stored_progress, error=progress_error))
+    context.update(await _templates_context(error=template_error, **template_kwargs))
+    return context
+
+
+async def _limits_page(
+    request: Request,
+    user: str,
+    *,
+    error: str | None = None,
+    values: dict[str, str] | None = None,
+    status_code: int = 200,
+) -> Response:
+    """Render /admin/limits, optionally with a failure and the typed values."""
+    stored = await db.get_settings(prefix=limits_settings.SETTING_PREFIX)
+    context: dict = {"user": user}
+    context.update(_limits_context(stored, error=error))
+    if values is not None:
+        # Echo the submission so the form keeps what was typed.
+        context["limits"] = values
+        for field in context["limit_fields"]:
+            field["value"] = values.get(field["name"], "")
+    return _render_admin(request, "limits", context, status_code=status_code)
+
+
+async def _bot_page(
+    request: Request,
+    user: str,
+    *,
+    languages_error: str | None = None,
+    progress_error: str | None = None,
+    template_error: str | None = None,
+    languages: dict | None = None,
+    status_code: int = 200,
+    **template_kwargs,
+) -> Response:
+    """Render /admin/bot; ``languages`` echoes a rejected submission."""
+    context: dict = {"user": user}
+    context.update(
+        await _bot_context(
+            languages_error=languages_error,
+            progress_error=progress_error,
+            template_error=template_error,
+            **template_kwargs,
+        )
+    )
+    if languages is not None:
+        context["bot_languages"] = languages
+    return _render_admin(request, "bot", context, status_code=status_code)
+
+
+@router.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request) -> Response:
+    """Send ``/admin`` to a sub-page, keeping an old link's query string.
+
+    The single-page URLs are still out there — a bookmark, the docs, the
+    redirect a POST used to answer with — so the parameters pick the section
+    instead of being dropped. The session is checked first: an anonymous visit
+    still goes to the login form, not to a redirect chain.
+    """
+    if not _require_user(request):
+        return RedirectResponse(url="/login", status_code=303)
+    target = f"/admin/{_admin_home_for(request.query_params.keys())}"
+    if request.query_params:
+        target = f"{target}?{request.query_params}"
+    return RedirectResponse(url=target, status_code=303)
+
+
+@router.get("/admin/{section}", response_class=HTMLResponse)
+async def admin_section_page(
+    request: Request,
+    section: str,
+    saved: int = 0,
+    languages_saved: int = 0,
+    progress_saved: int = 0,
+    templates_saved: int = 0,
+    kind: str | None = None,
+    lang: str | None = None,
+    template: int | None = None,
+    templates_notice: str | None = None,
+) -> Response:
+    """One page per section; the query string only carries a notice.
+
+    Every section accepts the same parameters so an old link keeps its
+    ``?saved=1`` when it is redirected here, even if only one section reads it.
+    """
+    user = _require_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if section not in ADMIN_SECTION_TEMPLATES:
+        return RedirectResponse(url=f"/admin/{ADMIN_HOME}", status_code=303)
+
+    context: dict = {"user": user}
+
+    if section == "system":
+        context.update(_system_context())
+        return _render_admin(request, section, context)
+
+    if section == "storage":
+        return _render_admin(request, section, context)
+
+    if section == "limits":
+        context.update(_limits_context(
+            await db.get_settings(prefix=limits_settings.SETTING_PREFIX)
+        ))
+        context["limits_notice"] = (
+            "Limits saved and applied to the engine."
+            if saved and not context.get("limits_error")
+            else None
+        )
+        return _render_admin(request, section, context)
+
+    context.update(await _bot_context(
+        kind=kind,
+        lang=lang,
+        template_id=template,
+        notice=templates_notice,
+    ))
     context["languages_notice"] = (
         "Languages saved. The bot picks them up within a minute."
         if languages_saved and not context.get("languages_error")
         else None
     )
-
-    progress_stored = await db.get_settings(prefix=progress_fields.SETTING_PREFIX)
-    context.update(_progress_context(progress_stored))
     context["progress_notice"] = (
         "Progress fields saved. The bot picks them up within a minute."
         if progress_saved and not context.get("progress_error")
         else None
     )
-
-    context.update(
-        await _templates_context(
-            kind=kind,
-            lang=lang,
-            template_id=template,
-            notice=templates_notice,
-        )
-    )
     if templates_saved and not context.get("template_error"):
         context["template_notice"] = (
             "Template saved and activated. The bot picks it up within a minute."
         )
-    return _render(request, "admin.html", context)
+    return _render_admin(request, section, context)
 
 
 @router.post("/admin/limits")
@@ -490,12 +687,10 @@ async def save_limits(request: Request) -> Response:
     form = await request.form()
     submitted_csrf = str(form.get(auth.CSRF_FORM_FIELD, ""))
     if not auth.verify_csrf(request, submitted_csrf):
-        return _render(
+        return await _limits_page(
             request,
-            "admin.html",
-            await _admin_error_context(
-                user, "Your session expired. Reload the page and try again."
-            ),
+            user,
+            error="Your session expired. Reload the page and try again.",
             status_code=403,
         )
 
@@ -505,12 +700,9 @@ async def save_limits(request: Request) -> Response:
     }
     limits, errors = limits_settings.Limits.parse(raw)
     if errors:
-        context = await _admin_error_context(user, " ".join(errors))
-        # Echo the submitted values so the form keeps what was typed.
-        context["limits"] = {key: raw.get(key, "") for key in limits_settings.FIELD_NAMES}
-        for field in context["limit_fields"]:
-            field["value"] = context["limits"][field["name"]]
-        return _render(request, "admin.html", context, status_code=400)
+        return await _limits_page(
+            request, user, error=" ".join(errors), values=raw, status_code=400
+        )
 
     stored = await db.get_settings(prefix=limits_settings.SETTING_PREFIX)
     before = limits_settings.Limits.from_env()
@@ -534,12 +726,13 @@ async def save_limits(request: Request) -> Response:
         "applied" if ok else f"not applied - {detail}",
     )
     if not ok:
-        context = await _admin_error_context(
-            user, f"Saved, but the engine did not apply them: {detail}"
+        return await _limits_page(
+            request,
+            user,
+            error=f"Saved, but the engine did not apply them: {detail}",
         )
-        return _render(request, "admin.html", context, status_code=200)
 
-    return RedirectResponse(url="/admin?saved=1", status_code=303)
+    return RedirectResponse(url="/admin/limits?saved=1", status_code=303)
 
 
 @router.post("/admin/languages")
@@ -558,12 +751,10 @@ async def save_languages(request: Request) -> Response:
     form = await request.form()
     submitted_csrf = str(form.get(auth.CSRF_FORM_FIELD, ""))
     if not auth.verify_csrf(request, submitted_csrf):
-        return _render(
+        return await _bot_page(
             request,
-            "admin.html",
-            await _admin_error_context(
-                user, "Your session expired. Reload the page and try again."
-            ),
+            user,
+            languages_error="Your session expired. Reload the page and try again.",
             status_code=403,
         )
 
@@ -572,14 +763,18 @@ async def save_languages(request: Request) -> Response:
     parsed, errors = bot_languages.parse(enabled, default)
     if parsed is None or errors:
         message = " ".join(errors) or "Could not save these languages."
-        context = await _admin_error_context(user, message)
-        # Echo the submission so the checkboxes keep what the admin clicked.
-        context["bot_languages"] = {
-            "languages": [code for code in enabled if code in bot_languages.LANGUAGES],
-            "default_language": default,
-            "options": bot_languages.options(),
-        }
-        return _render(request, "admin.html", context, status_code=400)
+        return await _bot_page(
+            request,
+            user,
+            languages_error=message,
+            status_code=400,
+            # Echo the submission so the checkboxes keep what the admin clicked.
+            languages={
+                "languages": [code for code in enabled if code in bot_languages.LANGUAGES],
+                "default_language": default,
+                "options": bot_languages.options(),
+            },
+        )
     settings = parsed
 
     before = bot_languages.BotLanguages.from_row(
@@ -593,7 +788,7 @@ async def save_languages(request: Request) -> Response:
         before.describe(),
         settings.describe(),
     )
-    return RedirectResponse(url="/admin?languages_saved=1", status_code=303)
+    return RedirectResponse(url="/admin/bot?languages_saved=1", status_code=303)
 
 
 @router.post("/admin/progress")
@@ -612,12 +807,10 @@ async def save_progress(request: Request) -> Response:
     form = await request.form()
     submitted_csrf = str(form.get(auth.CSRF_FORM_FIELD, ""))
     if not auth.verify_csrf(request, submitted_csrf):
-        return _render(
+        return await _bot_page(
             request,
-            "admin.html",
-            await _admin_error_context(
-                user, "Your session expired. Reload the page and try again."
-            ),
+            user,
+            progress_error="Your session expired. Reload the page and try again.",
             status_code=403,
         )
 
@@ -625,13 +818,15 @@ async def save_progress(request: Request) -> Response:
     parsed, errors = progress_fields.parse(checked)
     if parsed is None or errors:
         message = " ".join(errors) or "Could not save these progress fields."
-        context = await _admin_error_context(user, message)
+        context = await _bot_context(progress_error=message)
         # Echo the submission so the checkboxes keep what the admin clicked.
         context.update(_progress_context(
             {f"{progress_fields.SETTING_PREFIX}{name}": "true" for name in checked}
         ))
         context["progress_error"] = message
-        return _render(request, "admin.html", context, status_code=400)
+        return _render_admin(
+            request, "bot", {"user": user, **context}, status_code=400
+        )
 
     before = progress_fields.ProgressFields.from_row(
         await db.get_settings(prefix=progress_fields.SETTING_PREFIX)
@@ -644,7 +839,7 @@ async def save_progress(request: Request) -> Response:
         before.describe(),
         parsed.describe(),
     )
-    return RedirectResponse(url="/admin?progress_saved=1", status_code=303)
+    return RedirectResponse(url="/admin/bot?progress_saved=1", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -661,14 +856,10 @@ async def _template_request(
     form = await request.form()
     submitted = str(form.get(auth.CSRF_FORM_FIELD, ""))
     if not auth.verify_csrf(request, submitted):
-        return _render(
+        return await _bot_page(
             request,
-            "admin.html",
-            await _admin_error_context(
-                user,
-                "Your session expired. Reload the page and try again.",
-                scope="templates",
-            ),
+            user,
+            template_error="Your session expired. Reload the page and try again.",
             status_code=403,
         )
     return user, form
@@ -824,28 +1015,6 @@ async def reset_message_templates(request: Request) -> Response:
         lang,
         notice=f"Reset to the built-in default ({removed} custom template(s) removed).",
     )
-
-
-async def _admin_error_context(
-    user: str, message: str, *, scope: str | None = None
-) -> dict:
-    """Shared context for an admin page that has to show a message.
-
-    ``scope`` narrows the message to one panel: the templates routes render the
-    same page as /admin, and a good sentence under "Download limits" about a
-    message template would read like the wrong form failed.
-    """
-    stored = await db.get_settings(prefix=limits_settings.SETTING_PREFIX)
-    context = {"user": user, "active": "admin", "files": [], "downloads_bytes": 0,
-               "max_disk_mb": 0, "disk_pct": 0}
-    context.update(_limits_context(stored, error=None if scope else message))
-    context.update(_languages_context({}, error=None if scope else message))
-    context.update(_progress_context({}, error=None if scope else message))
-    if scope == "templates":
-        context.update(await _templates_context(error=message))
-    else:
-        context.update(await _templates_context())
-    return context
 
 
 def _pretty_value(value: float) -> str:

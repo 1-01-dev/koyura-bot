@@ -419,7 +419,11 @@ class TestLogin:
         limiter.reset("1.2.3.4")
         assert not limiter.is_blocked("1.2.3.4")
 
-    @pytest.mark.parametrize("path", ["/", "/history", "/errors", "/admin"])
+    @pytest.mark.parametrize(
+        "path",
+        ["/", "/history", "/errors", "/admin", "/admin/storage",
+         "/admin/limits", "/admin/bot", "/admin/system"],
+    )
     def test_pages_redirect_to_the_login_form(self, client, path):
         response = client.get(path, follow_redirects=False)
 
@@ -427,7 +431,8 @@ class TestLogin:
         assert response.headers["location"] == "/login"
 
     def test_logged_in_pages_render(self, admin):
-        for path in ("/", "/history", "/errors", "/admin"):
+        for path in ("/", "/history", "/errors", "/admin", "/admin/storage",
+                     "/admin/limits", "/admin/bot", "/admin/system"):
             response = admin.get(path)
             assert response.status_code == 200, path
 
@@ -573,6 +578,6 @@ def test_history_pagination_keeps_the_date_filter(admin):
 # ---------------------------------------------------------------------------
 
 def test_every_rendered_form_carries_a_csrf_token(admin):
-    for path in ("/history", "/errors", "/admin"):
+    for path in ("/history", "/errors", "/admin", "/admin/limits", "/admin/bot"):
         html = admin.get(path).text
         assert re.search(r'name="csrf_token" value="[^"]+"', html), path

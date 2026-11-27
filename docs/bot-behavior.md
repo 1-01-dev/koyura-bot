@@ -526,15 +526,14 @@ lands on the next download rather than switching mid-caption.
 
 ### The panel section
 
-`dashboard/templates/_admin_progress.html` is a partial and `admin.html` holds
-exactly one line — `{% include "_admin_progress.html" %}` — right after the
-`Bot languages` card. That is deliberate: another branch is restructuring
-`/admin`, and a separate file plus a single include keeps the two changes from
-conflicting. The markup reuses the existing `card` / `limits-grid` /
-`limits-cell` / `language-choice` classes, so it needs no new CSS. The form
-(`POST /admin/progress`) carries the double-submit CSRF token, stores the eight
-rows, and redirects to `/admin?progress_saved=1`; the bot picks the change up
-within 45 s, no restart.
+`dashboard/templates/_admin_progress.html` is a partial and `admin_bot.html`
+holds exactly one line — `{% include "_admin_progress.html" %}` — right after the
+`Bot languages` include. That is deliberate: the section is one file, so the
+page around it can grow without touching it. The markup reuses the existing
+`card` / `limits-grid` / `limits-cell` / `language-choice` classes, so it needs
+no new CSS. The form (`POST /admin/progress`) carries the double-submit CSRF
+token, stores the eight rows, and redirects to `/admin/bot?progress_saved=1`;
+the bot picks the change up within 45 s, no restart.
 
 ## 10. Languages (English / Russian)
 

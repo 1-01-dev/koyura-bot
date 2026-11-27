@@ -6,9 +6,9 @@ Two layers, each pinned where it can break:
   ``GET /api/message-templates`` serves the catalogue, both behind
   ``X-Internal-Token``; that is how ``bot/message_templates.py`` learns the
   bodies (``bot/bot_settings.py`` caches the answer for under a minute);
-* the panel — the section is a partial included by ``admin.html`` in one line, so
-  the /admin restructuring and this feature never edit the same region. The
-  include line, the panel frame, the editor, the preview and the placeholder
+* the panel — the section is a partial included by ``admin_bot.html`` in one
+  line, so the page and this feature never edit the same region. The include
+  line, the panel frame, the editor, the preview and the placeholder
   reference table are asserted, not just the routes.
 
 Environment must be set BEFORE importing auth/main/db, like the other dashboard
@@ -41,7 +41,7 @@ app = create_app()
 
 DASHBOARD_DIR = Path(__file__).resolve().parents[1]
 TEMPLATES = DASHBOARD_DIR / "templates"
-ADMIN_TEMPLATE = TEMPLATES / "admin.html"
+ADMIN_TEMPLATE = TEMPLATES / "admin_bot.html"
 PARTIAL = TEMPLATES / "_admin_templates.html"
 
 
@@ -161,7 +161,7 @@ class TestBotSettingsApi:
 
 class TestAdminSection:
     def test_the_section_is_on_the_admin_page(self, admin):
-        page = admin.get("/admin")
+        page = admin.get("/admin/bot")
         assert page.status_code == 200
         body = page.text
         assert 'id="templates-card"' in body
@@ -173,14 +173,14 @@ class TestAdminSection:
         assert 'name="csrf_token"' in body
 
     def test_the_kind_list_is_grouped(self, admin):
-        body = admin.get("/admin").text
+        body = admin.get("/admin/bot").text
         for group in message_catalog.categories():
             assert str(group["label"]) in body
         for kind in message_catalog.KINDS[:5]:
             assert f"kind={kind.id}" in body
 
     def test_the_placeholder_reference_is_rendered(self, admin):
-        body = admin.get("/admin?kind=card&lang=en").text
+        body = admin.get("/admin/bot?kind=card&lang=en").text
         assert "Справочник плейсхолдеров" in body
         assert "Что подставляет" in body
         card = message_catalog.get("card")
@@ -190,7 +190,7 @@ class TestAdminSection:
             assert placeholder.summary in body
 
     def test_the_default_is_offered_and_previewed(self, admin):
-        body = admin.get("/admin?kind=card&lang=en").text
+        body = admin.get("/admin/bot?kind=card&lang=en").text
         assert "Default" in body
         assert "встроенный" in body
         card = message_catalog.get("card")
@@ -198,7 +198,7 @@ class TestAdminSection:
         assert card.samples()["title"] in body
 
     def test_the_editor_shows_the_default_body_for_a_new_template(self, admin):
-        body = admin.get("/admin?kind=card&lang=ru").text
+        body = admin.get("/admin/bot?kind=card&lang=ru").text
         card = message_catalog.get("card")
         assert card is not None
         default = card.template("ru")
@@ -289,7 +289,7 @@ class TestSaving:
 
     def test_a_script_tag_is_escaped_in_the_editor(self, admin):
         _save(admin, body="<script>alert(1)</script> @title")
-        body = admin.get("/admin?kind=card&lang=en").text
+        body = admin.get("/admin/bot?kind=card&lang=en").text
         assert "<script>alert(1)</script>" not in body
         assert "&lt;script&gt;" in body
 

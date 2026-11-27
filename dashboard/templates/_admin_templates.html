@@ -1,9 +1,9 @@
 {# Message templates — the visual builder.
 
-   A partial on purpose: /admin is being restructured, so this section stays out
-   of admin.html apart from one include line. It reuses the panel / limits /
-   language classes next to it (tokens, hairline cells, mono labels) and adds
-   only the few templates-* hooks the editor needs.
+   A partial on purpose: /admin/bot holds one include line and nothing else, so
+   this section can change without touching the page around it. It reuses the
+   panel / limits / language classes next to it (tokens, hairline cells, mono
+   labels) and adds only the few templates-* hooks the editor needs.
 
    The whole section is a plain HTML form: the list, the language tabs and the
    kind picker are links, the four actions are POST forms with the CSRF token,

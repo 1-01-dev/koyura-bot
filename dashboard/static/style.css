@@ -162,6 +162,71 @@
   stroke-width: 1.5;
 }
 
+/* ----- Admin group: one disclosure row, four sub-page rows -----
+   The parent is a button that keeps the look of a nav row (its own class
+   clears the button chrome), the children stay in the same table and are
+   indented to the parent's label column, so the nesting needs no second
+   colour and no extra rule. Open/closed is one class on the group; with JS
+   off the server renders it open on every /admin/* page (see shell.js). */
+.nav-group-toggle {
+  width: 100%;
+  border-top: 0;
+  border-right: 0;
+  background: none;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The parent stays marked while a child is current, without stealing the
+   accent from it: edge and ink here, red text on the child below. */
+.nav-group.is-active > .nav-group-toggle {
+  border-left-color: var(--red);
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.nav-group .nav-group-toggle .nav-caret {
+  display: block;
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.12s ease;
+}
+
+.nav-group.is-open .nav-group-toggle .nav-caret {
+  transform: rotate(45deg);
+}
+
+.nav-children {
+  display: none;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.nav-group.is-open .nav-children {
+  display: block;
+}
+
+/* 41px = 16px row padding + 15px glyph + 10px gap: the child label lines up
+   with the parent's, and 44px keeps the row a thumb target in the drawer. */
+.nav-child {
+  min-height: 44px;
+  padding-left: 41px;
+}
+
+.nav-child.active {
+  border-left-color: var(--red);
+  background: var(--wash);
+  font-weight: 500;
+  color: var(--red-ink);
+}
+
 /* Sidebar footer: the theme switch sits above the logout form (POST + CSRF). */
 .sidebar-bottom {
   border-top: 1px solid var(--line);
@@ -467,6 +532,75 @@
   display: flex;
   flex-direction: column;
   gap: 28px;
+}
+
+/* The stack's panels are anchors on /admin/bot: leave a little air above one
+   when a fragment scrolls it to the top edge. */
+.panel-stack > .panel {
+  scroll-margin-top: 16px;
+}
+
+/* ----- Admin sub-page tabs -----
+   The same four links as the sidebar group, in the page: between 768 and
+   1023px the rail is icons only, and this strip is where the sections stay
+   reachable. One hairline, one accent edge — the same table, not a pill row. */
+.admin-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0 0 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-tab {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 14px;
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+  text-decoration: none;
+  transition: color 0.1s ease, background 0.1s ease;
+}
+
+.admin-tab:hover {
+  color: var(--ink);
+  background: var(--wash);
+}
+
+.admin-tab.active {
+  border-bottom-color: var(--red);
+  font-weight: 500;
+  color: var(--red-ink);
+}
+
+/* The anchors inside /admin/bot: a quieter copy of the strip, and no rule of
+   its own because the tab strip above already drew one. */
+.admin-anchors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 18px;
+  margin: 0 0 20px;
+}
+
+.admin-anchor {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+  text-decoration: none;
+}
+
+.admin-anchor:hover {
+  color: var(--ink);
 }
 
 /* The header strip carries its own rule, edge to edge: the body below it is a
@@ -1181,6 +1315,20 @@
   }
 }
 
+/* 768–1023px, the icon rail: there is no room for a sub-label, so the group
+   keeps its parent row only — and no caret, because nothing opens here. The
+   four sections stay one tap away in the tab strip every admin page carries
+   under its title. */
+@media (min-width: 768px) and (max-width: 1023px) {
+  .nav-group.is-open .nav-children {
+    display: none;
+  }
+
+  .nav-group .nav-group-toggle .nav-caret {
+    display: none;
+  }
+}
+
 /* ≤767px: the rail becomes a drawer over the content. */
 @media (max-width: 767px) {
   .hamburger {
@@ -1217,8 +1365,15 @@
     padding: 12px 16px;
   }
 
-  .sidebar .nav-item span {
+  .sidebar .nav-item span:not(.nav-caret) {
     display: inline;
+  }
+
+  /* The drawer is where the sub-pages are tapped: keep the indent and the
+     44px row the desktop table already declares. */
+  .sidebar .nav-child {
+    min-height: 44px;
+    padding-left: 41px;
   }
 
   .sidebar .theme-toggle {

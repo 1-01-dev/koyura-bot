@@ -99,11 +99,16 @@ def test_pages_load_the_entry_as_a_module():
     assert 'src="/static/shell.js"' in html
 
 
+#: The admin page is four pages; the action wiring has to cover all of them.
+ADMIN_PAGES = ("/admin/storage", "/admin/limits", "/admin/bot", "/admin/system")
+
+
 def test_the_entry_wires_every_action_the_templates_use():
     entry = (STATIC / "dashboard.js").read_text()
-    html_admin = (_login().get("/admin")).text
-    actions = set(re.findall(r'data-action="([^"]+)"', html_admin))
-    assert actions, "the admin page has no data-action hooks"
+    actions = set()
+    for path in ADMIN_PAGES:
+        actions |= set(re.findall(r'data-action="([^"]+)"', (_login().get(path)).text))
+    assert actions, "the admin pages have no data-action hooks"
     for action in actions:
         assert f"'{action}'" in entry, f"{action} is not wired in dashboard.js"
     assert "initAdminActions" in entry
