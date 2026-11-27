@@ -17,7 +17,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest  # noqa: E402
 
+import bot_settings  # noqa: E402
 import progress_card  # noqa: E402
+import progress_fields  # noqa: E402
 from handlers import config, download_flow  # noqa: E402
 from koyura_client import KoyuraBusy  # noqa: E402
 
@@ -30,6 +32,25 @@ def _no_poll_delay(monkeypatch):
         await real_sleep(0)
 
     monkeypatch.setattr(download_flow.asyncio, "sleep", _fast)
+
+
+@pytest.fixture(autouse=True)
+def _show_the_percentage():
+    """These tests read the percentage off the card; the default has it off."""
+    base = bot_settings.defaults()
+    fields = progress_fields.Fields(
+        values=dict.fromkeys(progress_fields.FIELD_NAMES, True)
+    )
+    bot_settings.prime(
+        bot_settings.Settings(
+            languages=base.languages,
+            default_language=base.default_language,
+            source="panel",
+            progress=fields,
+        )
+    )
+    yield
+    bot_settings.prime(base)
 
 
 def _plain(text: str) -> str:
