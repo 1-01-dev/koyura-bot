@@ -138,14 +138,19 @@ The panel also detects the server (`os.cpu_count()`, `/proc/meminfo`, cgroup
 limits in a container), names the preset that fits and fills the form with it on
 one click.
 
-### Setting the progress fields from the admin panel
+### Setting the progress message from the admin panel
 
-**Admin → Progress fields** decides which lines the bot's live progress message
-carries — eight checkboxes (`bot_progress.*` in the same `settings` table),
-default title + bar. The bot reads them from `GET /api/bot-settings` and caches
-the answer for 45 s, so saving is enough: there is nothing to push to the engine
-or the bot, and no restart. See `docs/bot-behavior.md` §9 for the table of keys,
-the rendered shapes and the "everything off still shows the stage" rule.
+**Admin → Bot settings → Message templates**, kind `progress`, decides what the
+bot's live progress message carries: it is an ordinary template body with
+`@title`, `@stage`, `@bar`, `@percent`, `@size`, `@speed`, `@eta`, `@elapsed`,
+`@quality` and the pre-joined `@facts`. The built-in body is the title, the stage
+and the 12-cell bar. The bot reads the active body from `GET /api/bot-settings`
+and caches the answer for 45 s, so saving is enough: there is nothing to push to
+the engine or the bot, and no restart. See `docs/bot-behavior.md` §9 for the
+placeholder table, the rendered shapes and the fallback rules.
+
+The old **Progress fields** checkboxes (`bot_progress.*`) are retired; nothing
+reads those rows any more and the dashboard deletes them on its next start.
 
 ## Bot uploads
 
