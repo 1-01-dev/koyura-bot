@@ -153,6 +153,7 @@ EN: dict[str, str] = {
     "stage.downloading": "Downloading…",
     "stage.processing": "Processing…",
     "stage.uploading": "Uploading…",
+    "stage.converting": "Converting…",
     "download.session_expired": "Session expired. Please send the link again.",
     "download.already": "Already downloading — wait for the file.",
     "download.unexpected": "Download service returned an unexpected answer.",
@@ -175,6 +176,21 @@ EN: dict[str, str] = {
     "limit.audio_too_big": "This audio is too large to send (limit {limit}).",
     "limit.quality_selected": (
         "Selected {quality}: {skipped} does not fit the send limit"
+    ),
+    # -- codecs Telegram may not play (a conversion is never automatic) ------
+    "transcode.note": (
+        "AV1/VP9 may not play on iPhone — those formats arrive as a file, "
+        "or can be converted to H.264."
+    ),
+    "transcode.ask": "Send {quality} ({codec}) as a file, or convert it?",
+    "transcode.send_as_file": "Send as file",
+    "transcode.convert": "Convert ({eta})",
+    "transcode.convert_no_eta": "Convert",
+    "transcode.eta_seconds": "~{seconds} s",
+    "transcode.eta_minutes": "~{minutes} min",
+    "transcode.converted": "Converted to H.264.",
+    "transcode.document": (
+        "Sent as a file: this codec plays as a video only on some phones."
     ),
     # -- queue -------------------------------------------------------------
     "queue.hint": "You can leave this chat — the file arrives here.",
@@ -314,6 +330,7 @@ RU: dict[str, str] = {
     "stage.downloading": "Скачиваю…",
     "stage.processing": "Обрабатываю…",
     "stage.uploading": "Отправляю…",
+    "stage.converting": "Конвертирую…",
     "download.session_expired": "Сессия истекла. Пришлите ссылку заново.",
     "download.already": "Уже скачивается — дождитесь файла.",
     "download.unexpected": "Сервис загрузки ответил неожиданно.",
@@ -336,6 +353,21 @@ RU: dict[str, str] = {
     "limit.audio_too_big": "Это аудио слишком большое для отправки (лимит {limit}).",
     "limit.quality_selected": (
         "Выбрано {quality}: {skipped} не влезает в лимит"
+    ),
+    # -- кодеки, которые Telegram может не проиграть -------------------------
+    "transcode.note": (
+        "AV1/VP9 может не проигрываться на iPhone — такие форматы приходят "
+        "файлом, а можно сконвертировать в H.264."
+    ),
+    "transcode.ask": "Отправить {quality} ({codec}) файлом или конвертировать?",
+    "transcode.send_as_file": "Отправить файлом",
+    "transcode.convert": "Конвертировать ({eta})",
+    "transcode.convert_no_eta": "Конвертировать",
+    "transcode.eta_seconds": "~{seconds} с",
+    "transcode.eta_minutes": "~{minutes} мин",
+    "transcode.converted": "Сконвертировано в H.264.",
+    "transcode.document": (
+        "Отправлено файлом: этот кодек проигрывается как видео не на всех телефонах."
     ),
     # -- queue -------------------------------------------------------------
     "queue.hint": "Чат можно закрыть — файл придёт сюда.",
