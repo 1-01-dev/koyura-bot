@@ -33,6 +33,8 @@ _INTERNAL_MARKERS = ("dashboard:8080", "koyura-engine", "127.0.0.1", "localhost"
 
 #: Where the cookies page lives (the section was renamed from "storage").
 COOKIES_PATH = "/admin/cookies"
+#: Where the egress rule lives. A blocked address is fixed here, not in Cookies.
+PROXY_PATH = "/admin/proxy"
 
 
 def privileged_ids() -> frozenset[int]:
@@ -87,11 +89,28 @@ def cookies_url() -> str:
     return f"{base}{COOKIES_PATH}" if base else ""
 
 
+def proxy_url() -> str:
+    """The Proxy page URL for a privileged user, or ``""``."""
+    base = public_dashboard_url()
+    return f"{base}{PROXY_PATH}" if base else ""
+
+
 def needs_cookies(status: object) -> bool:
     """Whether an engine status payload asks for a cookie session."""
     if not isinstance(status, dict):
         return False
     return str(status.get("error_code") or "") == "cookies_required"
+
+
+def is_blocked(status: object) -> bool:
+    """Whether the engine said the site refuses this server's address.
+
+    A separate code from ``cookies_required`` on purpose: the two failures look
+    alike in a log (both are 403s) and need opposite advice.
+    """
+    if not isinstance(status, dict):
+        return False
+    return str(status.get("error_code") or "") == "service_blocked"
 
 
 def service_of(status: object) -> str:
@@ -134,6 +153,27 @@ def message(status: object, *, user_id: object = None, lang: object = None) -> s
             panel_link=link,
         )
     return i18n.t("download.cookies_required", lang, service=service)
+
+
+def blocked_message(status: object, *, user_id: object = None,
+                    lang: object = None) -> str:
+    """The sentence for a ``service_blocked`` status.
+
+    Says the address was refused and that a proxy is the fix — never "add
+    cookies", which is the one thing that cannot help here. The panel link
+    goes to the Proxy page, not to Cookies, for the same reason.
+    """
+    service = _service_label(service_of(status), lang)
+    link = proxy_url() if is_privileged(user_id) else ""
+
+    if link:
+        return i18n.t(
+            "download.service_blocked_admin",
+            lang,
+            service=service,
+            panel_link=link,
+        )
+    return i18n.t("download.service_blocked", lang, service=service)
 
 
 def message_for_service(service: object, *, user_id: object = None,
