@@ -49,6 +49,16 @@ def test_expected_units_exist():
     assert set(_all_unit_files()) == set(APP_UNITS) | {BOT_API_UNIT}
 
 
+# systemd units that own a service state directory plus the cookie tree.
+# Both the panel (writer) and the engine (reader) declare ``koyura2`` so the
+# directory exists with the right owner and mode before either starts: cookie
+# jars are a secret, so they must not live in a hand-made world-readable path.
+STATE_DIRECTORY = "koyura koyura2"
+
+#: The units that own the cookie tree; the others keep the original one.
+COOKIE_UNITS = {"koyura-engine.service", "koyura-dashboard.service"}
+
+
 @pytest.mark.parametrize("unit", sorted(APP_UNITS) + [BOT_API_UNIT])
 def test_common_service_directives(unit):
     service = _service(unit)
@@ -56,9 +66,19 @@ def test_common_service_directives(unit):
     assert service["EnvironmentFile"] == "/etc/koyura/koyura.env"
     # systemd has no "unless-stopped" restart policy; that is a Docker value.
     assert service["Restart"] == "always"
-    # systemd creates /var/lib/koyura (mode/owner) and keeps it writable.
-    assert service["StateDirectory"] == "koyura"
+    # systemd creates the state directories (mode/owner) and keeps them
+    # writable. The engine and the panel also own /var/lib/koyura2, which holds
+    # the service cookie jars; the bot and the Bot API never touch them.
+    expected = STATE_DIRECTORY if unit in COOKIE_UNITS else "koyura"
+    assert service["StateDirectory"] == expected
     assert service["NoNewPrivileges"] == "true"
+
+
+def test_the_cookie_tree_is_a_separate_state_directory():
+    """Cookies must not sit in the downloads/DB tree, which cleanup purges."""
+    for unit in sorted(COOKIE_UNITS):
+        directories = _service(unit)["StateDirectory"].split()
+        assert "koyura2" in directories, unit
 
 
 @pytest.mark.parametrize("unit,working_directory", sorted(APP_UNITS.items()))

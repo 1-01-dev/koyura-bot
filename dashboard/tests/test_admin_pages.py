@@ -43,7 +43,7 @@ STATIC = DASHBOARD_DIR / "static"
 
 #: Route → the heading the page must carry. Ordered like the sidebar.
 SECTIONS = {
-    "/admin/storage": ("Storage", "storage"),
+    "/admin/cookies": ("Cookies", "cookies"),
     "/admin/limits": ("Limits", "limits"),
     "/admin/bot": ("Bot settings", "bot"),
     "/admin/system": ("System", "system"),
@@ -228,10 +228,10 @@ def test_the_parent_stays_active_while_a_child_is_current(admin: TestClient):
 
 
 def test_the_group_carries_the_four_children(admin: TestClient):
-    group = _nav_group(admin.get("/admin/storage").text)
+    group = _nav_group(admin.get("/admin/cookies").text)
     links = re.findall(r'<a href="(/admin/[a-z]+)"', group)
-    assert links == ["/admin/storage", "/admin/limits", "/admin/bot", "/admin/system"]
-    for label in ("Storage", "Limits", "Bot settings", "System"):
+    assert links == ["/admin/cookies", "/admin/limits", "/admin/bot", "/admin/system"]
+    for label in ("Cookies", "Limits", "Bot settings", "System"):
         assert label in group
 
 
@@ -267,14 +267,41 @@ def test_every_admin_page_carries_the_section_tabs(admin: TestClient):
 # The pages themselves
 # ---------------------------------------------------------------------------
 
-def test_storage_is_a_frame_with_an_empty_state(admin: TestClient):
-    body = admin.get("/admin/storage").text
-    assert 'id="storage-card"' in body
-    assert 'id="storage-empty"' in body
+def test_cookies_offers_the_search_plus_and_upload_form(admin: TestClient):
+    """The add row: a service field with suggestions, a file field and "+"."""
+    body = admin.get("/admin/cookies").text
+    assert 'id="cookies-card"' in body
+    assert 'id="cookie-add-form"' in body
+    # The service field is a native search box backed by a datalist, so the
+    # dropdown and the filtering work with JavaScript off.
+    assert 'name="service"' in body
+    assert 'list="service-suggestions"' in body
+    assert 'id="service-suggestions"' in body
+    assert "<datalist" in body
+    # An upload is only an upload with the multipart encoding.
+    assert 'enctype="multipart/form-data"' in body
+    assert 'type="file"' in body
+    assert 'name="cookie_file"' in body
+    assert 'data-action="' in body or 'aria-label="Add this cookie file' in body
+
+
+def test_cookies_starts_with_an_empty_state(admin: TestClient):
+    body = admin.get("/admin/cookies").text
+    assert 'id="cookies-empty"' in body
     assert "Nothing stored yet" in body
-    # A stub, not a half-built editor: no form and nothing to POST yet.
-    card = body[body.index('id="storage-card"') :]
-    assert "<form" not in card.split("</section>")[0]
+
+
+def test_the_old_storage_path_redirects_permanently(admin: TestClient):
+    """A bookmark and a chat message still name /admin/storage."""
+    response = admin.get("/admin/storage", follow_redirects=False)
+    assert response.status_code == 301
+    assert response.headers["location"] == "/admin/cookies"
+
+
+def test_the_old_storage_path_keeps_a_query_string(admin: TestClient):
+    response = admin.get("/admin/storage?added=1", follow_redirects=False)
+    assert response.status_code == 301
+    assert response.headers["location"] == "/admin/cookies?added=1"
 
 
 def test_system_owns_the_files_and_the_purge_dialog(admin: TestClient):
@@ -282,7 +309,11 @@ def test_system_owns_the_files_and_the_purge_dialog(admin: TestClient):
     for element in ("file-table", "select-all", "purge-modal", "purge-confirm"):
         assert f'id="{element}"' in body, element
     assert 'data-action="purge-open"' in body
-    assert "System info" in body and "Disk management" in body
+    assert "System info" in body
+    # The files block says what it is about; "Disk management" read like a
+    # second storage page next to the Cookies one.
+    assert "Disk &amp; files" in body or "Disk & files" in body
+    assert "Disk management" not in body
 
 
 def test_limits_owns_the_form_and_the_presets(admin: TestClient):

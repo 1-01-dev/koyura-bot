@@ -162,6 +162,20 @@ EN: dict[str, str] = {
     "download.upload_failed": "Failed to upload file to Telegram.",
     "download.timed_out": "Download timed out.",
     "download.failed": "Download failed",
+    # A service that wants a signed-in session. ``{service}`` is the extractor
+    # name the engine computed (reddit, instagram, …) — never a hard-coded site.
+    "download.cookies_required": (
+        "{service} requires cookies — add them in the panel → Storage."
+    ),
+    "download.cookies_required_admin": (
+        "{service} requires cookies — add them in the panel: {panel_link}"
+    ),
+    "download.cookies_panel_link": "open Storage",
+    "download.cookies_generic_service": "This site",
+    "download.cookies_configured": (
+        "{service} refused every stored cookie file — upload a fresh one in the "
+        "panel → Storage."
+    ),
     "download.retry_hint": "Tap a format to try again.",
     "download.busy_user": "You already have a download running. Try again in {when}.",
     "download.busy_service": "The service is overloaded right now — try again in {when}.",
@@ -339,6 +353,18 @@ RU: dict[str, str] = {
     "download.upload_failed": "Не удалось отправить файл в Telegram.",
     "download.timed_out": "Загрузка превысила лимит времени.",
     "download.failed": "Загрузка не удалась",
+    "download.cookies_required": (
+        "{service} требует cookies — добавьте их в панели → Storage."
+    ),
+    "download.cookies_required_admin": (
+        "{service} требует cookies — добавьте их в панели: {panel_link}"
+    ),
+    "download.cookies_panel_link": "открыть Storage",
+    "download.cookies_generic_service": "Этот сервис",
+    "download.cookies_configured": (
+        "{service} отклонил все сохранённые файлы cookies — загрузите новый в "
+        "панели → Storage."
+    ),
     "download.retry_hint": "Нажмите формат, чтобы попробовать снова.",
     "download.busy_user": "У вас уже идёт загрузка. Повторите через {when}.",
     "download.busy_service": "Сервис перегружен — повторите через {when}.",

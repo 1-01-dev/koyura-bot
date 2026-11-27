@@ -30,6 +30,13 @@ from flask import Flask, jsonify, render_template, request, send_file
 import download_queue
 import media_meta
 import transcode
+from cookies import (
+    cookie_paths,
+    looks_like_auth_failure,
+    required_message,
+    service_for_url,
+    with_cookies,
+)
 from url_safety import UnsafeURLError, validate_url
 
 logger = logging.getLogger("koyura.engine")
@@ -663,7 +670,67 @@ def _dir_size_hint(job_id: str) -> int | None:
 
 
 def _do_download(job_id: str, url: str, format_choice: str, format_id: str | None) -> None:
+    """Download a job, trying its service's cookie jars in order.
+
+    Without cookies this is one plain attempt, exactly as before. With cookies
+    (the operator uploaded at least one jar for this URL's service) the first
+    jar is tried, and only an *authorization* failure — yt-dlp saying "sign in
+    to confirm", a 403, a private video — moves on to the second. Any other
+    failure is final on the first attempt: re-running a broken URL would only
+    burn time and confuse the error the user gets.
+    """
+    service = service_for_url(url)
+    paths = cookie_paths(service) if service else []
+    if not paths:
+        _attempt_download(job_id, url, format_choice, format_id, cookies_path=None)
+        return
+
+    result = "failed"
+    for index, path in enumerate(paths):
+        # The jar path is a name, never its content: safe to log.
+        logger.info(
+            "Job %s: attempt %d/%d with cookies for %s",
+            job_id, index + 1, len(paths), service,
+        )
+        result = _attempt_download(
+            job_id, url, format_choice, format_id, cookies_path=path
+        )
+        if result != "auth":
+            return
+
+    # Every jar was refused (or the list turned out empty at the last moment).
+    _cleanup_partial_files(job_id)
+    _job_update(
+        job_id,
+        status="error",
+        error=required_message(service),
+        error_code="cookies_required",
+        cookies_service=service,
+        cookies_tried=len(paths),
+    )
+    logger.info(
+        "Job %s: cookies_required for %s after %d file(s)",
+        job_id, service, len(paths),
+    )
+
+
+def _attempt_download(
+    job_id: str,
+    url: str,
+    format_choice: str,
+    format_id: str | None,
+    *,
+    cookies_path: str | None,
+) -> str:
+    """Run yt-dlp once and return ``done``, ``failed`` or ``auth``.
+
+    ``auth`` means the failure looks like a refused session, so the caller may
+    try the next cookie jar; everything else is terminal and already recorded
+    on the job.
+    """
     cmd = _build_download_cmd(job_id, url, format_choice, format_id)
+    if cookies_path:
+        cmd = with_cookies(cmd, cookies_path)
     logger.info("Job %s: starting download", job_id)
 
     process = subprocess.Popen(
@@ -744,21 +811,26 @@ def _do_download(job_id: str, url: str, format_choice: str, format_id: str | Non
             error=f"Download timed out ({DOWNLOAD_TIMEOUT // 60} min limit)",
         )
         logger.info("Job %s: timed out after %ss", job_id, DOWNLOAD_TIMEOUT)
-        return
+        return "failed"
 
     with stderr_lock:
         last_stderr = stderr_lines[-1] if stderr_lines else ""
 
     if returncode != 0:
         _cleanup_partial_files(job_id)
+        # A refused session is the one failure worth retrying with another jar;
+        # the job stays ``downloading`` so the next attempt owns the outcome.
+        if cookies_path and looks_like_auth_failure("\n".join(stderr_lines[-20:])):
+            logger.info("Job %s: cookie file refused, trying the next one", job_id)
+            return "auth"
         _job_update(job_id, status="error", error=last_stderr or "Unknown error")
         logger.info("Job %s: yt-dlp exited with %s", job_id, returncode)
-        return
+        return "failed"
 
     files = sorted(glob.glob(os.path.join(DOWNLOAD_DIR, f"{job_id}.*")))
     if not files:
         _job_update(job_id, status="error", error="Download completed but no file was found")
-        return
+        return "failed"
 
     if format_choice == "audio":
         target = [f for f in files if f.endswith(".mp3")]
@@ -792,7 +864,7 @@ def _do_download(job_id: str, url: str, format_choice: str, format_id: str | Non
                 status="error",
                 error=f"File is larger than the {MAX_FILESIZE_MB} MB limit",
             )
-            return
+            return "failed"
 
     if chosen.endswith(".mp4"):
         job = jobs.get(job_id, {}) or {}
@@ -841,6 +913,7 @@ def _do_download(job_id: str, url: str, format_choice: str, format_id: str | Non
         error=None,
     )
     logger.info("Job %s: finished (%s)", job_id, filename)
+    return "done"
 
 
 def _probe_media(path: str) -> dict:
@@ -1170,6 +1243,15 @@ def get_info():
         return jsonify({"error": "Timed out fetching video info"}), 400
     if rc != 0:
         message = (stderr or "").strip().split("\n")[-1] if stderr else "Unknown error"
+        # A refusal that wants a session is the one info failure the operator
+        # can fix; saying so here saves a round of "it just says 403".
+        service = service_for_url(url)
+        if service and not cookie_paths(service) and looks_like_auth_failure(stderr):
+            return jsonify({
+                "error": required_message(service),
+                "code": "cookies_required",
+                "service": service,
+            }), 400
         return jsonify({"error": message}), 400
 
     try:
@@ -1334,6 +1416,26 @@ def queue_status():
     return jsonify(job_queue.snapshot())
 
 
+@app.route("/api/cookies/<service>")
+def service_cookies(service: str):
+    """The ordered cookie files for one service (paths only, never contents).
+
+    The panel uploads jars and owns their order; the engine only reads the
+    paths here — the same tree, mounted read-only. An unknown or maliciously
+    named service answers ``[]`` rather than an error: the caller's question is
+    "what do I try?" and "nothing" is a valid answer to it. The path is
+    sanitised by ``cookies.cookie_paths``, so ``../../etc`` cannot escape.
+    """
+    paths = cookie_paths(service)
+    return jsonify({
+        "service": service,
+        # Ordered: the panel's priority order is the retry order.
+        "paths": paths,
+        "files": [os.path.basename(path) for path in paths],
+        "count": len(paths),
+    })
+
+
 @app.route("/api/settings", methods=["POST"])
 def update_settings():
     """Apply download limits at runtime (the panel posts here after saving)."""
@@ -1404,6 +1506,12 @@ def check_status(job_id: str):
         "vcodec": snapshot.get("vcodec"),
         "converted": bool(snapshot.get("converted")),
         "send_as_document": bool(snapshot.get("send_as_document")),
+        # Cookie facts (additive): ``error_code == "cookies_required"`` tells the
+        # bot to say "add cookies for this service" instead of showing a raw
+        # yt-dlp line, and ``cookies_service`` names the service to add. An
+        # older bot ignores both and keeps the plain error text.
+        "error_code": snapshot.get("error_code"),
+        "cookies_service": snapshot.get("cookies_service"),
     })
 
 

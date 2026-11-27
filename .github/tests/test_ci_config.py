@@ -337,3 +337,34 @@ def test_the_compose_validation_step_never_reads_the_real_env():
     assert command[:2] == ["docker", "compose"]
     assert "--quiet" in command
     assert step["env"]["DASHBOARD_SECRET_KEY"], "the placeholder secret must be set"
+
+
+def test_the_cookie_volume_is_separate_and_shared(compose):
+    """The panel writes the jars, the engine reads them, cleanup cannot purge them.
+
+    Cookies sit on their own volume because ``downloads`` is deleted on a
+    schedule: a sign-in session that disappears with a midnight purge would
+    look like the site broke.
+    """
+    dashboard = compose["services"]["dashboard"]["volumes"]
+    engine = compose["services"]["koyura-engine"]["volumes"]
+
+    dashboard_mounts = [v for v in dashboard if "cookies" in v]
+    engine_mounts = [v for v in engine if "cookies" in v]
+    assert dashboard_mounts, "the dashboard must mount the cookie tree to write it"
+    assert engine_mounts, "the engine must mount the cookie tree to read it"
+
+    # The panel writes, the engine only reads.
+    assert dashboard_mounts[0].endswith(":/var/lib/koyura2/cookies"), dashboard_mounts
+    assert engine_mounts[0].endswith(":/var/lib/koyura2/cookies:ro"), engine_mounts
+
+    # And it is never the purgeable downloads volume.
+    assert not any("/downloads" in mount for mount in dashboard_mounts + engine_mounts)
+    assert "cookies" in compose["volumes"], "the volume must be declared"
+
+
+def test_both_services_are_told_where_the_cookies_live(compose):
+    """One name, both containers: the engine and the panel agree on the tree."""
+    for service in ("dashboard", "koyura-engine"):
+        environment = compose["services"][service]["environment"]
+        assert environment["COOKIES_PATH"] == "/var/lib/koyura2/cookies", service

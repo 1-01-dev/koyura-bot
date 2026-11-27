@@ -100,7 +100,7 @@ def test_pages_load_the_entry_as_a_module():
 
 
 #: The admin page is four pages; the action wiring has to cover all of them.
-ADMIN_PAGES = ("/admin/storage", "/admin/limits", "/admin/bot", "/admin/system")
+ADMIN_PAGES = ("/admin/cookies", "/admin/limits", "/admin/bot", "/admin/system")
 
 
 def test_the_entry_wires_every_action_the_templates_use():

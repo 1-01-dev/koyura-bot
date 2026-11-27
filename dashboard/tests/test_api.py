@@ -421,7 +421,7 @@ class TestLogin:
 
     @pytest.mark.parametrize(
         "path",
-        ["/", "/history", "/errors", "/admin", "/admin/storage",
+        ["/", "/history", "/errors", "/admin", "/admin/cookies",
          "/admin/limits", "/admin/bot", "/admin/system"],
     )
     def test_pages_redirect_to_the_login_form(self, client, path):
@@ -431,7 +431,7 @@ class TestLogin:
         assert response.headers["location"] == "/login"
 
     def test_logged_in_pages_render(self, admin):
-        for path in ("/", "/history", "/errors", "/admin", "/admin/storage",
+        for path in ("/", "/history", "/errors", "/admin", "/admin/cookies",
                      "/admin/limits", "/admin/bot", "/admin/system"):
             response = admin.get(path)
             assert response.status_code == 200, path

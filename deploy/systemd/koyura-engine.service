@@ -22,7 +22,10 @@ TimeoutStopSec=30
 
 # /var/lib/koyura is created and owned by the service user; downloads, the
 # dashboard DB and the bot state DB live there.
-StateDirectory=koyura
+StateDirectory=koyura koyura2
+# Service cookie jars: the panel writes them, the engine only reads.
+# koyura2 is a second state directory so the cookie tree is not mixed
+# into the downloads/DB tree (which cleanup may purge).
 
 # Hardening
 NoNewPrivileges=true

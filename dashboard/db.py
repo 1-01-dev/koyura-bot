@@ -98,6 +98,30 @@ CREATE INDEX IF NOT EXISTS idx_downloads_status ON downloads(status);
 CREATE INDEX IF NOT EXISTS idx_message_templates_pair ON message_templates(kind, lang);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_message_templates_active
     ON message_templates(kind, lang) WHERE is_active = 1;
+
+-- Cookie jars per service, in the order the engine tries them. The path is
+-- derived from ``service`` and ``stored_name`` (never stored): the file lives
+-- at COOKIES_PATH/<service>/<stored_name>, outside the panel's own volume.
+-- ``position`` is 0-based and renumbered by the routes on every move/delete,
+-- so the engine can trust the order it receives. No column ever holds cookie
+-- content: name, size and hash are enough to show and to spot a change.
+CREATE TABLE IF NOT EXISTS service_cookies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service TEXT NOT NULL,
+    stored_name TEXT NOT NULL,
+    original_name TEXT,
+    size INTEGER NOT NULL DEFAULT 0,
+    sha256 TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    checked_at TEXT,
+    check_status TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_service_cookies_file
+    ON service_cookies(service, stored_name);
+CREATE INDEX IF NOT EXISTS idx_service_cookies_order
+    ON service_cookies(service, position);
 """
 
 
@@ -890,3 +914,204 @@ async def reset_message_templates(kind: str, lang: str) -> int:
         await cursor.close()
         await conn.commit()
     return int(deleted)
+
+
+# ---------------------------------------------------------------------------
+# Service cookies (the Storage page)
+# ---------------------------------------------------------------------------
+#
+# One row per jar. ``position`` is the priority order the engine tries the files
+# in, kept dense (0, 1, 2, …) inside a service: every writer here renumbers the
+# siblings after an insert, a move or a delete, so no reader has to sort around
+# holes. Nothing in this section stores or returns cookie content.
+
+async def list_service_cookies(service: str | None = None) -> list[dict[str, Any]]:
+    """Every jar, ordered by service and then by the engine's priority."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            """
+            SELECT * FROM service_cookies
+            WHERE (:service IS NULL OR service = :service)
+            ORDER BY service ASC, position ASC, id ASC
+            """,
+            {"service": service},
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+    return [dict(row) for row in rows]
+
+
+async def get_service_cookie(cookie_id: int) -> dict[str, Any] | None:
+    """One jar by id, or ``None`` when it was deleted meanwhile."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM service_cookies WHERE id = ?", (int(cookie_id),)
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+    return dict(row) if row else None
+
+
+async def services_with_cookies() -> list[str]:
+    """Service names that currently hold at least one jar, alphabetical."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT DISTINCT service FROM service_cookies ORDER BY service ASC"
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+    return [str(row["service"]) for row in rows]
+
+
+async def _next_cookie_position(conn: aiosqlite.Connection, service: str) -> int:
+    """One past the last position of a service (0 for a new one)."""
+    cursor = await conn.execute(
+        "SELECT MAX(position) FROM service_cookies WHERE service = ?", (service,)
+    )
+    row = await cursor.fetchone()
+    await cursor.close()
+    highest = row[0] if row and row[0] is not None else -1
+    return int(highest) + 1
+
+
+async def _renumber_cookies(conn: aiosqlite.Connection, service: str) -> None:
+    """Rewrite the positions of one service as 0..n-1 in their current order."""
+    cursor = await conn.execute(
+        "SELECT id FROM service_cookies WHERE service = ? ORDER BY position ASC, id ASC",
+        (service,),
+    )
+    ids = [int(row["id"]) for row in await cursor.fetchall()]
+    await cursor.close()
+    for position, cookie_id in enumerate(ids):
+        cursor = await conn.execute(
+            "UPDATE service_cookies SET position = ? WHERE id = ?",
+            (position, cookie_id),
+        )
+        await cursor.close()
+
+
+async def add_service_cookie(
+    *,
+    service: str,
+    stored_name: str,
+    original_name: str | None,
+    size: int,
+    sha256: str,
+) -> dict[str, Any]:
+    """Append one jar to a service (last in the priority order)."""
+    async with _conn() as conn:
+        position = await _next_cookie_position(conn, service)
+        cursor = await conn.execute(
+            "INSERT INTO service_cookies "
+            "(service, stored_name, original_name, size, sha256, position, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (service, stored_name, original_name, int(size), sha256, position, _utc_now()),
+        )
+        cookie_id = cursor.lastrowid
+        await cursor.close()
+        await conn.commit()
+    return dict(await get_service_cookie(int(cookie_id or 0)) or {})
+
+
+async def update_service_cookie_file(
+    cookie_id: int,
+    *,
+    stored_name: str,
+    original_name: str | None,
+    size: int,
+    sha256: str,
+) -> bool:
+    """Record a replaced file: new name, size and hash, same position.
+
+    The check result describes the old bytes, so it is cleared — an "ok" that
+    was measured against a jar nobody has any more would be a lie.
+    """
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "UPDATE service_cookies SET stored_name = ?, original_name = ?, "
+            "size = ?, sha256 = ?, checked_at = NULL, check_status = NULL "
+            "WHERE id = ?",
+            (stored_name, original_name, int(size), sha256, int(cookie_id)),
+        )
+        changed = cursor.rowcount
+        await cursor.close()
+        await conn.commit()
+    return bool(changed)
+
+
+async def move_service_cookie(cookie_id: int, delta: int) -> bool:
+    """Move one jar up (``-1``) or down (``+1``) and renumber its service.
+
+    A move at the edge is a no-op that still answers ``True``: the operator
+    pressed a button that exists, so the page must not show an error for it.
+    """
+    row = await get_service_cookie(cookie_id)
+    if row is None:
+        return False
+    service = str(row["service"])
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT id FROM service_cookies WHERE service = ? ORDER BY position ASC, id ASC",
+            (service,),
+        )
+        order = [int(entry["id"]) for entry in await cursor.fetchall()]
+        await cursor.close()
+        if int(cookie_id) not in order:
+            return False
+        index = order.index(int(cookie_id))
+        target = index + int(delta)
+        if target < 0 or target >= len(order):
+            return True
+        order.insert(target, order.pop(index))
+        for position, entry_id in enumerate(order):
+            cursor = await conn.execute(
+                "UPDATE service_cookies SET position = ? WHERE id = ?",
+                (position, entry_id),
+            )
+            await cursor.close()
+        await conn.commit()
+    return True
+
+
+async def delete_service_cookie(cookie_id: int) -> dict[str, Any] | None:
+    """Delete one row and renumber what is left; returns the deleted row."""
+    row = await get_service_cookie(cookie_id)
+    if row is None:
+        return None
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM service_cookies WHERE id = ?", (int(cookie_id),)
+        )
+        await cursor.close()
+        await _renumber_cookies(conn, str(row["service"]))
+        await conn.commit()
+    return row
+
+
+async def delete_service(service: str) -> list[dict[str, Any]]:
+    """Delete every jar of a service; returns the rows (for the disk unlink)."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM service_cookies WHERE service = ? ORDER BY position ASC, id ASC",
+            (service,),
+        )
+        rows = [dict(row) for row in await cursor.fetchall()]
+        await cursor.close()
+        if rows:
+            cursor = await conn.execute(
+                "DELETE FROM service_cookies WHERE service = ?", (service,)
+            )
+            await cursor.close()
+            await conn.commit()
+    return rows
+
+
+async def record_cookie_check(cookie_id: int, status: str) -> None:
+    """Store the verdict of a ``yt-dlp --simulate`` run (``ok``/``auth``/``error``)."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "UPDATE service_cookies SET checked_at = ?, check_status = ? WHERE id = ?",
+            (_utc_now(), str(status), int(cookie_id)),
+        )
+        await cursor.close()
+        await conn.commit()

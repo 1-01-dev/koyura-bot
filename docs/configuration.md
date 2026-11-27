@@ -237,6 +237,9 @@ decide what may be offered and what may be downloaded.
 | `DOWNLOADS_PATH` | no | `/downloads` | Directory shared by the engine, the bot and the dashboard. For native runs point all three at one real path. |
 | `DB_PATH` | no | `/data/koyura_bot.db` | Dashboard SQLite database (WAL mode). |
 | `BOT_STATE_DB_PATH` | no | `/data/koyura_bot_state.db` | Bot preference store; survives restarts. |
+| `COOKIES_PATH` | no | `/var/lib/koyura2/cookies` | Service cookie jars (Netscape format). Written by **Admin → Cookies**, read by the engine. Kept outside `DOWNLOADS_PATH` because the downloads volume is purged on a schedule. The directory is created on first upload (`0700`), each file is `0600`. |
+| `DASHBOARD_PUBLIC_URL` | no | *(empty)* | Panel address a phone can open, e.g. `https://koyura.example.org`. `DASHBOARD_URL` is the internal compose address and is never linked in a chat. |
+| `PRIVILEGED_USER_IDS` | no | *(empty)* | Comma-separated Telegram user ids. Only these users see the panel link in a “requires cookies” message; everyone else gets the sentence without it. |
 | `LOG_LEVEL` | no | `INFO` | Log level for all Python services. |
 
 ## Images

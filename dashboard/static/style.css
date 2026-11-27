@@ -1952,3 +1952,317 @@
     max-height: 260px;
   }
 }
+
+/* ----- Cookies (admin → cookies) ------------------------------------------
+
+   A service is a block, not a table row: its file list and the per-file forms
+   open underneath it. A <details> inside a table cell cannot fit a 390px
+   screen — its controls are wider than the column — so the layout is the same
+   shape at every width and only the wrap changes.
+
+   Every control is at least 44px tall: the owner manages this page from a
+   phone. */
+
+.cookies-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  padding: 14px 16px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.cookies-cell {
+  min-width: 0;
+}
+
+/* The shared input rules stop at 8px padding; a control a thumb has to hit
+   gets the full tap target. */
+.cookies-input,
+.limits-input.cookies-input {
+  min-height: 44px;
+}
+
+.cookies-add-btn {
+  min-width: 44px;
+  height: 44px;
+  font-size: 20px;
+  line-height: 1;
+  padding: 0 14px;
+}
+
+.cookies-file-input {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.cookies-file-input::file-selector-button {
+  min-height: 32px;
+  margin-right: 10px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.cookies-file-input:hover::file-selector-button {
+  border-color: var(--ink);
+  background: var(--wash);
+}
+
+.cookies-file-input--compact {
+  min-width: 0;
+}
+
+/* ----- The service list ----- */
+
+.cookie-services {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+
+.cookie-service-row {
+  border-bottom: 1px solid var(--line);
+}
+
+.cookie-service-row:last-child {
+  border-bottom: 0;
+}
+
+/* The whole summary is the tap target, so the row is never a 12px line. */
+.cookies-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-height: 52px;
+  padding: 10px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.cookies-summary::-webkit-details-marker {
+  display: none;
+}
+
+.cookies-summary:hover {
+  background: var(--wash);
+}
+
+.cookies-summary:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: -2px;
+}
+
+.cookie-service-name {
+  font-size: 13px;
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.cookie-service-count {
+  color: var(--dim);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.cookies-when {
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.cookies-summary-hint {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.cookie-files {
+  list-style: none;
+  margin: 0;
+  padding: 0 16px 4px;
+}
+
+.cookie-file {
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.cookie-file-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cookie-file-order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.cookie-file-name {
+  color: var(--ink);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.cookie-file-size {
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.cookie-file-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.cookie-icon-btn {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 10px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.cookie-file-forms {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin-top: 8px;
+}
+
+/* On a wide screen the two forms share one line: replace on the left, the
+   check probe on the right. Each one keeps its own column so the fields line
+   up vertically across files. */
+.cookie-file-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  margin: 0;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.cookie-file-form:last-child {
+  margin-left: auto;
+}
+
+/* The file picker shrinks, the button keeps its full target. */
+.cookie-file-form .cookies-file-input {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+
+.cookie-form-btn {
+  min-height: 44px;
+  flex: none;
+}
+
+.cookies-probe-input {
+  flex: 1 1 190px;
+  min-width: 0;
+}
+
+.cookies-inline-form {
+  display: inline;
+  margin: 0;
+}
+
+.cookies-delete-service {
+  padding: 4px 16px 14px;
+}
+
+.cookies-delete-service .cookie-form-btn {
+  min-height: 44px;
+}
+
+/* Visually hidden, still read: every file input has a visible label of its
+   own, so these only exist for screen readers. */
+.cookies-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 767px) {
+  .cookies-add {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .cookies-add-btn {
+    width: 100%;
+  }
+
+  .cookies-summary {
+    gap: 8px;
+  }
+
+  .cookies-summary-hint {
+    display: none;
+  }
+
+  .cookie-files {
+    padding: 0 12px 4px;
+  }
+
+  .cookie-file-actions {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .cookie-file-form {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .cookie-file-form:last-child {
+    margin-left: 0;
+  }
+
+  .cookie-file-form .cookies-file-input {
+    flex: 1 1 140px;
+  }
+
+  .cookies-probe-input {
+    flex: 1 1 100%;
+  }
+
+  .cookie-form-btn {
+    flex: 1 1 auto;
+  }
+}

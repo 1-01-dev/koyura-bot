@@ -199,6 +199,36 @@ async def bot_settings(request: Request) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Cookie registry (internal, read-only)
+# ---------------------------------------------------------------------------
+
+@router.get("/api/services-with-cookies")
+async def services_with_cookies(request: Request) -> dict[str, Any]:
+    """The services that hold cookie jars, and each one's files in order.
+
+    The engine polls this (cached for 60 s) instead of reading the panel's
+    database, and the order in ``files`` is the order it tries the jars in.
+    Only names travel: no path, no content, no hash. A service with a row but
+    no file on disk is reported as it is stored — the engine skips a listed
+    file it cannot open, so a stale row degrades to a shorter list rather than
+    a failed job.
+    """
+    if not _internal_token_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    rows = await db.list_service_cookies()
+    grouped: dict[str, list[str]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["service"]), []).append(str(row["stored_name"]))
+    return {
+        "services": [
+            {"service": name, "files": files}
+            for name, files in sorted(grouped.items())
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Message templates (internal read + admin preview)
 # ---------------------------------------------------------------------------
 
