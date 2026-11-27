@@ -76,6 +76,22 @@ AUTH_MARKERS = (
     "unauthorized",
 )
 
+#: The site refused the **address**, not the session. Mirrors
+#: ``dashboard/service_cookies.py``: this is what a datacentre block looks like
+#: (Reddit's API 403, Cloudflare's page, a rate limit, a captcha wall), and no
+#: cookie jar can fix it — only another outbound IP, which is what the panel's
+#: Proxy page configures. Checked before ``AUTH_MARKERS`` because "HTTP Error
+#: 403: Blocked" contains the generic 403 marker: retrying the next jar would
+#: burn a minute to learn the same thing again.
+BLOCKED_MARKERS = (
+    "unable to access the reddit api",
+    "http error 403: blocked",
+    "blocked",
+    "too many requests",
+    "429",
+    "captcha",
+)
+
 
 def cookies_root() -> Path:
     """Root of the cookie tree (``COOKIES_PATH``, read per call)."""
@@ -356,6 +372,17 @@ def looks_like_auth_failure(stderr: object) -> bool:
     return any(marker in text for marker in AUTH_MARKERS)
 
 
+def looks_blocked(stderr: object) -> bool:
+    """Whether the site refused *the address* rather than the session.
+
+    A blocked IP is not a cookie problem: another jar answers the same 403.
+    Separate from :func:`looks_like_auth_failure` so a job can stop after the
+    first refusal and name the real cause to the user.
+    """
+    text = str(stderr or "").lower()
+    return any(marker in text for marker in BLOCKED_MARKERS)
+
+
 def with_cookies(cmd: list[str], path: str) -> list[str]:
     """A copy of ``cmd`` with ``--cookies <path>`` before the trailing URL.
 
@@ -381,6 +408,21 @@ def required_message(service: object) -> str:
     )
 
 
+def blocked_message(service: object) -> str:
+    """The sentence for a service that refuses the server's address.
+
+    Says what actually helps (another outbound IP, i.e. the Proxy page) and
+    explicitly not what does not (a fresh cookie file), because "403" reads
+    like a sign-in problem to everyone who has not met a datacentre block.
+    """
+    name = sanitise_service(service) or "this site"
+    return (
+        f"{name} blocks this server's IP address. "
+        "Cookies will not help — route the engine through a proxy or a "
+        "WireGuard tunnel in the panel: Admin → Proxy."
+    )
+
+
 def cookie_required_payload(service: object) -> dict[str, object]:
     """The ``cookies_required`` body the API returns (additive to old keys)."""
     name = sanitise_service(service)
@@ -389,4 +431,14 @@ def cookie_required_payload(service: object) -> dict[str, object]:
         "code": "cookies_required",
         "service": name,
         "cookies_tried": 0,
+    }
+
+
+def blocked_payload(service: object) -> dict[str, object]:
+    """The ``service_blocked`` body the API returns (additive to old keys)."""
+    name = sanitise_service(service)
+    return {
+        "error": blocked_message(name),
+        "code": "service_blocked",
+        "service": name,
     }
