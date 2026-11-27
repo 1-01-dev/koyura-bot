@@ -138,6 +138,15 @@ The panel also detects the server (`os.cpu_count()`, `/proc/meminfo`, cgroup
 limits in a container), names the preset that fits and fills the form with it on
 one click.
 
+### Setting the progress fields from the admin panel
+
+**Admin → Progress fields** decides which lines the bot's live progress message
+carries — eight checkboxes (`bot_progress.*` in the same `settings` table),
+default title + bar. The bot reads them from `GET /api/bot-settings` and caches
+the answer for 45 s, so saving is enough: there is nothing to push to the engine
+or the bot, and no restart. See `docs/bot-behavior.md` §9 for the table of keys,
+the rendered shapes and the "everything off still shows the stage" rule.
+
 ## Bot uploads
 
 | Variable | Required | Default | What it does |

@@ -26,7 +26,7 @@ order) and the matching `CommandHandler`s in `register_handlers`
 
 | Command | Menu description | Handler | What it does |
 | --- | --- | --- | --- |
-| `/start` | Start Koyura | `onboarding.start_command` | First contact: the language screen (when more than one language is enabled and the user has no saved choice), otherwise the welcome text with its inline keyboard — see §9. |
+| `/start` | Start Koyura | `onboarding.start_command` | First contact: the language screen (when more than one language is enabled and the user has no saved choice), otherwise the welcome text with its inline keyboard — see §10. |
 | `/help` | Help and commands | `cmd_help` (`:82`) | Static how-to, sent as **MarkdownV2** (the source is pre-escaped). |
 | `/mp3` | Download as MP3 | `cmd_mp3` (`:213`) | Extracts links from the command or the replied-to message, validates them, starts one direct audio job per link (no picker). |
 | `/mp4` | Download best quality MP4 | `cmd_mp4` (`:229`) | Same, video, no format id → engine's best. |
@@ -300,7 +300,7 @@ The requested format is resolved before the job starts
 ## 5. User-visible texts
 
 The words themselves live in `bot/i18n.py`, in two catalogues (`en`, `ru`) with
-the same keys and the same `{placeholders}` — see §9. `bot/handlers/texts.py`
+the same keys and the same `{placeholders}` — see §10. `bot/handlers/texts.py`
 only decides how the lines are arranged.
 
 Two forms, and the rule for picking one:
@@ -340,6 +340,7 @@ Pre-rewrite locations (the text is these days a catalogue entry):
 | `TIMED_OUT` | `Download timed out.` | `handlers.py:1087` |
 | `UNKNOWN_ERROR` | `Unknown error` | `handlers.py:795` |
 | (unchanged modules) | progress, queue, busy, error captions | `progress_card.py` |
+| (new module) | the eight progress switches (`fields=` for the caption) | `progress_fields.py` |
 | (unchanged module) | preview card, format labels, file caption | `download_card.py` |
 
 ---
@@ -362,6 +363,8 @@ Pre-rewrite locations (the text is these days a catalogue entry):
 | Card deleted or made uneditable mid-job | `handlers.stages.StageTracker` sees the `gone` classification, posts the stage again and forgets the dead message; the download is never lost. |
 | Engine unreachable during polling | "Download service temporarily unavailable." + `download_error`; card unlocked. |
 | Engine returns a broken status | Non-dict `progress` is treated as empty; missing numbers are simply not drawn. |
+| Every progress field switched off in the panel | The caption is the stage line ("Downloading…" / "Скачиваю…"), never blank. |
+| Panel unreachable while a download runs | The built-in default (title + bar); the caption is never blocked on the dashboard. |
 | Engine says done but the file is gone | "File not found after download." + `download_error`; card unlocked. |
 | Telegram upload fails twice | "Failed to upload file to Telegram." + `download_error`, local file deleted. |
 | Nothing happens for 15 minutes | "Download timed out." + `download_error`, card unlocked. |
@@ -387,8 +390,9 @@ Pre-rewrite locations (the text is these days a catalogue entry):
   come from the catalogue's `menu.*` keys, still published in English).
 * **Panel internal API**: `POST /api/events` is unchanged; this release adds
   `GET /api/bot-settings` (read-only, `X-Internal-Token`, body
-  `{"languages": [...], "default_language": "en"}`) for the bot to read the
-  enabled languages. Adding it changes no existing field.
+  `{"languages": [...], "default_language": "en", "progress": {...}}`) for the
+  bot to read the enabled languages and the progress switches. Adding the
+  `progress` object changes no existing field.
 
 ---
 
@@ -407,7 +411,87 @@ Pre-rewrite locations (the text is these days a catalogue entry):
 
 ---
 
-## 9. Languages (English / Russian)
+## 9. Progress fields (what the live message shows)
+
+The progress card used to print everything the engine knew: the title, the bar,
+`62%`, `30.8 MB / 30.8 MB`, `58.9 MB/s`, `ETA 0:42` and `0:13 elapsed`. That is
+too much for a chat message, so each line is now a switch the operator sets in
+Admin → **Progress fields**. The default is the title and the bar and nothing
+else.
+
+### The eight switches
+
+Stored in the dashboard's `settings` table, one row per key, values
+`true`/`false`:
+
+| Key | Draws | Default |
+| --- | --- | --- |
+| `bot_progress.show_title` | the video's title, bold, first line | **on** |
+| `bot_progress.show_bar` | the 12-cell bar `▓▓▓▓▓▓▓░░░░░` | **on** |
+| `bot_progress.show_percent` | `62%` | off |
+| `bot_progress.show_size` | `30.8 MB / 30.8 MB` | off |
+| `bot_progress.show_speed` | `58.9 MB/s` | off |
+| `bot_progress.show_eta` | `ETA 0:42` / `осталось 0:42` | off |
+| `bot_progress.show_elapsed` | `0:13 elapsed` / `0:13 прошло` | off |
+| `bot_progress.show_quality` | `1440p` | off |
+
+Rules the tests pin (`bot/tests/test_progress_fields.py`):
+
+* the bar is **12 cells** whether or not the percentage is on, so the caption
+  never re-wraps between edits;
+* with the bar off and the percentage on, the number stands alone on the facts
+  line instead of vanishing;
+* with **everything** off the caption is the stage line ("Downloading…" /
+  "Скачиваю…") — a progress message is never blank;
+* an unknown size draws no `show_size`, `show_percent` or `show_eta` line at all
+  (the same rule as before: never a made-up denominator);
+* a stage with nothing to measure (starting / processing / uploading) keeps its
+  stage line, and a facts line with no bar or percentage keeps it too;
+* the titles are not translated — the panel is English-only, the card follows
+  the chat language.
+
+The rendered shapes, for the same 30.8 MB download:
+
+```text
+default (title + bar)          percent + speed + eta           everything on
+*Artemis II to the Moon*       *Artemis II to the Moon*        *Artemis II to the Moon*
+▓▓▓▓▓▓▓░░░░░                   ▓▓▓▓▓▓▓░░░░░ 62%                ▓▓▓▓▓▓▓░░░░░ 62%
+                               3.2 MB/s · ETA 0:42             1080p · 19.1 MB / 30.8 MB ·
+                                                              3.2 MB/s · ETA 0:42 · 0:13 elapsed
+```
+
+### Where the setting comes from
+
+`GET /api/bot-settings` (the same route the languages use) grew one object:
+
+```json
+{"languages": ["en", "ru"], "default_language": "en",
+ "progress": {"show_title": true, "show_bar": true, "show_percent": false,
+              "show_size": false, "show_speed": false, "show_eta": false,
+              "show_elapsed": false, "show_quality": false}}
+```
+
+`bot/bot_settings.py` reads it with the languages (one request, cached for
+`TTL_SECONDS` = 45 s) and `bot/progress_fields.py` turns the object into a set of
+switches. Panel down, 401, bad JSON, or no `progress` key at all (an older
+panel) → the built-in default, title + bar. An unreadable value for one key is
+that key's default, never an error. `handlers.download_flow.poll_until_finished`
+reads the set **once** per job, before the poll loop, so a mid-download change
+lands on the next download rather than switching mid-caption.
+
+### The panel section
+
+`dashboard/templates/_admin_progress.html` is a partial and `admin.html` holds
+exactly one line — `{% include "_admin_progress.html" %}` — right after the
+`Bot languages` card. That is deliberate: another branch is restructuring
+`/admin`, and a separate file plus a single include keeps the two changes from
+conflicting. The markup reuses the existing `card` / `limits-grid` /
+`limits-cell` / `language-choice` classes, so it needs no new CSS. The form
+(`POST /admin/progress`) carries the double-submit CSRF token, stores the eight
+rows, and redirects to `/admin?progress_saved=1`; the bot picks the change up
+within 45 s, no restart.
+
+## 10. Languages (English / Russian)
 
 ### Catalogues
 
