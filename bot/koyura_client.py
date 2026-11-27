@@ -26,7 +26,18 @@ class KoyuraError(Exception):
 
 
 class KoyuraInfoError(KoyuraError):
-    pass
+    """A refused ``/api/info``, with the engine's own reason code when it has one.
+
+    ``code`` is the stable identifier the engine puts in its JSON body
+    (``track_not_found``, ``track_unsupported_type``, ``cookies_required``, …).
+    The chat turns a known code into a sentence of its own, so the user never
+    reads a yt-dlp line; an unknown or missing code keeps the engine's message,
+    which is what this class always forwarded.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class KoyuraDownloadError(KoyuraError):
@@ -86,6 +97,17 @@ def _error_message(response: httpx.Response, fallback: str) -> str:
     return fallback
 
 
+def _error_code(response: httpx.Response) -> str | None:
+    """The engine's ``code`` field from a refusal body, or ``None``."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if isinstance(payload, dict) and payload.get("code"):
+        return str(payload["code"])
+    return None
+
+
 def _busy(response: httpx.Response, fallback: str) -> KoyuraBusy:
     """Build the refusal exception from a 429 body (additive fields, tolerant)."""
     try:
@@ -124,7 +146,8 @@ async def get_info(url: str) -> dict:
             logger.error("Media engine rejected the internal token (HTTP %s)", e.response.status_code)
             raise KoyuraServiceDown("Media engine authentication failed") from e
         raise KoyuraInfoError(
-            _error_message(e.response, f"Info request failed: {e.response.status_code}")
+            _error_message(e.response, f"Info request failed: {e.response.status_code}"),
+            code=_error_code(e.response),
         ) from e
     except KoyuraError:
         raise
@@ -143,6 +166,7 @@ async def start_download(
     user_id: int | None = None,
     size_bytes: int | None = None,
     transcode: str | None = None,
+    candidate_url: str | None = None,
 ) -> dict:
     """Ask the engine for a job and return its full acceptance payload.
 
@@ -150,6 +174,11 @@ async def start_download(
     fields (``status``, ``queue_position``, ``wait_seconds``, ...). Callers that
     only need the id read ``payload["job_id"]``. ``user_id`` lets the engine
     enforce the per-user limits; ``size_bytes`` sharpens the wait estimate.
+
+    ``candidate_url`` is the alternative the chat picked for a streaming link
+    (Spotify and friends): the engine downloads that link instead of the one the
+    user sent, which it cannot fetch at all. The engine refuses a candidate it
+    did not offer itself, so this is an identifier, not an arbitrary URL.
 
     ``transcode`` is ``"force"`` when the chat decided to convert and
     ``"never"`` when the file is to be delivered as-is: the engine never
@@ -170,6 +199,8 @@ async def start_download(
         payload["size_bytes"] = int(size_bytes)
     if transcode in ("force", "never"):
         payload["transcode"] = transcode
+    if candidate_url:
+        payload["candidate_url"] = candidate_url
     try:
         async with _client() as client:
             resp = await client.post("/api/download", json=payload, timeout=60.0)

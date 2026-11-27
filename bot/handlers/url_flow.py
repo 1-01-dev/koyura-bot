@@ -24,6 +24,7 @@ from telegram.ext import ContextTypes
 
 import download_card
 import state_store
+import track_card
 from koyura_client import KoyuraError, KoyuraInfoError, KoyuraServiceDown, get_info
 from url_safety import UnsafeURLError, validate_url
 
@@ -129,6 +130,111 @@ async def url_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 # The card
 # ---------------------------------------------------------------------------
 
+async def _post_card(
+    tracker,
+    info: dict,
+    caption: str,
+    keyboard,
+    remember,
+    lang: object = None,
+) -> None:
+    """Post a caption with its keyboard: as the photo card when there is one.
+
+    One message per link: the searching line is replaced by the photo (or by the
+    caption itself when no thumbnail arrives), so a card never leaves two
+    messages behind. A photo Telegram refuses falls back to the caption in the
+    message that is already on screen, which is why the same ``ok`` check covers
+    both paths.
+    """
+    if info.get("thumbnail"):
+        card = await tracker.replace_photo(
+            info["thumbnail"],
+            caption,
+            fallback_text=caption,
+            markup_factory=keyboard,
+        )
+        if card.ok and tracker.message_id is not None:
+            remember(tracker.message_id, photo=tracker.photo)
+            return
+
+    result = await tracker.edit(
+        caption, reply_markup=keyboard(tracker.message_id or 0)
+    )
+    if result.ok and tracker.message_id is not None:
+        remember(tracker.message_id, photo=tracker.photo)
+        return
+    logger.warning("Failed to render the download card: %s", result.detail)
+    await tracker.edit(texts.md("card.render_failed", lang))
+
+
+async def _send_track_preview(
+    update: Update, url: str, info: dict, tracker, lang: str | None = None
+) -> None:
+    """The card for a Spotify/Apple Music/Deezer track.
+
+    Same shape as every other preview — the service's cover as the photo, a
+    caption, one keyboard — but the keyboard offers *versions* (``1 · 3:33``)
+    instead of formats, and the caption names the artist and the track. Nothing
+    on it says where the file will be fetched from: that is an implementation
+    detail of a substitution the user did not ask about.
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+    if user is None or chat is None:
+        return
+
+    if track_card.candidate_count(info) == 0:
+        await tracker.edit(texts.md("track.no_candidates", lang))
+        return
+
+    fingerprint = sessions.url_hash(url)
+    caption = track_card.picker_caption(info, lang=lang)
+
+    def keyboard(message_id: int):
+        return track_card.build_candidate_keyboard(
+            info, message_id, fingerprint, lang=lang
+        )
+
+    def remember(message_id: int, photo: bool) -> None:
+        sessions.remember(
+            url=url,
+            chat_id=chat.id,
+            user_id=user.id,
+            username=user.username or str(user.id),
+            info=info,
+            message_id=message_id,
+            photo=photo,
+        )
+
+    if info.get("thumbnail"):
+        # The thumbnail becomes the card, so the searching line is deleted
+        # **after** the photo arrives: one message per link, not two. A photo
+        # Telegram refuses falls back to the caption in the message that is
+        # already on screen, so the same ``ok`` check covers both.
+        card = await tracker.replace_photo(
+            info["thumbnail"],
+            caption,
+            fallback_text=caption,
+            markup_factory=keyboard,
+        )
+        if card.ok and tracker.message_id is not None:
+            remember(tracker.message_id, photo=tracker.photo)
+            return
+
+    # No thumbnail, or the photo could not be posted: the caption and the
+    # buttons go into the message that is already on screen.
+    result = await tracker.edit(
+        caption,
+        reply_markup=keyboard(tracker.message_id or 0),
+    )
+    if result.ok and tracker.message_id is not None:
+        remember(tracker.message_id, photo=tracker.photo)
+        return
+
+    logger.warning("Failed to render the download card: %s", result.detail)
+    await tracker.edit(texts.md("card.render_failed", lang))
+
+
 async def send_preview(update: Update, url: str, lang: str | None = None) -> None:
     """Fetch metadata and post the preview card with a per-format keyboard."""
     message = update.message
@@ -155,10 +261,21 @@ async def send_preview(update: Update, url: str, lang: str | None = None) -> Non
         await tracker.edit(texts.md("engine.down", lang))
         return
     except KoyuraInfoError as error:
-        await tracker.edit(texts.md("engine.info_failed", lang, error=error))
+        # A streaming link that cannot be replaced says so in the bot's own
+        # words; the engine's sentence names a site and a DRM error the user
+        # cannot do anything about.
+        await tracker.edit(
+            texts.track_or_engine_line(error, "engine.info_failed", lang)
+        )
         return
     except KoyuraError as error:
         await tracker.edit(texts.md("engine.error", lang, error=error))
+        return
+
+    if track_card.is_track(info):
+        # A streaming track: the card is the service's metadata, and the buttons
+        # are numbered alternatives instead of video formats and qualities.
+        await _send_track_preview(update, url, info, tracker, lang=lang)
         return
 
     offer = download_card.format_offer(info)
@@ -197,9 +314,7 @@ async def send_preview(update: Update, url: str, lang: str | None = None) -> Non
 
     if info.get("thumbnail"):
         # The thumbnail becomes the card, so the searching line is deleted
-        # **after** the photo arrives: one message per link, not two. A photo
-        # Telegram refuses falls back to the caption in the message that is
-        # already on screen, so the same ``ok`` check covers both.
+        # **after** the photo arrives: one message per link, not two.
         card = await tracker.replace_photo(
             info["thumbnail"],
             caption,

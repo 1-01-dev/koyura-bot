@@ -32,10 +32,12 @@ import cookie_help
 import download_card
 import event_client
 import progress_card
+import track_card
 import transcode_policy as policy
 from koyura_client import (
     KoyuraBusy,
     KoyuraError,
+    KoyuraInfoError,
     KoyuraServiceDown,
     get_info,
     poll_status,
@@ -283,6 +285,13 @@ class Job:
     skipped: tuple[str, str] | None = None
     #: ``SEND_VIDEO`` / ``SEND_FILE`` / ``CONVERT`` — see ``transcode_policy``.
     delivery: str = policy.SEND_VIDEO
+    #: The alternative chosen for a streaming track (``None`` for any other job).
+    candidate_url: str | None = None
+
+    @property
+    def track(self) -> dict | None:
+        """The streaming metadata behind this job, or ``None``."""
+        return track_card.track_block(self.info)
 
     @property
     def title(self) -> str:
@@ -327,13 +336,19 @@ def fallback_sender(bot, chat_id: int):
 
 
 def retry_markup(info: dict, url_hash: str | None, lang: object = None):
-    """``markup_factory(message_id)`` for the format keyboard of a failed card.
+    """``markup_factory(message_id)`` for the buttons of a failed card.
 
     A missing hash means there is nothing to rebuild the buttons from, and the
-    error message is then sent without a keyboard.
+    error message is then sent without a keyboard. A streaming track gets its
+    numbered alternatives back, exactly as the preview card had them: the file
+    could not be fetched, but the choice is still the user's.
     """
     if not url_hash:
         return None
+    if track_card.is_track(info):
+        return lambda message_id: track_card.build_candidate_keyboard(
+            info, message_id, url_hash, lang=lang
+        )
     return lambda message_id: download_card.build_format_keyboard(
         info, message_id, url_hash, lang=lang
     )
@@ -402,6 +417,7 @@ async def run_download(
     lang: str | None = None,
     skipped: tuple[str, str] | None = None,
     delivery: str = policy.SEND_VIDEO,
+    candidate_url: str | None = None,
 ) -> None:
     """Start a job, move it through its stages and finish it with the file.
 
@@ -413,6 +429,10 @@ async def run_download(
     ``delivery`` is what Telegram gets (``transcode_policy``): a video, a
     document, or a conversion. It is decided *before* the job starts, because
     the engine only converts when the request says so.
+
+    ``candidate_url`` is the alternative the user picked for a streaming track;
+    ``url`` stays the link they sent, so the dashboard records what was asked
+    for while the engine fetches what it can.
     """
     if lang is None:
         lang = await language.current(user_id)
@@ -431,6 +451,7 @@ async def run_download(
         lang=lang,
         skipped=skipped,
         delivery=delivery,
+        candidate_url=candidate_url,
     )
     if tracker is None:
         tracker = stages.StageTracker(
@@ -481,12 +502,19 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direc
             job.url,
             job.fmt,
             job.format_id,
-            job.title,
-            uploader=str(job.info.get("channel") or job.info.get("uploader") or ""),
+            # A streaming track is tagged from the service's metadata, so the
+            # MP3 carries the track's title and artist — not the upload's.
+            track_card.title_of(job.info) if job.track else job.title,
+            uploader=(
+                track_card.artist_of(job.info)
+                if job.track
+                else str(job.info.get("channel") or job.info.get("uploader") or "")
+            ),
             height=job.height,
             user_id=job.user_id,
             size_bytes=size_hint(job.info, job.fmt, job.format_id, job.height),
             transcode=job.transcode_request,
+            candidate_url=job.candidate_url,
         )
     except KoyuraBusy as refusal:
         # A refusal has its own wording: the wait is known and the format
@@ -708,9 +736,22 @@ def local_file(status: dict) -> Path | None:
 
 
 def file_name(job: Job, status: dict, local: Path) -> str:
-    """The name the user sees: the engine's, else one built from the title."""
+    """The name the user sees: the engine's, else one built from the title.
+
+    A streaming track is named ``Artist — Title.mp3``, from the *service's*
+    metadata: the engine named the file after the upload it downloaded, and
+    that upload's name is not what the user asked for. The dash is the same one
+    the card uses, so the file and the card read alike.
+    """
     height = status.get("height") or job.height
     extension = local.suffix or (".mp3" if job.fmt == "audio" else ".mp4")
+    if job.track:
+        artist = track_card.artist_of(job.info)
+        title = track_card.title_of(job.info) or job.title
+        stem = download_card.sanitize_filename(
+            f"{artist} — {title}" if artist else title
+        )
+        return f"{stem or 'koyura'}{extension}"
     engine_name = status.get("filename")
     if engine_name and download_card.sanitize_filename(Path(engine_name).stem):
         # The engine already names the file after the title and quality; keep
@@ -925,6 +966,50 @@ def unlink_quietly(path: Path) -> None:
 # Direct commands (/mp3, /mp4, /best)
 # ---------------------------------------------------------------------------
 
+async def download_track(
+    context: ContextTypes.DEFAULT_TYPE,
+    stage,
+    info: dict,
+    url: str,
+    *,
+    user_id: int,
+    username: str,
+    candidate_index: int = 1,
+    url_hash: str | None = None,
+    entry: dict | None = None,
+    lang: str | None = None,
+) -> None:
+    """Fetch one alternative of a streaming track as an MP3.
+
+    The only output a track has: the card never offers MP4, so nothing here goes
+    through the picker or the codec question. ``candidate_index`` is the button
+    the user tapped (``1`` for a bare command, which has no buttons).
+    """
+    candidate = track_card.candidate_url(info, candidate_index)
+    if candidate is None:
+        await stage.edit(texts.md("track.no_candidates", lang))
+        return
+    await run_download(
+        context=context,
+        chat_id=stage.chat_id,
+        status_message_id=stage.message_id,
+        url=url,
+        info=info,
+        fmt="audio",
+        format_id=None,
+        height=None,
+        user_id=user_id,
+        username=username,
+        started_at=time.time(),
+        direct=entry is None,
+        url_hash=url_hash,
+        tracker=stage,
+        entry=entry,
+        lang=lang,
+        candidate_url=candidate,
+    )
+
+
 async def run_direct(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -964,9 +1049,29 @@ async def run_direct(
         await stage.edit(texts.md("engine.down", lang))
         stats.record_error()
         return
+    except KoyuraInfoError as error:
+        # A refused streaming link has a sentence of the bot's own; anything
+        # else keeps the generic wording it always had.
+        await stage.edit(texts.track_or_engine_line(error, "engine.error", lang))
+        stats.record_error()
+        return
     except KoyuraError as error:
         await stage.edit(texts.md("engine.error", lang, error=error))
         stats.record_error()
+        return
+
+    if track_card.is_track(info):
+        # A track has one output — MP3 — and no quality to pick from; the
+        # command's promise ("download this") is satisfied by the best match.
+        await download_track(
+            context,
+            stage,
+            info,
+            url,
+            user_id=user.id,
+            username=user.username or str(user.id),
+            lang=lang,
+        )
         return
 
     action = "mp3" if fmt == "audio" else (str(format_id) if format_id else "best")

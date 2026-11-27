@@ -22,6 +22,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 import download_card
+import track_card
 import transcode_policy as policy
 
 from . import download_flow, language, sessions, stages, texts
@@ -131,6 +132,68 @@ async def _answer_conversion(
     )
 
 
+async def _start_track(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    entry: dict,
+    message_id: int,
+    url_hash: str,
+    action: str,
+    lang: str | None,
+    *,
+    info: dict,
+) -> None:
+    """Download the version a track card's button names, as an MP3.
+
+    ``t3`` picks the third alternative; ``mp3``/``best`` (a card from an older
+    release, or the legacy picker) mean the first one. The keyboard is retired
+    with the tap so a second press cannot race the first job for the same
+    output.
+    """
+    query = update.callback_query
+    if query is None:
+        return
+
+    index = track_card.candidate_choice(action) or 1
+    if track_card.candidate_url(info, index) is None:
+        await query.answer(
+            texts.plain("track.no_candidates", lang), show_alert=True
+        )
+        return
+    if entry.get("job_active"):
+        await query.answer(texts.plain("download.already", lang), show_alert=False)
+        return
+
+    await query.answer()
+    entry["job_active"] = True
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as exc:  # noqa: BLE001 - the job matters more than the keyboard
+        logger.debug("Could not retire the track keyboard: %s", exc)
+
+    tracker = stages.StageTracker(
+        context.bot,
+        entry["chat_id"],
+        message_id,
+        photo=bool(entry.get("photo", True)),
+    )
+    _spawn(
+        download_flow.download_track(
+            context,
+            tracker,
+            info,
+            entry["url"],
+            user_id=entry["user_id"],
+            username=entry.get("username", ""),
+            candidate_index=index,
+            url_hash=url_hash,
+            entry=entry,
+            lang=lang,
+        ),
+        entry,
+    )
+
+
 async def _expired_card(query, context, card, lang: object = None) -> None:
     """Tell the user the session is gone — by rewriting the tapped card.
 
@@ -203,6 +266,17 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     info = entry["info"]
+
+    if track_card.is_track(info):
+        # A streaming track: every button names a version, and every version is
+        # an MP3. There is no format keyboard and no codec question to answer,
+        # so the tap goes straight to the download.
+        await _start_track(
+            update, context, entry, message_id, url_hash, action, lang,
+            info=info,
+        )
+        return
+
     if action in PICKER_ACTIONS:
         # Legacy MP4 button: show the per-format keyboard instead of guessing.
         markup = download_card.build_format_keyboard(

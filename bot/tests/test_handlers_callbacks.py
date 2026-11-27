@@ -374,3 +374,108 @@ class TestTaskSpawn:
             callbacks.asyncio.create_task = real_create_task
 
         assert calls == [True]
+
+
+# ---------------------------------------------------------------------------
+# A streaming track card
+# ---------------------------------------------------------------------------
+
+TRACK_INFO = {
+    "title": "Never Gonna Give You Up",
+    "thumbnail": "https://image-cdn.spotifycdn.com/x",
+    "duration": 213,
+    "uploader": "Rick Astley",
+    "channel": "Rick Astley",
+    "formats": [{"id": "137", "label": "1080p", "height": 1080}],
+    "audio": {"abr": 129},
+    "track": {
+        "service": "spotify",
+        "service_label": "Spotify",
+        "title": "Never Gonna Give You Up",
+        "artist": "Rick Astley",
+        "duration": 214,
+        "thumbnail": "https://image-cdn.spotifycdn.com/x",
+        "candidates": [
+            {"index": 1, "label": "1 · 3:34", "duration": 214,
+             "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+            {"index": 2, "label": "2 · 3:48", "duration": 228,
+             "url": "https://www.youtube.com/watch?v=6PLatPMoxGw"},
+        ],
+    },
+}
+
+
+@pytest.fixture()
+def track_card_entry():
+    """A live session whose payload is a substituted track."""
+    url = "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT"
+    entry = sessions.remember(
+        url=url,
+        chat_id=5,
+        user_id=7,
+        username="tester",
+        info=TRACK_INFO,
+        message_id=11,
+        photo=True,
+    )
+    sessions._sessions.pop(sessions.key(5, 11, sessions.url_hash(url)))
+    sessions._sessions[sessions.key(5, 11, HASH)] = entry
+    return entry
+
+
+class TestTrackButtons:
+    @pytest.mark.asyncio
+    async def test_a_numbered_button_downloads_that_version(
+        self, track_card_entry, spawned
+    ):
+        update, query = fake_query(f"dl:11:{HASH}:t2")
+        await callbacks.on_format_button(update, MagicMock())
+
+        assert len(spawned) == 1
+        args = spawned[0]
+        # A track has one output — no format id, no height — and the flow is
+        # told which alternative to fetch; the URL stays the link the user sent,
+        # which is what the dashboard records.
+        assert (args["candidate_index"], args["entry"]["info"]["track"]["service"]) == (
+            2,
+            "spotify",
+        )
+        assert args["url"].startswith("https://open.spotify.com/track/")
+
+    @pytest.mark.asyncio
+    async def test_the_keyboard_is_retired_with_the_tap(
+        self, track_card_entry, spawned
+    ):
+        update, query = fake_query(f"dl:11:{HASH}:t1")
+        await callbacks.on_format_button(update, MagicMock())
+        query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+        query.answer.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_second_tap_is_refused(self, track_card_entry, spawned):
+        update, query = fake_query(f"dl:11:{HASH}:t1")
+        await callbacks.on_format_button(update, MagicMock())
+        update2, query2 = fake_query(f"dl:11:{HASH}:t2")
+        await callbacks.on_format_button(update2, MagicMock())
+
+        assert len(spawned) == 1
+        assert query2.answer.await_args.kwargs["show_alert"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_missing_candidate_is_answered_with_the_reason(
+        self, track_card_entry, spawned
+    ):
+        update, query = fake_query(f"dl:11:{HASH}:t9")
+        await callbacks.on_format_button(update, MagicMock())
+
+        assert spawned == []
+        assert query.answer.await_args.kwargs["show_alert"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_mp3_button_takes_the_first_version(
+        self, track_card_entry, spawned
+    ):
+        update, query = fake_query(f"dl:11:{HASH}:mp3")
+        await callbacks.on_format_button(update, MagicMock())
+
+        assert spawned[0]["candidate_index"] == 1
