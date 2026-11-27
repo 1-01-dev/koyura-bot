@@ -166,6 +166,61 @@ so set `MAX_SEND_MB=20` there. When everything is over the limit the bot says so
 instead of drawing an empty keyboard, and `/mp4` / `/best` fall back to the
 highest quality that fits, naming the quality they skipped in the caption.
 
+## Conversion (and why it is off by default)
+
+Telegram never re-encodes what a bot uploads, so the phone has to play exactly
+what the site served. Only MP4 with **H.264 + AAC** is guaranteed to work
+(tdlib#3054); VP9 inside MP4 shows a blurred frame with sound on iOS
+(Telegram-iOS#811), and AV1 is passed through untouched (forkgram#487).
+
+Converting those files to H.264 on the server is what makes them playable — and
+on two shared vCPUs it costs ~180% CPU and minutes of waiting. That work is
+therefore a policy, never an automatic default:
+
+| Variable | Required | Default | What it does |
+| --- | --- | --- | --- |
+| `TRANSCODE_MODE` | no | `off` | `off` never converts; `auto` converts an incompatible file only when it is at most `TRANSCODE_MAX_MB`; `always` converts every AV1/VP9/VP8 file (the historical behaviour). |
+| `TRANSCODE_MAX_MB` | no | `300` | The size ceiling for `auto`, in megabytes. Above it the file is delivered as a document instead of pinning the CPU. |
+
+What each mode does to a card and to the chat:
+
+* **`off`** — the bot prefers the H.264 variant of a resolution, labels the other
+  formats with their codec (``AV1 · 2160p · 2.3GB``) and, when such a format is
+  tapped, asks once: *Send as file* (a document, same caption) or *Convert
+  (~4 min)*. Nothing converts unless the second button is pressed, and that tap
+  works even with `off` — it is explicit consent.
+* **`auto`** — the same card, but a file at or under `TRANSCODE_MAX_MB` converts
+  without asking. Above the ceiling the question still appears, so a 4K AV1
+  download never silently starts an hour of encoding.
+* **`always`** — every AV1/VP9/VP8 file is converted, as before. Only sensible on
+  a machine with spare cores.
+
+The estimate in the *Convert (~N min)* button is measured, not invented: the
+engine keeps an EWMA of wall-clock seconds per second of video from its own
+finished conversions (`KOYURA_STATE_DIR/koyura_transcode_stats.json`, with
+`TRANSCODE_STATS_PATH` as an override). Until a sample exists it falls back to
+roughly *8 MB per minute* of source, and the number is presented as an estimate.
+
+### The CPU budget
+
+The conversion is deliberately cheap in the one place that matters:
+
+* `ffmpeg -threads 1 -preset veryfast -crf 23` — one core per conversion;
+* a process-wide lock, so **two conversions never run at once** whatever
+  `MAX_CONCURRENT_DOWNLOADS` says;
+* the work holds a download-queue slot (`JobQueue.acquire`), so it never runs next
+  to more jobs than the box was configured for;
+* `TRANSCODE_MODE=off` means the steady state is a download plus nothing else.
+
+That is what keeps a 2 vCPU host under a 90% average-load limit: one transfer
+(~30-60% of a core) plus at most one encoder (~100% of a core) fits, while the
+previous default (a conversion *per job*, in parallel with downloads) did not.
+If the host has a systemd CPU quota (`CPUQuota=`), leave it in place — the flags
+above are chosen to live inside it, not to fight it.
+
+Nothing above changes `MAX_SEND_MB` or `MAX_FILESIZE_MB`: the ceilings still
+decide what may be offered and what may be downloaded.
+
 ## Cleanup (shared downloads volume)
 
 | Variable | Required | Default | What it does |
