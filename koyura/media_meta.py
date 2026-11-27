@@ -283,6 +283,9 @@ def build_info_payload(
         "formats": collect_formats(info, estimate=estimate),
         "audio": describe_audio(info),
         "transcode": transcode_info or {},
+        # Only present for a link that was substituted: the streaming service's
+        # own metadata plus the alternatives the chat offers as buttons.
+        "track": info.get("track") or None,
     }
     # Numeric fields yt-dlp may return as floats/None: keep them JSON friendly.
     for key in ("channel_follower_count", "view_count", "like_count", "comment_count"):
@@ -292,6 +295,55 @@ def build_info_payload(
         elif value is not None:
             payload[key] = None
     return payload
+
+
+def apply_track_metadata(info: dict, track: dict | None) -> dict:
+    """Replace a candidate's metadata with the streaming service's own.
+
+    A track resolved from Spotify/Apple Music/Deezer is downloaded from an
+    ordinary link (YouTube, usually), but the user asked for the *track*: the
+    card, the file name and the audio tags must all come from the service's
+    metadata. The alternative would be a card titled
+    ``Daft Punk - Get Lucky (Official Audio) ft. …`` with a channel as the
+    artist, which is not what the user sent.
+
+    Everything yt-dlp knows about the *file* (formats, sizes, codecs, duration)
+    is kept. The title, the artist and the cover are overwritten; the engagement
+    counts and the upload date are dropped rather than passed off as the track's
+    own numbers.
+
+    The ``track`` block itself travels with the payload: it carries the
+    alternatives the chat offers as ``1 · 3:33`` buttons, which is the only
+    place they can come from.
+    """
+    merged = dict(info or {})
+    if not isinstance(track, dict):
+        return merged
+    title = str(track.get("title") or "").strip()
+    artist = str(track.get("artist") or "").strip()
+    thumbnail = str(track.get("thumbnail") or "").strip()
+    if title:
+        merged["title"] = title
+    if artist:
+        # ``uploader``/``channel`` are what the bot reads, the engine's own MP3
+        # tagger uses ``uploader`` too: one artist, one field, both agree.
+        merged["uploader"] = artist
+        merged["channel"] = artist
+        merged["uploader_id"] = ""
+    if thumbnail:
+        merged["thumbnail"] = thumbnail
+    for key in (
+        "channel_follower_count", "view_count", "like_count", "comment_count",
+        "categories", "upload_date",
+    ):
+        merged.pop(key, None)
+    # The source the file came from is an implementation detail of the
+    # substitution; keeping it in the payload would let it reach a card.
+    merged["extractor"] = ""
+    merged["extractor_key"] = ""
+    merged.pop("webpage_url", None)
+    merged["track"] = track
+    return merged
 
 
 # ---------------------------------------------------------------------------
