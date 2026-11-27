@@ -134,7 +134,51 @@ def parse_callback_data(data: str) -> tuple[int, str, str] | None:
     The action is the last part and the hash the one before it, which is what
     makes a yt-dlp format id (no colons) and a long id both fit. Anything that
     does not parse returns ``None``: a broken button is answered, not chased.
+
+    The conversion question adds one field to the *action*, not to the scheme::
+
+        dl:<message_id>:<url_hash>:file:<format_id>
+        dl:<message_id>:<url_hash>:conv:<format_id>
+
+    ``parse_conversion_data`` splits those; this function keeps returning the
+    format id so a card from before the question existed still resolves.
     """
+    parts = (data or "").split(":")
+    if len(parts) < 4:
+        return None
+    try:
+        message_id = int(parts[1])
+    except ValueError:
+        return None
+    return message_id, parts[-2], parts[-1]
+
+
+#: The two answers to the conversion question, as they appear in a callback.
+CONVERSION_ANSWERS = ("file", "conv")
+
+
+def parse_conversion_data(data: str) -> tuple[int, str, str, str] | None:
+    """``"dl:42:<hash>:conv:399"`` -> ``(42, "<hash>", "conv", "399")``.
+
+    ``None`` for every other button, so the router can tell the two keyboards
+    apart by the shape of the data alone and no extra state has to be stored.
+    The hash is the field before the answer, so a 12-char fingerprint and a
+    long yt-dlp id both fit inside Telegram's 64-byte limit.
+    """
+    parts = (data or "").split(":")
+    if len(parts) != 5 or parts[0] not in ("dl", "fmt"):
+        return None
+    answer = parts[3]
+    if answer not in CONVERSION_ANSWERS:
+        return None
+    try:
+        message_id = int(parts[1])
+    except ValueError:
+        return None
+    action = parts[4].strip()
+    if not action:
+        return None
+    return message_id, parts[2], answer, action
     parts = (data or "").split(":")
     if len(parts) < 4:
         return None

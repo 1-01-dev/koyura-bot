@@ -22,6 +22,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 import download_card
+import transcode_policy as policy
 
 from . import download_flow, language, sessions, stages, texts
 
@@ -48,6 +49,84 @@ def _is_photo(query) -> bool:
     """Whether the tapped card is a media message (caption edits) or text."""
     message = getattr(query, "message", None)
     return bool(getattr(message, "photo", None))
+
+
+async def _answer_conversion(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    entry: dict,
+    message_id: int,
+    url_hash: str,
+    answer: str,
+    action: str,
+    lang: str | None,
+) -> None:
+    """Handle ``Send as file`` / ``Convert (~4 min)`` on a codec question.
+
+    The download has not started when the question is asked, so both answers
+    start the same job with a different ``transcode`` request and the engine
+    never converts without this tap:
+
+    * ``file`` → ``transcode=never``: the flow delivers a document;
+    * ``conv`` → ``transcode=force``: the engine converts and the card shows the
+      ``Converting…`` stage with ffmpeg's percentage.
+
+    The keyboard is removed from the question card first: it must not survive
+    the answer and start a second job. A refusal from the engine (``user_busy``
+    and friends) is turned into the usual error card by ``run_download``.
+    """
+    query = update.callback_query
+    if query is None:
+        return
+
+    info = entry["info"]
+    choice = download_flow.plan_choice(info, action)
+    if choice.refusal:
+        await query.answer(
+            texts.t(choice.refusal, lang, limit=texts.send_limit_label(lang)),
+            show_alert=True,
+        )
+        return
+    if entry.get("job_active"):
+        await query.answer(texts.t("download.already", lang), show_alert=False)
+        return
+
+    await query.answer()
+    entry["job_active"] = True
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as exc:  # noqa: BLE001 - the job matters more than the keyboard
+        logger.debug("Could not retire the conversion keyboard: %s", exc)
+
+    delivery = policy.CONVERT if answer == "conv" else policy.SEND_FILE
+    tracker = stages.StageTracker(
+        context.bot,
+        entry["chat_id"],
+        message_id,
+        photo=bool(entry.get("photo", True)),
+    )
+    _spawn(
+        download_flow.run_download(
+            context=context,
+            chat_id=entry["chat_id"],
+            status_message_id=message_id,
+            url=entry["url"],
+            info=info,
+            fmt=choice.fmt,
+            format_id=choice.format_id,
+            height=choice.height,
+            user_id=entry["user_id"],
+            username=entry.get("username", ""),
+            started_at=entry["created"],
+            url_hash=url_hash,
+            tracker=tracker,
+            entry=entry,
+            lang=lang,
+            skipped=choice.skipped,
+            delivery=delivery,
+        ),
+        entry,
+    )
 
 
 async def _expired_card(query, context, card, lang: object = None) -> None:
@@ -86,6 +165,14 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     message_id, url_hash, action = parsed
+    # The conversion question has one extra field, so the lenient parser above
+    # reads its answer as the hash. It is recognised by its own shape and
+    # resolved here, *before* the session lookup that would fail on it.
+    conversion = sessions.parse_conversion_data(query.data or "")
+    if conversion is not None:
+        message_id, url_hash = conversion[0], conversion[1]
+        action = conversion[3]
+
     # ``query.message`` is Optional and may be an inaccessible message, so the
     # card is addressed by the ids recorded when it was posted.
     entry = sessions.find(query, message_id, url_hash)
@@ -102,6 +189,15 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 context.bot, chat_id, message_id, photo=_is_photo(query)
             )
         await _expired_card(query, context, card, lang)
+        return
+
+    if conversion is not None:
+        # ``answer``/``target`` come from the same tuple the branch is keyed on,
+        # so the destructuring above is what defines them.
+        _message_id, _url_hash, answer_text, target = conversion
+        await _answer_conversion(
+            update, context, entry, message_id, url_hash, answer_text, target, lang
+        )
         return
 
     info = entry["info"]
@@ -140,6 +236,23 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if entry.get("job_active"):
         await query.answer(texts.t("download.already", lang), show_alert=False)
         return
+
+    if choice.ask:
+        # A codec Telegram may not play and no standing permission to convert:
+        # ask before spending a core for minutes. No job has started yet.
+        await query.answer()
+        tracker = stages.StageTracker(
+            context.bot,
+            entry["chat_id"],
+            message_id,
+            photo=bool(entry.get("photo", True)),
+        )
+        await download_flow.ask_transcode(
+            tracker, info, choice, url_hash=url_hash, lang=lang
+        )
+        _rebind(entry, tracker, url_hash)
+        return
+
     entry["job_active"] = True
     await query.answer()
 
@@ -167,9 +280,23 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             entry=entry,
             lang=lang,
             skipped=choice.skipped,
+            delivery=choice.delivery,
         ),
         entry,
     )
+
+
+def _rebind(entry: dict, tracker, url_hash: str) -> None:
+    """Point the session at the message that carries the new buttons.
+
+    Asking a question posts a new card, so the session must follow it — the
+    same rule the format keyboard follows after a failure, otherwise a tap on
+    the fresh question would answer "session expired".
+    """
+    if tracker.message_id is None:
+        return
+    sessions.rebind(entry["chat_id"], entry["message_id"], url_hash, tracker.message_id)
+    entry["message_id"] = tracker.message_id
 
 
 def _spawn(coro, entry: dict) -> None:

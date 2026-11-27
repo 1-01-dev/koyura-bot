@@ -142,6 +142,7 @@ async def start_download(
     *,
     user_id: int | None = None,
     size_bytes: int | None = None,
+    transcode: str | None = None,
 ) -> dict:
     """Ask the engine for a job and return its full acceptance payload.
 
@@ -149,6 +150,10 @@ async def start_download(
     fields (``status``, ``queue_position``, ``wait_seconds``, ...). Callers that
     only need the id read ``payload["job_id"]``. ``user_id`` lets the engine
     enforce the per-user limits; ``size_bytes`` sharpens the wait estimate.
+
+    ``transcode`` is ``"force"`` when the chat decided to convert and
+    ``"never"`` when the file is to be delivered as-is: the engine never
+    converts on its own initiative, so the decision travels with the job.
     """
     payload: dict[str, object] = {"url": url, "format": format, "title": title}
     if format_id:
@@ -163,6 +168,8 @@ async def start_download(
         payload["user_id"] = int(user_id)
     if size_bytes:
         payload["size_bytes"] = int(size_bytes)
+    if transcode in ("force", "never"):
+        payload["transcode"] = transcode
     try:
         async with _client() as client:
             resp = await client.post("/api/download", json=payload, timeout=60.0)
@@ -193,6 +200,45 @@ async def start_download(
         raise
     except Exception as e:
         raise KoyuraDownloadError(f"Download request failed: {e}") from e
+
+
+async def start_transcode(job_id: str) -> dict:
+    """Ask the engine to convert a finished job's file to H.264.
+
+    Used when the user first asked for the file (``Send as file``) and then
+    pressed *Convert*: the bytes are already on the volume, so only the encoder
+    has to run. The answer carries the stage and the estimate the card shows; a
+    refusal (already playable, conversion running, unknown job) arrives as a
+    :class:`KoyuraError` that the flow renders as the usual error card.
+    """
+    try:
+        async with _client() as client:
+            resp = await client.post(f"/api/transcode/{job_id}", timeout=30.0)
+            if resp.status_code == 429:
+                raise _busy(resp, "The server is busy, try again later")
+            resp.raise_for_status()
+            body = resp.json()
+            if not isinstance(body, dict):
+                raise KoyuraError("Malformed response: expected an object")
+            return body
+    except httpx.ConnectError as e:
+        raise KoyuraServiceDown("Cannot reach the media engine") from e
+    except httpx.TimeoutException as e:
+        raise KoyuraError("Conversion request timed out") from e
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code in (401, 403):
+            logger.error(
+                "Media engine rejected the internal token (HTTP %s)",
+                e.response.status_code,
+            )
+            raise KoyuraServiceDown("Media engine authentication failed") from e
+        raise KoyuraError(
+            _error_message(e.response, f"Conversion failed: {e.response.status_code}")
+        ) from e
+    except KoyuraError:
+        raise
+    except Exception as e:
+        raise KoyuraError(f"Conversion request failed: {e}") from e
 
 
 async def poll_status(job_id: str) -> dict:
