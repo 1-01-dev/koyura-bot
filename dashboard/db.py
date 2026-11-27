@@ -79,8 +79,25 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TEXT NOT NULL
 );
 
+-- The owner's own message bodies. One row per (kind, language, name); the
+-- partial unique index below is what makes "one active template per pair" a
+-- database rule rather than a convention the routes have to remember.
+CREATE TABLE IF NOT EXISTS message_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    lang TEXT NOT NULL,
+    name TEXT NOT NULL,
+    body TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_downloads_started_at ON downloads(started_at);
 CREATE INDEX IF NOT EXISTS idx_downloads_status ON downloads(status);
+CREATE INDEX IF NOT EXISTS idx_message_templates_pair ON message_templates(kind, lang);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_message_templates_active
+    ON message_templates(kind, lang) WHERE is_active = 1;
 """
 
 
@@ -692,3 +709,184 @@ async def save_settings(values: dict[str, str]) -> None:
             )
             await cursor.close()
         await conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Message templates (admin-editable bodies, one active per kind + language)
+# ---------------------------------------------------------------------------
+
+_TEMPLATES_ALL = (
+    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+    "FROM message_templates ORDER BY is_active DESC, updated_at DESC, id DESC"
+)
+_TEMPLATES_BY_KIND = (
+    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+    "FROM message_templates WHERE kind = ? "
+    "ORDER BY is_active DESC, updated_at DESC, id DESC"
+)
+_TEMPLATES_BY_LANG = (
+    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+    "FROM message_templates WHERE lang = ? "
+    "ORDER BY is_active DESC, updated_at DESC, id DESC"
+)
+_TEMPLATES_BY_PAIR = (
+    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+    "FROM message_templates WHERE kind = ? AND lang = ? "
+    "ORDER BY is_active DESC, updated_at DESC, id DESC"
+)
+_TEMPLATE_BY_ID = (
+    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+    "FROM message_templates WHERE id = ?"
+)
+_TEMPLATES_ACTIVE = (
+    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+    "FROM message_templates WHERE is_active = 1 ORDER BY kind, lang"
+)
+
+
+def _template_row(row) -> dict[str, Any]:
+    return dict(row)
+
+
+async def list_message_templates(
+    *, kind: str | None = None, lang: str | None = None
+) -> list[dict[str, Any]]:
+    """Stored bodies, newest first, optionally for one kind/language pair.
+
+    Four static statements instead of a composed ``WHERE``: the filters the
+    panel offers are exactly these two, and a fixed query keeps the SQL
+    literal (a reviewer can see there is nothing to inject).
+    """
+    async with _conn() as conn:
+        if kind is not None and lang is not None:
+            cursor = await conn.execute(_TEMPLATES_BY_PAIR, (str(kind), str(lang)))
+        elif kind is not None:
+            cursor = await conn.execute(_TEMPLATES_BY_KIND, (str(kind),))
+        elif lang is not None:
+            cursor = await conn.execute(_TEMPLATES_BY_LANG, (str(lang),))
+        else:
+            cursor = await conn.execute(_TEMPLATES_ALL)
+        rows = await cursor.fetchall()
+        await cursor.close()
+    return [_template_row(row) for row in rows]
+
+
+async def get_message_template(template_id: int) -> dict[str, Any] | None:
+    """One stored body, or ``None``."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            _TEMPLATE_BY_ID,
+            (int(template_id),),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+    return _template_row(row) if row is not None else None
+
+
+async def active_message_templates() -> list[dict[str, Any]]:
+    """Only the rows the bot should render (``is_active = 1``)."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            _TEMPLATES_ACTIVE
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+    return [_template_row(row) for row in rows]
+
+
+async def _clear_active(
+    conn: aiosqlite.Connection, kind: str, lang: str, moment: str
+) -> None:
+    cursor = await conn.execute(
+        "UPDATE message_templates SET is_active = 0, updated_at = ? "
+        "WHERE kind = ? AND lang = ? AND is_active = 1",
+        (moment, kind, lang),
+    )
+    await cursor.close()
+
+
+async def create_message_template(
+    *, kind: str, lang: str, name: str, body: str, activate: bool = True
+) -> int:
+    """Store a body; ``activate`` makes it the one the bot renders.
+
+    The insertion and the activation are one transaction, so a reader never
+    sees two active rows for the pair (the unique index would reject that).
+    """
+    moment = _utc_now()
+    async with _conn() as conn:
+        if activate:
+            await _clear_active(conn, kind, lang, moment)
+        cursor = await conn.execute(
+            "INSERT INTO message_templates "
+            "(kind, lang, name, body, is_active, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (kind, lang, name, body, 1 if activate else 0, moment, moment),
+        )
+        template_id = int(cursor.lastrowid or 0)
+        await cursor.close()
+        await conn.commit()
+    return template_id
+
+
+async def update_message_template(
+    template_id: int, *, name: str, body: str
+) -> bool:
+    """Rewrite the name and body of one row; ``False`` when it is gone."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "UPDATE message_templates SET name = ?, body = ?, updated_at = ? "
+            "WHERE id = ?",
+            (name, body, _utc_now(), int(template_id)),
+        )
+        changed = cursor.rowcount
+        await cursor.close()
+        await conn.commit()
+    return bool(changed)
+
+
+async def activate_message_template(template_id: int) -> bool:
+    """Make one row the active body for its pair; ``False`` when it is gone."""
+    moment = _utc_now()
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT kind, lang FROM message_templates WHERE id = ?",
+            (int(template_id),),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            return False
+        await _clear_active(conn, str(row["kind"]), str(row["lang"]), moment)
+        cursor = await conn.execute(
+            "UPDATE message_templates SET is_active = 1, updated_at = ? WHERE id = ?",
+            (moment, int(template_id)),
+        )
+        await cursor.close()
+        await conn.commit()
+    return True
+
+
+async def delete_message_template(template_id: int) -> bool:
+    """Delete one row; deleting the active one falls back to the default."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM message_templates WHERE id = ?", (int(template_id),)
+        )
+        changed = cursor.rowcount
+        await cursor.close()
+        await conn.commit()
+    return bool(changed)
+
+
+async def reset_message_templates(kind: str, lang: str) -> int:
+    """Delete every stored body for one pair: the bot renders the default again."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM message_templates WHERE kind = ? AND lang = ?",
+            (str(kind), str(lang)),
+        )
+        deleted = cursor.rowcount
+        await cursor.close()
+        await conn.commit()
+    return int(deleted)

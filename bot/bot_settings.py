@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import httpx
@@ -60,7 +61,7 @@ DEFAULT_LANGUAGE: str = i18n.DEFAULT_LANGUAGE
 
 @dataclass(frozen=True)
 class Settings:
-    """Enabled languages, their default, and the progress lines to draw."""
+    """Enabled languages, their default, the progress lines and the templates."""
 
     languages: tuple[str, ...]
     default_language: str
@@ -68,6 +69,18 @@ class Settings:
     progress: progress_fields.Fields = field(
         default_factory=progress_fields.defaults
     )
+    # ``{kind: {lang: body}}``: the custom message bodies the panel activated.
+    # Empty means "every message is the built-in default", which is also what a
+    # panel we cannot reach gives us.
+    templates: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+
+    def custom_template(self, kind: str, lang: object) -> str | None:
+        """The active body for one kind in one language, or ``None``."""
+        by_language = self.templates.get(str(kind))
+        if not isinstance(by_language, Mapping):
+            return None
+        body = by_language.get(i18n.normalise(lang))
+        return str(body) if body else None
 
     def resolve(self, choice: object) -> str:
         """The language to speak to one user: their choice, else the default.
@@ -91,6 +104,7 @@ def defaults() -> Settings:
         languages=DEFAULT_LANGUAGES,
         default_language=DEFAULT_LANGUAGE,
         progress=progress_fields.defaults(),
+        templates={},
     )
 
 
@@ -101,6 +115,36 @@ def _dashboard_url() -> str:
 def _headers() -> dict[str, str]:
     token = os.environ.get("INTERNAL_API_TOKEN", "").strip()
     return {"X-Internal-Token": token} if token else {}
+
+
+def normalise_templates(raw: object) -> dict[str, dict[str, str]]:
+    """``{kind: {lang: body}}`` from an API body, dropping what cannot render.
+
+    A body that is not a string, an empty body and a language the catalogue
+    does not know are skipped: the bot then sends the built-in default for that
+    message, which is exactly what the panel promises for a broken template.
+    """
+    if not isinstance(raw, Mapping):
+        return {}
+    import message_kinds  # local: the registry is not needed on the hot path
+
+    cleaned: dict[str, dict[str, str]] = {}
+    for kind, by_language in raw.items():
+        if not isinstance(kind, str) or not isinstance(by_language, Mapping):
+            continue
+        if message_kinds.get(kind) is None:
+            # A body for a kind this build does not send (a retired message):
+            # shipping it would only have the bot fall back to the default.
+            continue
+        entry: dict[str, str] = {}
+        for lang, body in by_language.items():
+            name = i18n.normalise(lang)
+            if not isinstance(body, str) or not body.strip():
+                continue
+            entry[name] = body
+        if entry:
+            cleaned[kind] = entry
+    return cleaned
 
 
 def normalise_payload(payload: object) -> Settings:
@@ -134,6 +178,7 @@ def normalise_payload(payload: object) -> Settings:
         default_language=default,
         source="panel",
         progress=progress_fields.normalise(payload),
+        templates=normalise_templates(payload.get("templates")),
     )
 
 
@@ -185,6 +230,16 @@ def reset_cache() -> None:
     _cache_at = 0.0
 
 
+def cached() -> Settings | None:
+    """The last answer, without a round trip (``None`` before the first fetch).
+
+    Message rendering is synchronous — a caption cannot await a settings fetch
+    — so it reads this snapshot. A bot that has not polled yet, or whose panel
+    is down, has ``None`` here and renders the built-in defaults.
+    """
+    return _cache
+
+
 def prime(settings: Settings, *, now: float | None = None) -> None:
     """Test helper: install an answer without a network round trip."""
     global _cache, _cache_at
@@ -198,10 +253,12 @@ __all__ = [
     "SETTINGS_PATH",
     "Settings",
     "TTL_SECONDS",
+    "cached",
     "defaults",
     "fetch",
     "get",
     "normalise_payload",
+    "normalise_templates",
     "prime",
     "reset_cache",
 ]

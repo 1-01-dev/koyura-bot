@@ -9,6 +9,7 @@
 
 import { initDashboardPage } from './js/report.js';
 import { initLinkModal } from './js/linkmodal.js';
+import { initTemplates } from './js/templates.js';
 import {
   deleteSelected,
   openPurgeModal,
@@ -36,6 +37,7 @@ function bootAdmin() {
   if (!document.getElementById('file-table')) return;
   initSelectAll();
   initAdminActions(ADMIN_ACTIONS);
+  initTemplates();
 }
 
 function boot() {

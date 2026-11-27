@@ -83,12 +83,14 @@ async def _answer_conversion(
     choice = download_flow.plan_choice(info, action)
     if choice.refusal:
         await query.answer(
-            texts.t(choice.refusal, lang, limit=texts.send_limit_label(lang)),
+            texts.plain(choice.refusal, lang, limit=texts.send_limit_label(lang)),
             show_alert=True,
         )
         return
     if entry.get("job_active"):
-        await query.answer(texts.t("download.already", lang), show_alert=False)
+        await query.answer(
+            texts.plain("download.already", lang), show_alert=False
+        )
         return
 
     await query.answer()
@@ -138,7 +140,7 @@ async def _expired_card(query, context, card, lang: object = None) -> None:
     card cannot be edited at all the notice is posted as one new message and the
     old one is retired, which is the same replace-not-add rule.
     """
-    notice = texts.t("download.session_expired", lang)
+    notice = texts.plain("download.session_expired", lang)
     message = getattr(query, "message", None)
     try:
         if getattr(message, "photo", None):
@@ -210,8 +212,10 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             # Nothing fits the send limit: the tap gets the reason, not a card
             # with a "best quality" button that cannot be delivered.
             await query.answer(
-                texts.t(download_card.limit_notice_key(info), lang,
-                        limit=texts.send_limit_label(lang)),
+                texts.plain(
+                    download_card.limit_notice_key(info), lang,
+                    limit=texts.send_limit_label(lang),
+                ),
                 show_alert=True,
             )
             return
@@ -226,7 +230,7 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     choice = download_flow.plan_choice(info, action)
     if choice.refusal:
         await query.answer(
-            texts.t(choice.refusal, lang, limit=texts.send_limit_label(lang)),
+            texts.plain(choice.refusal, lang, limit=texts.send_limit_label(lang)),
             show_alert=True,
         )
         return
@@ -234,7 +238,9 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # The card locks itself while a job runs: a second format on the same
     # message would race for the same output and upload the wrong file.
     if entry.get("job_active"):
-        await query.answer(texts.t("download.already", lang), show_alert=False)
+        await query.answer(
+            texts.plain("download.already", lang), show_alert=False
+        )
         return
 
     if choice.ask:
