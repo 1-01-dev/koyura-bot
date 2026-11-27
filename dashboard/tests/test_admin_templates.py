@@ -118,7 +118,15 @@ class TestBotSettingsApi:
         assert body["templates"] == {}
         # The older fields are untouched.
         assert body["languages"] == ["en", "ru"]
-        assert "progress" in body
+
+    def test_the_retired_progress_switches_are_not_served(self, client):
+        """The object that used to carry them is gone; nothing reads it now.
+
+        The bot decides what a progress message says from the ``progress``
+        template, so serving a second set of switches would only give it two
+        sources of truth again.
+        """
+        assert "progress" not in client.get("/api/bot-settings").json()
 
     def test_an_active_body_is_served(self, admin):
         _save(admin)

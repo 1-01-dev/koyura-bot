@@ -324,13 +324,19 @@ def test_limits_owns_the_form_and_the_presets(admin: TestClient):
     assert body.count('data-action="limit-preset"') == 4
 
 
-def test_bot_owns_the_three_panels_and_their_anchors(admin: TestClient):
+def test_bot_owns_the_two_panels_and_their_anchors(admin: TestClient):
+    """Languages decide *which* languages exist; the templates say what they say.
+
+    The third panel (``Progress fields``) is retired: the progress line is the
+    ``progress`` body in the templates section, so there is nothing left to
+    anchor to and no second source of truth for it.
+    """
     body = admin.get("/admin/bot").text
-    for panel in ("languages-card", "progress-card", "templates-card"):
+    for panel in ("languages-card", "templates-card"):
         assert f'id="{panel}"' in body, panel
         assert f'href="#{panel}"' in body, f"{panel} has no anchor link"
+    assert 'id="progress-card"' not in body
     assert 'action="/admin/languages"' in body
-    assert 'action="/admin/progress"' in body
     assert 'action="/admin/templates/save"' in body
 
 

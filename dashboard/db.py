@@ -735,6 +735,30 @@ async def save_settings(values: dict[str, str]) -> None:
         await conn.commit()
 
 
+async def delete_settings(prefix: str) -> int:
+    """Remove every setting under ``prefix``; returns how many rows went.
+
+    For the keys a retired feature leaves behind (the ``bot_progress.*``
+    switches). Scoped to a prefix on purpose — the same table holds the limits
+    and the languages — and the prefix is escaped before it becomes a ``LIKE``
+    pattern, so a literal prefix never matches more than it names.
+    """
+    if not prefix:
+        return 0
+    escaped = (
+        prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM settings WHERE key LIKE ? ESCAPE '\\'",
+            (f"{escaped}%",),
+        )
+        removed = int(cursor.rowcount or 0)
+        await cursor.close()
+        await conn.commit()
+    return removed
+
+
 # ---------------------------------------------------------------------------
 # Message templates (admin-editable bodies, one active per kind + language)
 # ---------------------------------------------------------------------------

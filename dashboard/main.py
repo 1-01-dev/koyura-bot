@@ -68,6 +68,26 @@ async def _disk_snapshot_loop() -> None:
         await asyncio.sleep(300)  # 5 minutes
 
 
+async def _drop_retired_progress_rows() -> None:
+    """Delete the ``bot_progress.*`` rows the retired Progress fields wrote.
+
+    The section is gone and nothing reads these keys any more, so the rows are
+    dead weight. The delete is best effort and additive-only as far as the schema
+    is concerned: no table is touched, a missing table simply matches nothing,
+    and any failure is logged and swallowed — a panel that starts with a few
+    stale preference rows is fine, one that refuses to start is not.
+    """
+    try:
+        removed = await db.delete_settings(
+            prefix="bot_progress.",
+        )
+    except Exception:
+        logger.exception("Could not remove the retired progress-field rows")
+        return
+    if removed:
+        logger.info("Removed %d retired progress-field setting(s)", removed)
+
+
 async def _apply_saved_limits() -> None:
     """Push the limits stored in the panel to the engine on startup.
 
@@ -107,6 +127,7 @@ async def _lifespan(app: FastAPI):
         except Exception:
             logger.exception("Could not mark interrupted downloads")
     await _apply_saved_limits()
+    await _drop_retired_progress_rows()
     task = asyncio.create_task(_disk_snapshot_loop())
     try:
         yield
