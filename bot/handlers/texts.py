@@ -148,6 +148,32 @@ def limit_note(quality: str, skipped: str, lang: object = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Codecs Telegram may not play
+# ---------------------------------------------------------------------------
+
+def transcode_question_entry(entry: object, lang: object = None) -> str:
+    """The card sentence that the two conversion buttons answer.
+
+    ``Send 2160p (AV1) as a file, or convert it?`` — the quality and the codec
+    are part of the sentence because the buttons below it only say *what to do*,
+    not *with what*.
+    """
+    import transcode_policy as policy  # local: keeps the import graph one-way
+
+    return t(
+        "transcode.ask",
+        lang,
+        quality=policy.quality_label(entry),
+        codec=policy.codec_label(entry) or "?",
+    )
+
+
+def transcode_document_note(lang: object = None) -> str:
+    """The caption line under a file that was sent as a document."""
+    return t("transcode.document", lang)
+
+
+# ---------------------------------------------------------------------------
 # /help
 # ---------------------------------------------------------------------------
 
@@ -310,5 +336,7 @@ __all__ = [
     "settings_report",
     "stats_report",
     "t",
+    "transcode_document_note",
+    "transcode_question_entry",
     "welcome_text",
 ]

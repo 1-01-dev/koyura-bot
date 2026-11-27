@@ -31,6 +31,7 @@ from telegram.ext import ContextTypes
 import download_card
 import event_client
 import progress_card
+import transcode_policy as policy
 from koyura_client import (
     KoyuraBusy,
     KoyuraError,
@@ -93,6 +94,11 @@ class Choice:
     caller renders it in the user's language instead of starting a job.
     ``skipped`` is ``(chosen, skipped)`` quality labels when the best quality was
     over the send limit and a smaller one was pinned, so the caption can say so.
+
+    ``delivery`` is what Telegram gets: a video, a document, or a conversion
+    (``transcode_policy.SEND_VIDEO`` / ``SEND_FILE`` / ``CONVERT``). ``ask``
+    means the format needs the user's decision first, and ``format`` is the
+    entry that decision is about.
     """
 
     fmt: str
@@ -100,6 +106,22 @@ class Choice:
     height: int | None = None
     skipped: tuple[str, str] | None = None
     refusal: str | None = None
+    #: ``SEND_VIDEO`` / ``SEND_FILE`` / ``CONVERT`` — what Telegram gets.
+    delivery: str = policy.SEND_VIDEO
+    #: The user must answer "send as file or convert" first.
+    ask: bool = False
+    #: The format the question (and its estimate) is about.
+    entry: dict | None = None
+
+    @property
+    def transcode(self) -> str:
+        """The ``transcode`` value the engine expects (``force`` / ``never``)."""
+        return "force" if self.delivery == policy.CONVERT else "never"
+
+    @property
+    def as_document(self) -> bool:
+        """Whether the finished file goes out as a document, not as a video."""
+        return self.delivery == policy.SEND_FILE
 
 
 def plan_choice(
@@ -117,6 +139,12 @@ def plan_choice(
     An explicit format id (a button) is forwarded untouched — the keyboard only
     offers formats that fit — while a format that the limit removed is caught
     above by the offer.
+
+    The delivery is decided here too, from the format's codec and the engine's
+    ``transcode.mode``: a playable H.264 file goes straight through, a codec the
+    engine cannot convert goes out as a document, and an AV1/VP9 file either
+    converts (``always``, or ``auto`` inside the size ceiling) or asks the user
+    first. Nothing converts without that decision.
     """
     if action == "mp3":
         offer = download_card.format_offer(info, limit_bytes=limit_bytes)
@@ -124,10 +152,28 @@ def plan_choice(
             return Choice("audio", refusal=download_card.limit_notice_key(info))
         return Choice("audio")
 
-    if action != "best":
-        fmt, format_id, height = resolve_choice(info, action)
-        return Choice(fmt, format_id, height)
+    if action in ("best", "sendasfile", "convert"):
+        return _plan_best(info, limit_bytes=limit_bytes)
 
+    fmt, format_id, height = resolve_choice(info, action)
+    entry = find_format(info, format_id) or {}
+    decision = policy.decide(
+        policy.engine_mode(info),
+        entry,
+        max_mb=policy.engine_max_mb(info),
+    )
+    return Choice(
+        fmt,
+        format_id,
+        height,
+        delivery=decision,
+        ask=decision == policy.ASK,
+        entry=entry or None,
+    )
+
+
+def _plan_best(info: dict, *, limit_bytes: int | None = None) -> Choice:
+    """The highest sendable format, plus the quality that was skipped."""
     offer = download_card.format_offer(info, limit_bytes=limit_bytes)
     if not offer.formats:
         return Choice("video", refusal=download_card.limit_notice_key(info))
@@ -141,11 +187,19 @@ def plan_choice(
             download_card.format_quality(top.get("height"), top.get("label")),
         )
     height = chosen.get("height")
+    decision = policy.decide(
+        policy.engine_mode(info),
+        chosen,
+        max_mb=policy.engine_max_mb(info),
+    )
     return Choice(
         "video",
         str(chosen.get("id")) if chosen.get("id") is not None else None,
         int(height) if height else None,
         skipped=skipped,
+        delivery=decision,
+        ask=decision == policy.ASK,
+        entry=chosen,
     )
 
 
@@ -226,6 +280,8 @@ class Job:
     url_hash: str | None = None
     lang: str = "en"
     skipped: tuple[str, str] | None = None
+    #: ``SEND_VIDEO`` / ``SEND_FILE`` / ``CONVERT`` — see ``transcode_policy``.
+    delivery: str = policy.SEND_VIDEO
 
     @property
     def title(self) -> str:
@@ -236,11 +292,28 @@ class Job:
         return quality_label(self.fmt, self.format_id, self.height, self.info)
 
     @property
+    def transcode_request(self) -> str:
+        """The ``transcode`` value the engine needs for this job."""
+        return "force" if self.delivery == policy.CONVERT else "never"
+
+    @property
     def limit_note(self) -> str | None:
         """The caption line explaining a quality that was lowered to fit."""
         if not self.skipped:
             return None
         return texts.limit_note(self.skipped[0], self.skipped[1], self.lang)
+
+    @property
+    def document_note(self) -> str | None:
+        """The caption line explaining why the file arrived as a document.
+
+        Only drawn when the *user* asked for a file on a codec Telegram may not
+        play (``delivery == ASK`` once the answer is known): the note is the
+        answer to a question they just answered, not a surprise.
+        """
+        if self.delivery != policy.SEND_FILE:
+            return None
+        return texts.t("transcode.document", self.lang)
 
 
 def fallback_sender(bot, chat_id: int):
@@ -265,6 +338,49 @@ def retry_markup(info: dict, url_hash: str | None, lang: object = None):
     )
 
 
+async def ask_transcode(
+    stage,
+    info: dict,
+    choice: Choice,
+    *,
+    url_hash: str | None,
+    lang: object = None,
+) -> bool:
+    """Show ``[Send as file] [Convert (~4 min)]`` instead of starting a job.
+
+    Called for a format Telegram may not play as a video when the engine's mode
+    is ``off`` (the default) or the file is over ``TRANSCODE_MAX_MB`` in
+    ``auto``. The download has not started yet, so the answer costs nothing but
+    a question.
+
+    The buttons carry the format id and the answer, and the card's session is
+    re-homed onto the message that now carries them — exactly like the format
+    keyboard after a failure, so a tap on the fresh card is never "expired".
+
+    Returns ``False`` when the question could not be posted (no hash, or the
+    stage has gone); the caller then continues as if the user had asked for a
+    file, which is always safe and never converts.
+    """
+    if not url_hash:
+        return False
+    eta = policy.estimate_seconds(choice.entry)
+
+    def markup(message_id: int):
+        return download_card.build_transcode_keyboard(
+            choice.entry, message_id, url_hash, lang=lang, eta_seconds=eta
+        )
+
+    result = await stage.replace_text(
+        download_card.build_transcode_question(info, choice.entry, lang=lang),
+        markup_factory=markup,
+    )
+    if not result.ok:
+        return False
+    if stage.message_id is not None:
+        sessions.rebind(stage.chat_id, stage.message_id, url_hash, stage.message_id)
+    return True
+
+
 async def run_download(
     *,
     context: ContextTypes.DEFAULT_TYPE,
@@ -284,6 +400,7 @@ async def run_download(
     entry: dict | None = None,
     lang: str | None = None,
     skipped: tuple[str, str] | None = None,
+    delivery: str = policy.SEND_VIDEO,
 ) -> None:
     """Start a job, move it through its stages and finish it with the file.
 
@@ -291,6 +408,10 @@ async def run_download(
     download gives the format buttons back instead of leaving the card dead.
     ``lang`` is resolved once, by the caller that has the user in hand: a job can
     outlive the message that started it.
+
+    ``delivery`` is what Telegram gets (``transcode_policy``): a video, a
+    document, or a conversion. It is decided *before* the job starts, because
+    the engine only converts when the request says so.
     """
     if lang is None:
         lang = await language.current(user_id)
@@ -308,6 +429,7 @@ async def run_download(
         url_hash=url_hash,
         lang=lang,
         skipped=skipped,
+        delivery=delivery,
     )
     if tracker is None:
         tracker = stages.StageTracker(
@@ -363,6 +485,7 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direc
             height=job.height,
             user_id=job.user_id,
             size_bytes=size_hint(job.info, job.fmt, job.format_id, job.height),
+            transcode=job.transcode_request,
         )
     except KoyuraBusy as refusal:
         # A refusal has its own wording: the wait is known and the format
@@ -485,6 +608,11 @@ async def poll_until_finished(job: Job, job_id: str, stage) -> dict | None:
             await _show_queue_state(stage, job.info, status, throttle, job.lang)
             continue
 
+        # The engine converts inside the same job (``stage: converting``), so the
+        # card only has to change its word and read ffmpeg's percentage from the
+        # same ``progress`` dict. Nothing converts unless the user asked for it.
+        stage_name = str(status.get("stage") or "downloading")
+
         progress = status.get("progress")
         if not isinstance(progress, dict):
             progress = {}
@@ -513,7 +641,7 @@ async def poll_until_finished(job: Job, job_id: str, stage) -> dict | None:
             progress_card.build_progress_caption(
                 job.info,
                 progress,
-                stage="downloading",
+                stage=stage_name,
                 quality=job.quality,
                 elapsed=elapsed,
                 lang=job.lang,
@@ -611,12 +739,13 @@ async def _deliver(
         size_bytes=size_bytes,
         duration=status.get("duration"),
         lang=job.lang,
-        note=job.limit_note,
+        note=job.limit_note or job.document_note,
     )
 
     # Stage 3: the file replaces the progress message. It is uploaded first and
     # the progress message is deleted only after Telegram accepted it, so a
     # failed upload leaves something on screen for the error card.
+    document = _goes_out_as_document(job, status)
     delivered = await stage.finish_with_file(
         lambda: _send_file(
             bot,
@@ -628,6 +757,7 @@ async def _deliver(
             caption=caption,
             status=status,
             height=height,
+            as_document=document,
         )
     )
     if not delivered.ok:
@@ -658,6 +788,29 @@ async def _deliver(
     unlink_quietly(local)
 
 
+def _goes_out_as_document(job: Job, status: dict) -> bool:
+    """Whether the finished file must be a document instead of a video.
+
+    Telegram does not re-encode, so a VP9/AV1 file uploaded as a video shows a
+    broken frame on iOS; as a document it always arrives intact. The engine is
+    the authority (``send_as_document`` / ``converted`` on ``/api/status``), and
+    the flow's own decision covers an older engine that reports neither:
+
+    * converted or H.264 → a video, whatever the user picked;
+    * the user chose ``Send as file`` → a document;
+    * an incompatible codec with ``TRANSCODE_MODE=off`` → a document.
+    """
+    if not isinstance(status, dict):
+        return job.delivery == policy.SEND_FILE
+    if status.get("converted") or status.get("vcodec") == "h264":
+        return False
+    if status.get("send_as_document"):
+        return True
+    if job.fmt == "audio":
+        return False
+    return job.delivery == policy.SEND_FILE or bool(status.get("vcodec"))
+
+
 async def _send_file(
     bot,
     chat_id: int,
@@ -669,8 +822,12 @@ async def _send_file(
     caption: str,
     status: dict,
     height: int | None,
+    as_document: bool = False,
 ):
     """Send the file under a human name, retrying once on a transient failure.
+
+    ``as_document`` forces ``send_document`` for a video file whose codec
+    Telegram would not play: the same caption, the same name, no broken preview.
 
     Returns the posted message, or ``None`` when both attempts failed.
     """
@@ -693,7 +850,7 @@ async def _send_file(
                         performer=performer,
                         duration=seconds,
                     )
-                if suffix == ".mp4":
+                if suffix == ".mp4" and not as_document:
                     return await bot.send_video(
                         chat_id=chat_id,
                         video=handle,
@@ -775,6 +932,10 @@ async def run_direct(
     Telegram refuses. In that case the highest sendable format is pinned and the
     caption says which one was skipped; when nothing fits at all, the status line
     becomes the explanation instead of a download that cannot succeed.
+
+    A command has no buttons, so a codec Telegram may not play is answered by the
+    command itself: it is delivered as a document (``SEND_FILE``) and the caption
+    says why. Nothing converts without a tap, which a bare command cannot offer.
     """
     user = update.effective_user
     if user is None:
@@ -801,6 +962,11 @@ async def run_direct(
         await stage.edit(texts.limit_message(choice.refusal, lang))
         return
 
+    delivery = choice.delivery
+    if delivery == policy.ASK:
+        # No question to ask without buttons: send the file, never convert.
+        delivery = policy.SEND_FILE
+
     await run_download(
         context=context,
         chat_id=status_message.chat_id,
@@ -817,4 +983,5 @@ async def run_direct(
         tracker=stage,
         lang=lang,
         skipped=choice.skipped,
+        delivery=delivery,
     )
