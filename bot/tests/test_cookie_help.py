@@ -239,3 +239,101 @@ class TestCatalogue:
             english = i18n.placeholders(key, "en")
             for lang in i18n.LANGUAGES:
                 assert i18n.placeholders(key, lang) == english, f"{lang}:{key}"
+
+
+# ---------------------------------------------------------------------------
+# A blocked address is not a spent session
+# ---------------------------------------------------------------------------
+
+def _blocked_status(service: str = "reddit") -> dict:
+    return {
+        "status": "error",
+        "error_code": "service_blocked",
+        "cookies_service": service,
+        # The raw yt-dlp line the engine classified; the bot must not show it.
+        "error": "ERROR: [Reddit] ... HTTP Error 403: Blocked",
+    }
+
+
+class TestBlockedDetection:
+    def test_a_blocked_status_is_recognised(self):
+        assert cookie_help.is_blocked(_blocked_status()) is True
+
+    def test_a_cookies_required_status_is_not_blocked(self):
+        assert cookie_help.is_blocked(_status()) is False
+
+    def test_none_and_nonsense_are_not_blocked(self):
+        for value in (None, "x", [], 3):
+            assert cookie_help.is_blocked(value) is False
+
+    def test_the_service_is_read_from_the_payload(self):
+        assert cookie_help.service_of(_blocked_status("instagram")) == "instagram"
+
+
+class TestBlockedMessage:
+    def test_the_sentence_names_the_service_and_the_fix(self):
+        text = cookie_help.blocked_message(_blocked_status())
+        assert "Reddit" in text
+        assert "proxy" in text.lower()
+
+    def test_the_sentence_says_cookies_will_not_help(self):
+        """Advice that cannot work is worse than none: say so explicitly."""
+        text = cookie_help.blocked_message(_blocked_status())
+        assert "cookies will not help" in text.lower()
+
+    def test_the_raw_yt_dlp_line_is_not_shown(self):
+        text = cookie_help.blocked_message(_blocked_status())
+        assert "403" not in text
+        assert "ERROR:" not in text
+
+    def test_a_generic_service_still_produces_a_sentence(self):
+        text = cookie_help.blocked_message({"error_code": "service_blocked"})
+        assert text.strip()
+        assert "proxy" in text.lower()
+
+    def test_a_privileged_user_gets_the_proxy_link_not_the_cookies_one(self, monkeypatch):
+        monkeypatch.setenv("PRIVILEGED_USER_IDS", "42")
+        monkeypatch.setenv("DASHBOARD_PUBLIC_URL", "https://panel.example.org")
+        text = cookie_help.blocked_message(_blocked_status(), user_id=42)
+        assert "https://panel.example.org/admin/proxy" in text
+        assert "/admin/cookies" not in text
+
+    def test_everyone_else_gets_the_sentence_without_a_link(self, monkeypatch):
+        monkeypatch.setenv("PRIVILEGED_USER_IDS", "42")
+        monkeypatch.setenv("DASHBOARD_PUBLIC_URL", "https://panel.example.org")
+        text = cookie_help.blocked_message(_blocked_status(), user_id=7)
+        assert "panel.example.org" not in text
+        assert "proxy" in text.lower()
+
+    def test_an_internal_panel_address_is_never_linked(self, monkeypatch):
+        monkeypatch.setenv("PRIVILEGED_USER_IDS", "42")
+        monkeypatch.setenv("DASHBOARD_PUBLIC_URL", "http://dashboard:8080")
+        text = cookie_help.blocked_message(_blocked_status(), user_id=42)
+        assert "dashboard:8080" not in text
+
+    @pytest.mark.parametrize("lang", ["en", "ru"])
+    def test_both_languages_have_the_sentence(self, lang):
+        text = cookie_help.blocked_message(_blocked_status(), lang=lang)
+        assert text.strip()
+        assert "proxy" in text.lower() or "прокси" in text.lower()
+
+
+class TestBlockedCatalogue:
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "download.service_blocked",
+            "download.service_blocked_admin",
+            "download.proxy_panel_link",
+        ],
+    )
+    def test_every_key_exists_in_every_language(self, key):
+        for lang in i18n.LANGUAGES:
+            assert i18n.has(key, lang), f"{lang} is missing {key}"
+            assert i18n.t(key, lang).strip()
+
+    def test_the_two_languages_use_the_same_placeholders(self):
+        for key in ("download.service_blocked", "download.service_blocked_admin"):
+            english = i18n.placeholders(key, "en")
+            for lang in i18n.LANGUAGES:
+                assert i18n.placeholders(key, lang) == english, f"{lang}:{key}"
