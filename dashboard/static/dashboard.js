@@ -8,6 +8,7 @@
    exact `data-action` name used in a template. */
 
 import { initDashboardPage } from './js/report.js';
+import { initLinkModal } from './js/linkmodal.js';
 import {
   deleteSelected,
   openPurgeModal,
@@ -40,6 +41,7 @@ function bootAdmin() {
 function boot() {
   bootDashboard();
   bootAdmin();
+  initLinkModal();
 }
 
 if (document.readyState === 'loading') {

@@ -47,19 +47,31 @@ function row(job) {
   return tr;
 }
 
-/** Replace the card body and flip the card's visibility. */
+/** Replace the card body and flip the card's visibility.
+ *
+ *  The card is a function of the list: it exists while something is running
+ *  and is removed from the flow the moment the engine reports nothing. The
+ *  rows are cleared too, so a later download cannot briefly show a stale row
+ *  from the previous batch before the first paint of the new one. */
 export function renderActiveDownloads(jobs = []) {
   const section = document.getElementById('active-downloads');
   if (!section) return;
 
   const empty = !Array.isArray(jobs) || jobs.length === 0;
+  // `hidden` is the contract the template ships with; the inline style stays
+  // for the pre-JS state so the card never flashes on load.
+  section.hidden = empty;
   section.style.display = empty ? 'none' : '';
-  if (empty) return;
+
+  const body = document.getElementById('active-downloads-body');
+  if (empty) {
+    if (body) body.replaceChildren();
+    return;
+  }
 
   const badge = document.getElementById('active-downloads-count');
   if (badge) badge.textContent = String(jobs.length);
 
-  const body = document.getElementById('active-downloads-body');
   if (!body) return;
   body.replaceChildren();
   for (const job of jobs) body.append(row(job));

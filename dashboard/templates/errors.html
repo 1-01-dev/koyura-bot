@@ -19,7 +19,14 @@
 
 <div class="card table-card">
   <div class="table-scroll">
-    <table class="data-table">
+    <table class="data-table data-table--errors">
+      <colgroup>
+        <col class="col-time" />
+        <col class="col-user" />
+        <col class="col-link" />
+        <col class="col-platform" />
+        <col class="col-error" />
+      </colgroup>
       <thead>
         <tr>
           <th>Timestamp</th>
@@ -33,13 +40,15 @@
         {% if errors %}
           {% for row in errors %}
           <tr>
-            <td class="mono text-secondary">{{ row.started_at[:19] if row.started_at else '—' }}</td>
+            <td class="mono text-secondary time-cell">{{ row.started_at[:19] if row.started_at else '—' }}</td>
             <td>{{ row.username or row.user_id or '—' }}</td>
-            <td>
+            <td class="link-cell">
               {% if row.url %}
-              <a href="{{ row.url }}" target="_blank" rel="noopener" class="url-cell" title="{{ row.url }}">
-                {{ row.url[:60] }}{% if row.url|length > 60 %}…{% endif %}
-              </a>
+              <button type="button" class="btn btn-secondary link-btn mono"
+                      data-link-url="{{ row.url }}"
+                      aria-haspopup="dialog"
+                      aria-controls="link-modal"
+                      title="Show the full URL">Link</button>
               {% else %}—{% endif %}
             </td>
             <td>

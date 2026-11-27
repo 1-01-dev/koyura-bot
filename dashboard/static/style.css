@@ -192,19 +192,25 @@
 }
 
 /* Drawer trigger: a 1px square with three ink rules inside, hidden on wide
-   screens. */
+   screens. The tap target is 44x44 so it stays usable with a thumb; the rules
+   collapse into an X once the drawer is open (see the 767px block). */
 .hamburger {
   display: none;
   position: fixed;
   top: calc(12px + var(--safe-top));
   left: calc(12px + var(--safe-left));
   z-index: 300;
+  align-items: center;
+  justify-content: center;
   flex-direction: column;
   gap: 4px;
-  padding: 8px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
   border: 1px solid var(--line);
   background: var(--bg);
   cursor: pointer;
+  transition: left 0.2s ease-out;
 }
 
 .hamburger span {
@@ -212,11 +218,19 @@
   width: 18px;
   height: 1px;
   background: var(--ink);
-  transition: background 0.1s ease;
+  transition: transform 0.2s ease-out, opacity 0.1s ease, background 0.1s ease;
 }
 
 .hamburger:hover span {
   background: var(--red);
+}
+
+/* Open drawer: the trigger steps inside the panel, past its logo, instead of
+   covering the wordmark it sits on top of. The drawer is 200px wide, so the
+   button lands 44px from its right edge with the same 12px inset it has on
+   the closed page. */
+.sidebar-open .hamburger {
+  left: calc(var(--sidebar-width) - 56px);
 }
 
 /* The scrim is the only dimmed surface in the panel. */
@@ -401,9 +415,29 @@
 }
 
 /* A table card keeps no padding: the scroll well has to reach the frame. */
-.table-card {
+.table-card,
+.panel {
   padding: 0;
+}
+
+.table-card {
   overflow: hidden;
+}
+
+/* Panels on /admin are separate objects, not one ruled page: the stack owns
+   the gap between them, so adding a panel (Bot messages, Bot languages) needs
+   no margin work and the spacing is identical from the first to the last. */
+.panel-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* The header strip carries its own rule, edge to edge: the body below it is a
+   grid of hairline cells. */
+.panel-head {
+  padding: 12px 16px;
+  margin-bottom: 0;
 }
 
 .card-header {
@@ -420,6 +454,12 @@
 .table-card .card-header {
   padding: 14px;
   margin-bottom: 0;
+}
+
+/* The active-downloads card follows the KPI grid, so it keeps the gap the
+   stack gives the admin panels. */
+.active-card {
+  margin-top: 28px;
 }
 
 .card-title {
@@ -568,12 +608,122 @@
   color: var(--red-ink);
 }
 
-/* A title is one ellipsised line; the full string stays in the tooltip. */
+/* The URL column is one compact button: the URL itself lives in a data-*
+   attribute and opens in the shared dialog, so a long query string can never
+   widen the grid. Same 1px frame as every other button; hover inverts it. */
+.link-btn {
+  padding: 3px 8px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.link-btn:hover {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--bg);
+}
+
+/* Column budget for the two URL-bearing tables.
+
+   The URL column is a button now, so it can no longer widen anything by
+   itself; the remaining cells are all short. Above 768 the table switches to
+   `table-layout: fixed` with the budget below, which keeps /history inside a
+   1280 viewport with no inner scroll at all. Below 768 the table stays auto
+   and keeps its 560px floor: the wrapper's overflow-x already handles that
+   width, and the title keeps a share instead of collapsing to zero. */
+.data-table--history td,
+.data-table--errors td {
+  overflow: hidden;
+}
+
+@media (min-width: 768px) {
+  .data-table--history,
+  .data-table--errors {
+    table-layout: fixed;
+  }
+
+  .data-table--history .col-time { width: 168px; }
+  .data-table--history .col-user { width: 96px; }
+  .data-table--history .col-title { width: 24%; }
+  .data-table--history .col-link { width: 72px; }
+  .data-table--history .col-platform { width: 112px; }
+  .data-table--history .col-format { width: 68px; }
+  .data-table--history .col-quality { width: 68px; }
+  .data-table--history .col-size { width: 80px; }
+  .data-table--history .col-status { width: 100px; }
+  .data-table--history .col-duration { width: 74px; }
+
+  /* /errors carries four narrow columns and one long message; percentages
+     keep the message readable at every width, where fixed pixels would
+     squeeze it to a few characters. */
+  .data-table--errors .col-time { width: 21%; }
+  .data-table--errors .col-user { width: 12%; }
+  .data-table--errors .col-link { width: 10%; }
+  .data-table--errors .col-platform { width: 13%; }
+  .data-table--errors .col-error { width: 44%; }
+}
+
+/* `2026-11-26 23:51:16` is 19 mono characters; allowing it to wrap turned the
+   column into two broken lines at 360. One line, no break. */
+.time-cell {
+  white-space: nowrap;
+}
+
+.data-table .link-cell {
+  text-align: center;
+}
+
+/* The URL inside the dialog: one scrollable block, wrapped at any character
+   so an unbroken query string still fits 360px. */
+.link-modal-url {
+  max-height: 40vh;
+  margin-bottom: 8px;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: var(--wash);
+  font-size: 11px;
+  line-height: 1.6;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  user-select: all;
+}
+
+.link-modal-status {
+  min-height: 1.6em;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--success);
+}
+
+/* Off-screen buffer for the clipboard fallback: it must be selectable, so it
+   is moved out of the viewport rather than hidden. */
+.copy-buffer {
+  position: fixed;
+  top: -200px;
+  left: -200px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* A title is one ellipsised line; the full string stays in the tooltip.
+   `max-width` only applies under the fixed layout, where the column is a
+   share of the table; without it the cell would still hug its own text. */
 .title-cell {
-  max-width: 280px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (min-width: 768px) {
+  .title-cell {
+    max-width: 100%;
+  }
 }
 
 /* The error message is the one cell that wraps: it is the content. */
@@ -595,6 +745,27 @@
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   border: 1px solid var(--line);
   border-bottom: 0;
+}
+
+/* Inside a panel the grid reaches the frame: the panel is the frame, so the
+   cells keep only the right and bottom hairlines between each other. */
+.panel .limits-presets,
+.panel .limits-grid {
+  margin-top: 0;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+}
+
+.panel .limits-note,
+.panel .form-error,
+.panel .form-notice {
+  margin-left: 16px;
+  margin-right: 16px;
+}
+
+.panel .limits-actions {
+  padding: 0 16px 14px;
 }
 
 .preset-btn {
@@ -811,6 +982,13 @@
   background: color-mix(in srgb, var(--ink) 62%, transparent);
 }
 
+/* The panels start hidden so a page that never opens them costs nothing; an
+   explicit `display` rule on the dialog would beat the attribute, so both
+   modals share the `hidden` contract. */
+.modal-overlay[hidden] {
+  display: none;
+}
+
 .modal-card {
   width: 100%;
   max-width: 440px;
@@ -971,6 +1149,20 @@
 @media (max-width: 767px) {
   .hamburger {
     display: flex;
+  }
+
+  /* An open drawer turns the three rules into an X: the button is a close
+     control there, and the two bars meeting say so without a second glyph. */
+  .sidebar-open .hamburger span:first-child {
+    transform: translateY(5px) rotate(45deg);
+  }
+
+  .sidebar-open .hamburger span:nth-child(2) {
+    opacity: 0;
+  }
+
+  .sidebar-open .hamburger span:last-child {
+    transform: translateY(-5px) rotate(-45deg);
   }
 
   .sidebar {

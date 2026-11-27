@@ -71,7 +71,10 @@ export async function deleteSelected() {
 export function openPurgeModal() {
   const modal = document.getElementById('purge-modal');
   if (!modal) return;
-  modal.style.display = 'flex';
+  /* The attribute is the single source of visibility: an inline display would
+     win over the stylesheet and leave `.modal-overlay[hidden]` unable to
+     close it. */
+  modal.hidden = false;
 
   const field = document.getElementById('purge-confirm');
   if (field) {
@@ -82,7 +85,7 @@ export function openPurgeModal() {
 
 export function closePurgeModal() {
   const modal = document.getElementById('purge-modal');
-  if (modal) modal.style.display = 'none';
+  if (modal) modal.hidden = true;
 }
 
 /** Purge everything, but only after the operator typed the confirmation word. */

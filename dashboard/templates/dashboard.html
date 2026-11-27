@@ -84,8 +84,9 @@
   </div>
 </div>
 
-<!-- Active Downloads (hidden by default) -->
-<div class="card" id="active-downloads" style="display:none">
+<!-- Active Downloads: no row, no panel. active.js drops the card from the
+     flow whenever the engine reports an empty list. -->
+<div class="card active-card" id="active-downloads" hidden>
   <div class="card-header">
     <h2 class="card-title">Active downloads</h2>
     <span class="badge badge-warning" id="active-downloads-count">0</span>
