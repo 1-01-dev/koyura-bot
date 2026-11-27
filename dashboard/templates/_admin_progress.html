@@ -1,0 +1,54 @@
+{# Progress fields — which lines the bot draws in its progress message.
+
+   A partial on purpose: /admin is being restructured, so this section stays out
+   of admin.html apart from one include line. The markup reuses the limits /
+   languages classes inside a ``card panel`` frame, exactly like the panels next
+   to it, so it inherits the existing tokens and needs no new styles. #}
+<section class="card panel" id="progress-card">
+  <div class="card-header panel-head">
+    <h2 class="card-title">Progress fields</h2>
+    <div class="card-actions">
+      <span class="limits-meta mono" id="progress-state">
+        shown: {{ progress_summary }}
+      </span>
+    </div>
+  </div>
+
+  <p class="limits-note" id="progress-note">
+    What the bot writes into the live progress message. Only the title and the
+    bar are on by default; with every line off the bot still shows the stage,
+    e.g. "Downloading…", so the message never goes blank.
+  </p>
+
+  {% if progress_error %}
+  <p class="form-error" role="alert">{{ progress_error }}</p>
+  {% endif %}
+  {% if progress_notice %}
+  <p class="form-notice" role="status">{{ progress_notice }}</p>
+  {% endif %}
+
+  <form method="post" action="/admin/progress" id="progress-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <div class="limits-grid">
+      {% for field in progress_fields.fields %}
+      <div class="limits-cell">
+        <label class="language-choice" for="progress-{{ field.name }}">
+          <input type="checkbox"
+                 id="progress-{{ field.name }}"
+                 name="fields"
+                 value="{{ field.name }}"
+                 {% if field.enabled %}checked{% endif %}
+                 aria-describedby="progress-{{ field.name }}-hint" />
+          <span class="language-name">{{ field.label }}</span>
+        </label>
+        <span class="limits-hint" id="progress-{{ field.name }}-hint">{{ field.hint }}</span>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="limits-actions">
+      <button type="submit" class="btn btn-primary" id="progress-save">Save progress fields</button>
+      <span class="limits-note mono">the bot picks this up within a minute, no restart</span>
+    </div>
+  </form>
+</section>

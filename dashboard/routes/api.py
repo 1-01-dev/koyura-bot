@@ -14,6 +14,7 @@ from pydantic import BaseModel
 import auth
 import bot_languages
 import db
+import progress_fields
 
 logger = logging.getLogger(__name__)
 
@@ -168,21 +169,25 @@ async def ingest_event(request: Request) -> dict[str, str]:
 
 @router.get("/api/bot-settings")
 async def bot_settings(request: Request) -> dict[str, Any]:
-    """The languages the bot offers and its default, for the bot itself.
+    """The bot's operator-set preferences: languages and progress fields.
 
     Read-only and internal: ``bot/bot_settings.py`` polls this once a minute and
-    caches the answer, so a language toggled in the panel reaches the chat within
-    that window. A request without the shared token is refused exactly like an
-    event would be, and the response carries nothing but the two public facts.
+    caches the answer, so a toggle in the panel reaches the chat within that
+    window. A request without the shared token is refused exactly like an event
+    would be, and the response carries nothing but the public facts: the enabled
+    languages, the default one, and the eight progress switches nested under
+    ``progress`` so a client can tell them apart from the language pair.
     """
     if not _internal_token_ok(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     stored = await db.get_settings(prefix=bot_languages.SETTING_PREFIX)
     settings = bot_languages.BotLanguages.from_row(stored)
+    progress_stored = await db.get_settings(prefix=progress_fields.SETTING_PREFIX)
     return {
         "languages": list(settings.languages),
         "default_language": settings.default_language,
+        "progress": progress_fields.ProgressFields.from_row(progress_stored).as_api(),
     }
 
 

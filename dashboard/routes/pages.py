@@ -14,6 +14,7 @@ import auth
 import bot_languages
 import db
 import download_limits as limits_settings
+import progress_fields
 
 router = APIRouter()
 
@@ -241,9 +242,27 @@ def _languages_context(stored: dict[str, str], error: str | None = None,
     }
 
 
+def _progress_context(stored: dict[str, str], error: str | None = None,
+                      notice: str | None = None) -> dict:
+    """Template context for the Progress fields section.
+
+    The form shows what is stored (per key, the default when a row is missing);
+    a rejected submission arrives as ``error`` next to the values that were
+    submitted, so no checkbox the admin ticked is lost.
+    """
+    settings = progress_fields.ProgressFields.from_row(stored)
+    return {
+        "progress_fields": settings.as_form(),
+        "progress_summary": settings.describe(),
+        "progress_error": error,
+        "progress_notice": notice,
+    }
+
+
 @router.get("/admin", response_class=HTMLResponse)
 async def admin_page(
-    request: Request, saved: int = 0, languages_saved: int = 0
+    request: Request, saved: int = 0, languages_saved: int = 0,
+    progress_saved: int = 0,
 ) -> Response:
     user = _require_user(request)
     if not user:
@@ -295,6 +314,14 @@ async def admin_page(
     context["languages_notice"] = (
         "Languages saved. The bot picks them up within a minute."
         if languages_saved and not context.get("languages_error")
+        else None
+    )
+
+    progress_stored = await db.get_settings(prefix=progress_fields.SETTING_PREFIX)
+    context.update(_progress_context(progress_stored))
+    context["progress_notice"] = (
+        "Progress fields saved. The bot picks them up within a minute."
+        if progress_saved and not context.get("progress_error")
         else None
     )
     return _render(request, "admin.html", context)
@@ -420,6 +447,57 @@ async def save_languages(request: Request) -> Response:
     return RedirectResponse(url="/admin?languages_saved=1", status_code=303)
 
 
+@router.post("/admin/progress")
+async def save_progress(request: Request) -> Response:
+    """Store the eight progress switches the bot draws with.
+
+    There is nothing to push: the bot polls ``GET /api/bot-settings`` and caches
+    it for under a minute, so saving here is enough. An unchecked box is simply
+    absent from the form; the only rejected submission is a name this panel does
+    not know.
+    """
+    user = _require_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    form = await request.form()
+    submitted_csrf = str(form.get(auth.CSRF_FORM_FIELD, ""))
+    if not auth.verify_csrf(request, submitted_csrf):
+        return _render(
+            request,
+            "admin.html",
+            await _admin_error_context(
+                user, "Your session expired. Reload the page and try again."
+            ),
+            status_code=403,
+        )
+
+    checked = [str(value) for value in form.getlist("fields")]
+    parsed, errors = progress_fields.parse(checked)
+    if parsed is None or errors:
+        message = " ".join(errors) or "Could not save these progress fields."
+        context = await _admin_error_context(user, message)
+        # Echo the submission so the checkboxes keep what the admin clicked.
+        context.update(_progress_context(
+            {f"{progress_fields.SETTING_PREFIX}{name}": "true" for name in checked}
+        ))
+        context["progress_error"] = message
+        return _render(request, "admin.html", context, status_code=400)
+
+    before = progress_fields.ProgressFields.from_row(
+        await db.get_settings(prefix=progress_fields.SETTING_PREFIX)
+    )
+    await db.save_settings(parsed.as_stored())
+    # One line per save: who changed what, from which value to which.
+    logging.getLogger("koyura.dashboard").info(
+        "bot progress fields updated by %s: %s -> %s",
+        user,
+        before.describe(),
+        parsed.describe(),
+    )
+    return RedirectResponse(url="/admin?progress_saved=1", status_code=303)
+
+
 async def _admin_error_context(user: str, message: str) -> dict:
     """Shared context for an admin page that has to show a message."""
     stored = await db.get_settings(prefix=limits_settings.SETTING_PREFIX)
@@ -427,6 +505,7 @@ async def _admin_error_context(user: str, message: str) -> dict:
                "max_disk_mb": 0, "disk_pct": 0}
     context.update(_limits_context(stored, error=message))
     context.update(_languages_context({}, error=message))
+    context.update(_progress_context({}, error=message))
     return context
 
 
