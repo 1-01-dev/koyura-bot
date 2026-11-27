@@ -6,9 +6,9 @@ Two layers, each pinned where it can break:
   ``GET /api/message-templates`` serves the catalogue, both behind
   ``X-Internal-Token``; that is how ``bot/message_templates.py`` learns the
   bodies (``bot/bot_settings.py`` caches the answer for under a minute);
-* the panel — the section is a partial included by ``admin_bot.html`` in one line, so
-  the /admin restructuring and this feature never edit the same region. The
-  include line, the panel frame, the editor, the preview and the placeholder
+* the panel — the section is a partial included by ``admin_bot.html`` in one
+  line, so the page and this feature never edit the same region. The include
+  line, the panel frame, the editor, the preview and the placeholder
   reference table are asserted, not just the routes.
 
 Environment must be set BEFORE importing auth/main/db, like the other dashboard
