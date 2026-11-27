@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 import send_limit
+import transcode_policy as policy
 
 # The one MarkdownV2 escaper of the bot lives in ``i18n``; it is re-exported here
 # because the captions in this module and in ``progress_card`` are built from it.
@@ -118,12 +119,38 @@ def format_upload_date(raw: object) -> str | None:
 # ---------------------------------------------------------------------------
 
 def video_formats(info: dict) -> list[dict]:
-    """Video formats, highest quality first (one per height)."""
+    """Video formats, highest quality first (one per height).
+
+    A raw payload may carry several codecs at the same height (``1080p avc1``
+    and ``1080p vp9``). Telegram plays H.264 everywhere, so that variant wins
+    and the other is dropped here — the card shows **one** 1080p button, and it
+    leads to the file that needs no conversion. The engine already collapses
+    these (``media_meta.collect_formats``); doing it again keeps the bot correct
+    against an older or a stubbed engine, and neither layer hides a whole
+    resolution.
+    """
     formats = [f for f in (info.get("formats") or []) if isinstance(f, dict)]
+    best: dict[object, dict] = {}
+    for fmt in formats:
+        height = fmt.get("height") or 0
+        current = best.get(height)
+        if current is None or _preference(fmt) < _preference(current):
+            best[height] = fmt
     return sorted(
-        formats,
+        best.values(),
         key=lambda f: (f.get("height") or 0, f.get("fps") or 0),
         reverse=True,
+    )
+
+
+def _preference(fmt: dict) -> tuple:
+    """Sort key: playable codec, then a known size, then frame rate."""
+    family = policy.codec_family(fmt)
+    rank = 0 if policy.is_playable(fmt) else (2 if family else 1)
+    return (
+        rank,
+        0 if policy.size_bytes(fmt) else 1,
+        -(fmt.get("fps") or 0),
     )
 
 
@@ -297,16 +324,30 @@ def build_card(info: dict, *, lang: object = None) -> str:
     where they are tappable, so repeating them in the caption spent the caption
     budget on information the user could already see.
 
+    The one exception is the codec warning: when any offered format is one
+    Telegram may not play (AV1/VP9), a single explanatory line is added, so a
+    button marked ``AV1 ·`` is not a mystery. The line goes last, so it is the
+    first thing lost if the caption ever has to be cut.
+
     The single escaping pass happens here: the headline is escaped with its bold
     markers, the metadata block is escaped as one string, so a title with ``_``
     and a channel with ``.`` are handled by exactly the same rule.
     """
     headline = card_headline(info, lang)
     meta = escape_md("\n".join(card_meta_lines(info, lang)))
-    caption = "\n\n".join(block for block in (headline, meta) if block)
+    blocks = [headline, meta]
+    if has_incompatible_formats(info):
+        blocks.append(escape_md(t(policy.note_key(None), lang)))
+    caption = "\n\n".join(block for block in blocks if block)
     if len(caption) > CAPTION_BUDGET:
         caption = caption[: CAPTION_BUDGET - 1].rstrip() + "…"
     return caption
+
+
+def has_incompatible_formats(info: dict, *, limit_bytes: int | None = None) -> bool:
+    """Whether any **sendable** format is a codec Telegram may not play."""
+    offer = format_offer(info, limit_bytes=limit_bytes)
+    return any(not policy.is_playable(fmt) for fmt in offer.formats)
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +377,11 @@ def build_format_keyboard(
 ) -> InlineKeyboardMarkup | None:
     """One button per **sendable** video format plus MP3, two per row.
 
+    A format Telegram may not play is still offered: it is labelled with its
+    codec (``AV1 · 2160p · 2.3GB``, see ``transcode_policy.button_label``) and
+    the flow sends it as a document or asks before converting. Nothing is hidden
+    to make the keyboard look simple.
+
     ``None`` means "nothing can be offered": the caller then explains why with
     ``limit_notice_key`` instead of drawing an empty keyboard, which Telegram
     would reject.
@@ -344,7 +390,7 @@ def build_format_keyboard(
 
     buttons = []
     for fmt in offer.formats[:MAX_FORMAT_BUTTONS]:
-        label = str(fmt.get("button_label") or fmt.get("label") or "video")
+        label = policy.button_label(fmt)
         action = str(fmt.get("id") or "best")
         if not callback_data_fits(build_callback_data(msg_id, url_hash, action)):
             # Fall back to the "best" selector rather than sending broken data.
@@ -377,6 +423,75 @@ def build_format_keyboard(
 
     rows = [buttons[i : i + BUTTONS_PER_ROW] for i in range(0, len(buttons), BUTTONS_PER_ROW)]
     return InlineKeyboardMarkup(rows)
+
+
+def build_transcode_keyboard(
+    fmt: object,
+    msg_id: int,
+    url_hash: str,
+    *,
+    lang: object = None,
+    eta_seconds: object = None,
+) -> InlineKeyboardMarkup:
+    """``[Send as file] [Convert (~4 min)]`` for a codec Telegram may not play.
+
+    The download has **not** started when this keyboard is shown: the format's
+    codec is known from ``/api/info``, so asking costs nothing. Each button
+    carries the format id and the answer in its own ``callback_data``::
+
+        dl:<message_id>:<url_hash>:file:<format_id>
+        dl:<message_id>:<url_hash>:conv:<format_id>
+
+    Four fields, no session lookup needed for the action — the session only has
+    to confirm the card is still live. A yt-dlp format id is short (``399``,
+    ``137``) and the whole string stays far inside Telegram's 64-byte limit; an
+    id that would not fit is replaced by ``best`` rather than truncating the
+    action, exactly like the format keyboard does.
+    """
+    entry = fmt if isinstance(fmt, dict) else {}
+    action = str(entry.get("id") or "best")
+    eta = policy.format_eta(eta_seconds, lang) if eta_seconds else None
+    convert_label = (
+        t("transcode.convert", lang, eta=eta)
+        if eta
+        else t("transcode.convert_no_eta", lang)
+    )
+
+    buttons = []
+    for verb, label in (
+        ("file", t("transcode.send_as_file", lang)),
+        ("conv", convert_label),
+    ):
+        data = build_callback_data(msg_id, url_hash, f"{verb}:{action}")
+        if not callback_data_fits(data):
+            data = build_callback_data(msg_id, url_hash, f"{verb}:best")
+        buttons.append(InlineKeyboardButton(label, callback_data=data))
+    return InlineKeyboardMarkup([buttons])
+
+
+def build_transcode_question(
+    info: dict,
+    fmt: object,
+    *,
+    lang: object = None,
+) -> str:
+    """The card caption that asks the question the two buttons answer."""
+    entry = fmt if isinstance(fmt, dict) else {}
+    headline = card_headline(info, lang)
+    question = t(
+        "transcode.ask",
+        lang,
+        quality=policy.quality_label(entry),
+        codec=policy.codec_label(entry) or "?",
+    )
+    note = t(policy.note_key(entry), lang)
+    return _bound("\n\n".join((headline, escape_md(question), escape_md(note))))
+
+
+def _bound(caption: str) -> str:
+    if len(caption) > CAPTION_BUDGET:
+        return caption[: CAPTION_BUDGET - 1].rstrip() + "…"
+    return caption
 
 
 # ---------------------------------------------------------------------------
