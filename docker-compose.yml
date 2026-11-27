@@ -25,6 +25,11 @@ services:
       MAX_CONCURRENT_DOWNLOADS: ${MAX_CONCURRENT_DOWNLOADS:-2}
       PER_USER_MAX_ACTIVE: ${PER_USER_MAX_ACTIVE:-1}
       PER_USER_MAX_QUEUED: ${PER_USER_MAX_QUEUED:-1}
+      # Where the panel answers /api/egress and /api/services-with-cookies.
+      # The compose service name on purpose: a native-style
+      # DASHBOARD_URL=http://127.0.0.1:8090 is not reachable from this
+      # container.
+      DASHBOARD_URL: http://dashboard:8080
       MAX_QUEUE_LENGTH: ${MAX_QUEUE_LENGTH:-6}
       QUEUE_MAX_WAIT_SECONDS: ${QUEUE_MAX_WAIT_SECONDS:-120}
       QUEUE_ESTIMATE_MBPS: ${QUEUE_ESTIMATE_MBPS:-2}

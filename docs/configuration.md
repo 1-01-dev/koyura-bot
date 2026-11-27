@@ -46,6 +46,8 @@ Set either `DASHBOARD_PASSWORD` or `DASHBOARD_PASSWORD_HASH`, not both.
 | Variable | Required | Default | What it does |
 | --- | --- | --- | --- |
 | `KOYURA_ENGINE_URL` | no | `http://koyura-engine:8899` | Address the bot and the dashboard use to reach the engine. Point it at `http://127.0.0.1:8899` for native runs. |
+| `KOYURA_DASHBOARD_URL` | no | *(empty)* | Panel address the engine reads the egress rule and the cookie order from. Wins over `DASHBOARD_URL` when both are set. |
+| `DASHBOARD_URL` | no | `http://dashboard:8080` | Panel address the bot posts events to, **and** the engine's fallback for `KOYURA_DASHBOARD_URL`. Native runs: the address the panel really listens on (`http://127.0.0.1:8090`). |
 | `HOST` | no | `0.0.0.0` | Engine bind address. Use `127.0.0.1` when a local proxy or a native install fronts it. |
 | `PORT` | no | `8899` | Engine port. |
 | `MAX_CONCURRENT_DOWNLOADS` | no | `2` | Slots that download at the same time. yt-dlp and ffmpeg are CPU-bound, so one slot per vCPU is the sweet spot. Overridable at runtime from **Admin → Download limits**. |
@@ -260,7 +262,7 @@ A few values are set by `docker-compose.yml` or only matter for local work:
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `DASHBOARD_URL` | `http://dashboard:8080` | Where the bot posts download events. Native runs: `http://127.0.0.1:8080`. |
+| `DASHBOARD_URL` | `http://dashboard:8080` | Where the bot posts download events and where the engine reads `GET /api/egress` and `GET /api/services-with-cookies`. Native runs: `http://127.0.0.1:8080` — or whatever port the panel is published on. |
 | `TELEGRAM_BOT_API_URL` | `http://telegram-bot-api:8081` | Self-hosted Bot API server. Set it to `https://api.telegram.org` to skip that server; uploads are then capped at 20 MB. |
 | `INTERNAL_API_AUTH_DISABLED` | `false` | **Sandbox only.** Accepts unauthenticated engine API calls. Never enable it on a host reachable by anyone else. |
 | `ALLOW_PRIVATE_URLS` | `false` | **Sandbox only.** Skips the private/loopback address check in URL validation. |

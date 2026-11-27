@@ -61,10 +61,15 @@ _STORED_NAME = re.compile(r"[a-z0-9]{8,32}\.txt")
 
 #: Substrings yt-dlp / the site emit when the session is not good enough. All of
 #: them mean the same thing to us: "try the next jar", never "give up yet".
+#: ``account authentication is required`` is what Reddit answers on the
+#: *preview* (``/api/info``) for a post that needs a session — without it the
+#: retry never happened when the first jar was the spent one.
 AUTH_MARKERS = (
     "sign in to confirm",
     "login required",
     "log in to confirm",
+    "account authentication is required",
+    "authentication required",
     "private video",
     "http error 403",
     "cookies",
@@ -110,9 +115,17 @@ def sanitise_service(raw: object) -> str:
 
 
 def dashboard_url() -> str:
-    """Address of the admin panel (``KOYURA_DASHBOARD_URL``, else compose)."""
-    value = os.environ.get("KOYURA_DASHBOARD_URL", "").strip()
-    return (value or "http://dashboard:8080").rstrip("/")
+    """Address of the admin panel — ``egress``'s answer, so there is one rule.
+
+    ``egress`` owns the precedence (``KOYURA_DASHBOARD_URL``, then
+    ``DASHBOARD_URL``, then the compose host) because it is the module that was
+    silently wrong; asking it here keeps the two panel requests — the egress
+    rule and this registry — pointing at the same host instead of drifting
+    apart. Imported lazily: ``egress`` imports this module for its URL lookup.
+    """
+    import egress
+
+    return egress.dashboard_url()
 
 
 # ---------------------------------------------------------------------------
@@ -423,14 +436,18 @@ def blocked_message(service: object) -> str:
     )
 
 
-def cookie_required_payload(service: object) -> dict[str, object]:
-    """The ``cookies_required`` body the API returns (additive to old keys)."""
+def cookie_required_payload(service: object, tried: int = 0) -> dict[str, object]:
+    """The ``cookies_required`` body the API returns (additive to old keys).
+
+    ``tried`` is how many jars were refused before the endpoint gave up, so a
+    caller can tell "no file at all" (0) from "every file said no".
+    """
     name = sanitise_service(service)
     return {
         "error": required_message(name),
         "code": "cookies_required",
         "service": name,
-        "cookies_tried": 0,
+        "cookies_tried": int(tried),
     }
 
 

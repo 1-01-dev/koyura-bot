@@ -47,11 +47,40 @@ ASSIGNMENT_MODES = ("all", "selected", "except")
 
 MODES = ("off", "manual", "wireguard")
 
+#: Where the panel's address is read from, in precedence order. ``KOYURA_*`` is
+#: this service's own name; ``DASHBOARD_URL`` is the one the bot, compose and
+#: every native ``/etc/koyura/koyura.env`` already set. Reading only the first
+#: meant a native install (``DASHBOARD_URL=http://127.0.0.1:8090``) left the
+#: engine asking ``http://dashboard:8080`` — a host that does not exist outside
+#: compose — and silently running with the direct connection.
+DASHBOARD_URL_ENV_NAMES = ("KOYURA_DASHBOARD_URL", "DASHBOARD_URL")
+
+#: The compose service name, and the address to fall back to when neither
+#: variable is set (compose itself passes nothing else).
+DEFAULT_DASHBOARD_URL = "http://dashboard:8080"
+
+#: Consecutive unreadable polls that turn silence into a WARNING. One missed
+#: poll is a panel restart; three in a row is "the engine cannot see the panel".
+FAILURE_WARN_THRESHOLD = 3
+
 
 def dashboard_url() -> str:
-    """Address of the admin panel (``KOYURA_DASHBOARD_URL``, else compose)."""
-    value = os.environ.get("KOYURA_DASHBOARD_URL", "").strip()
-    return (value or "http://dashboard:8080").rstrip("/")
+    """Address of the admin panel (``KOYURA_DASHBOARD_URL``, then ``DASHBOARD_URL``)."""
+    return _panel()[0]
+
+
+def dashboard_source() -> str:
+    """Which variable supplied :func:`dashboard_url` (``default`` when neither)."""
+    return _panel()[1]
+
+
+def _panel() -> tuple[str, str]:
+    """``(address, variable it came from)``; ``default`` for the compose host."""
+    for name in DASHBOARD_URL_ENV_NAMES:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value.rstrip("/"), name
+    return DEFAULT_DASHBOARD_URL, "default"
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +230,65 @@ _lock = threading.Lock()
 _rule = Rule.off()
 _expires = 0.0
 
+#: Diagnostics, not state: the panel address is named once per process start,
+#: and a panel that has never answered is counted so the silence is visible.
+_panel_logged = False
+_failures = 0
+
+
+def log_configuration() -> str:
+    """Say once, at startup, which panel the egress rule is read from.
+
+    The incident this prevents is silent: the engine asked a host that does not
+    exist, every fetch failed, and the rule stayed ``off`` with nothing in the
+    log to explain it. One line naming the address *and* the variable it came
+    from settles the question the next time a proxy "does not work".
+    """
+    global _panel_logged
+    url, source = _panel()
+    with _lock:
+        if _panel_logged:
+            return url
+        _panel_logged = True
+    if source == "default":
+        logger.info(
+            "Egress panel: %s (default; neither %s is set)",
+            url, " nor ".join(DASHBOARD_URL_ENV_NAMES),
+        )
+    else:
+        logger.info("Egress panel: %s (from %s)", url, source)
+    return url
+
+
+def _note_unreadable(reason: object) -> None:
+    """Count one unusable poll; warn when it has stopped being an accident."""
+    global _failures
+    with _lock:
+        _failures += 1
+        failures = _failures
+        current = _rule.describe()
+    logger.debug("Egress rule unavailable: %s", reason)
+    if failures % FAILURE_WARN_THRESHOLD == 0:
+        logger.warning(
+            "Egress panel %s could not be read %d times in a row (%s); the "
+            "engine keeps using %s. Check that the panel is running and that "
+            "%s names it.",
+            dashboard_url(), failures, reason, current,
+            " / ".join(DASHBOARD_URL_ENV_NAMES),
+        )
+
+
+def _note_readable() -> None:
+    """Reset the failure count; say so when it had been alarming."""
+    global _failures
+    with _lock:
+        failures, _failures = _failures, 0
+    if failures >= FAILURE_WARN_THRESHOLD:
+        logger.info(
+            "Egress panel %s answers again after %d unreadable polls",
+            dashboard_url(), failures,
+        )
+
 
 def _fetch() -> Rule | None:
     """Fetch the panel's answer; ``None`` when it cannot be used."""
@@ -215,8 +303,9 @@ def _fetch() -> Rule | None:
         with urllib.request.urlopen(request_obj, timeout=_TIMEOUT_SECONDS) as response:  # noqa: S310
             payload = json.loads(response.read().decode("utf-8", "replace"))
     except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
-        logger.debug("Egress rule unavailable: %s", exc)
+        _note_unreadable(exc)
         return None
+    _note_readable()
     return Rule.from_payload(payload)
 
 
@@ -240,11 +329,13 @@ def rule() -> Rule:
 
 
 def reset_cache() -> None:
-    """Forget the cached rule (tests)."""
-    global _rule, _expires
+    """Forget the cached rule and the poll diagnostics (tests)."""
+    global _rule, _expires, _failures, _panel_logged
     with _lock:
         _rule = Rule.off()
         _expires = 0.0
+        _failures = 0
+        _panel_logged = False
 
 
 def with_proxy(cmd: list[str], proxy_url: str) -> list[str]:
@@ -282,11 +373,16 @@ def proxy_for_url(url: object) -> str:
 __all__ = [
     "ASSIGNMENT_MODES",
     "CACHE_TTL_SECONDS",
+    "DASHBOARD_URL_ENV_NAMES",
+    "DEFAULT_DASHBOARD_URL",
     "EGRESS_PATH",
+    "FAILURE_WARN_THRESHOLD",
     "MODES",
     "PROXY_SCHEMES",
     "Rule",
+    "dashboard_source",
     "dashboard_url",
+    "log_configuration",
     "proxy_for_url",
     "reset_cache",
     "rule",
