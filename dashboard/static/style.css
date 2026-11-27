@@ -2266,3 +2266,166 @@
     flex: 1 1 auto;
   }
 }
+
+/* ----- Proxy (admin → proxy) ----------------------------------------------
+
+   The mode and the assignment are radios; the service list is a checkbox
+   block behind a <details>, so the page stays short until the operator needs
+   the list. Every control keeps the 44px tap target the Cookies page set: this
+   is managed from a phone as often as from a laptop. */
+
+.proxy-fieldset {
+  margin: 0;
+  padding: 14px 16px 16px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+
+.proxy-fieldset > legend {
+  padding: 0;
+  margin-bottom: 8px;
+}
+
+.proxy-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.proxy-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.proxy-choice input,
+.proxy-service input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--red);
+}
+
+.proxy-choice-label {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.proxy-input {
+  min-height: 44px;
+  margin-top: 4px;
+}
+
+/* The masked, stored URL: mono and dim, because it is a fact, not a control. */
+#proxy-configured {
+  margin: 0 0 6px;
+  color: var(--ink);
+}
+
+.proxy-services {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+}
+
+.proxy-services-title {
+  color: var(--ink);
+}
+
+.proxy-service-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 2px 12px;
+  list-style: none;
+  margin: 0;
+  padding: 4px 16px 14px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.proxy-service {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  cursor: pointer;
+}
+
+.proxy-service-name {
+  font-size: 11px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+
+/* The status table: four cells, one column on a phone. */
+.proxy-status {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  margin: 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.proxy-status-cell {
+  min-width: 0;
+  padding: 10px 16px;
+  border-right: 1px solid var(--line);
+}
+
+.proxy-status-cell:last-child {
+  border-right: 0;
+}
+
+.proxy-status-cell dd {
+  margin: 2px 0 0;
+}
+
+.proxy-status-value {
+  font-size: 12px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.proxy-check {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px 12px;
+  padding: 14px 16px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.proxy-check > .limits-label,
+.proxy-check > .limits-hint {
+  grid-column: 1 / -1;
+}
+
+.proxy-check > .limits-hint {
+  margin-top: 0;
+}
+
+.proxy-check .btn {
+  min-height: 44px;
+}
+
+@media (max-width: 600px) {
+  .proxy-status-cell {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .proxy-status-cell:last-child {
+    border-bottom: 0;
+  }
+
+  .proxy-check {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .proxy-check .btn {
+    width: 100%;
+  }
+}

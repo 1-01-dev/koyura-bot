@@ -1,0 +1,276 @@
+{% extends "base.html" %}
+
+{% block title %} — admin · proxy{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">Proxy</h1>
+  <p class="page-meta mono">Egress · proxy or tunnel</p>
+</div>
+
+{% include "_admin_tabs.html" %}
+
+<div class="panel-stack">
+
+<!-- Mode and assignment ---------------------------------------------------
+     One form for the three-way choice and the rule that applies it. Plain
+     radios and checkboxes: the page works with JavaScript off, and the server
+     is the only authority on what a valid combination is. -->
+<section class="card panel" id="proxy-card">
+  <div class="card-header panel-head">
+    <h2 class="card-title">Outbound route</h2>
+    <div class="card-actions">
+      <span class="limits-meta mono" id="proxy-state">
+        mode {{ egress.mode }} ·
+        {% if egress_target %}{{ egress_target }}{% else %}direct connection{% endif %}
+      </span>
+    </div>
+  </div>
+
+  <p class="limits-note" id="proxy-note">
+    Some sites refuse a datacentre IP whatever the cookies say. Send the
+    engine's requests through a proxy or a WireGuard tunnel instead — for every
+    service, or only the ones you pick. All services in the rule share one
+    outbound IP.
+  </p>
+
+  {% if egress_notice %}
+  <p class="form-notice" role="status">{{ egress_notice }}</p>
+  {% endif %}
+  {% if egress_error %}
+  <p class="form-error" role="alert">{{ egress_error }}</p>
+  {% endif %}
+
+  <form method="post" action="/admin/proxy" id="proxy-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+
+    <fieldset class="proxy-fieldset">
+      <legend class="limits-label mono">Mode</legend>
+      <div class="proxy-choices" role="radiogroup" aria-label="Outbound mode">
+        {% for option in egress.mode_options %}
+        <label class="proxy-choice" for="mode-{{ option.value }}">
+          <input id="mode-{{ option.value }}"
+                 type="radio"
+                 name="mode"
+                 value="{{ option.value }}"
+                 {% if option.checked %}checked{% endif %} />
+          <span class="proxy-choice-label">{{ option.label }}</span>
+        </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+
+    <!-- Manual proxy ------------------------------------------------------
+         The stored URL is never rendered back: the field starts empty and its
+         value is shown masked above it. Leaving it blank on a save keeps the
+         stored one, so the password does not have to be retyped. -->
+    <fieldset class="proxy-fieldset" id="proxy-manual">
+      <legend class="limits-label mono">Manual proxy</legend>
+      {% if egress.proxy_configured %}
+      <p class="limits-note mono" id="proxy-configured">
+        configured: {{ egress.proxy_display }}
+      </p>
+      {% endif %}
+      <label class="limits-label mono" for="proxy-url">Proxy URL</label>
+      <input id="proxy-url"
+             name="proxy_url"
+             type="text"
+             class="limits-input proxy-input"
+             placeholder="socks5h://user:pass@1.2.3.4:1080"
+             autocomplete="off"
+             autocapitalize="off"
+             spellcheck="false"
+             aria-describedby="proxy-url-hint" />
+      <span class="limits-hint" id="proxy-url-hint">
+        {{ egress_proxy_schemes }} · optional user:pass@ ·
+        {% if egress.proxy_configured %}blank keeps the stored URL{% else %}required for this mode{% endif %}
+      </span>
+    </fieldset>
+
+    <!-- Assignment -------------------------------------------------------- -->
+    <fieldset class="proxy-fieldset" id="proxy-assignment">
+      <legend class="limits-label mono">Apply to</legend>
+      <div class="proxy-choices" role="radiogroup" aria-label="Which services use it">
+        {% for option in egress.assignment_options %}
+        <label class="proxy-choice" for="assign-{{ option.value }}">
+          <input id="assign-{{ option.value }}"
+                 type="radio"
+                 name="assignment_mode"
+                 value="{{ option.value }}"
+                 {% if option.checked %}checked{% endif %} />
+          <span class="proxy-choice-label">{{ option.label }}</span>
+        </label>
+        {% endfor %}
+      </div>
+
+      <p class="limits-note" id="proxy-assignment-hint">
+        The list matters for <span class="mono">Selected</span> and
+        <span class="mono">All except selected</span>. It is the same catalogue
+        the Cookies page offers, so a name here is a name the engine computes.
+      </p>
+
+      <details class="proxy-services" id="proxy-services">
+        <summary class="cookies-summary">
+          <span class="proxy-services-title mono">Services</span>
+          <span class="cookie-service-count mono">
+            {{ egress.selected_count }} selected
+          </span>
+        </summary>
+        <ul class="proxy-service-list">
+          {% for service in egress.services %}
+          <li class="proxy-service-row">
+            <label class="proxy-service" for="svc-{{ loop.index }}">
+              <input id="svc-{{ loop.index }}"
+                     type="checkbox"
+                     name="services"
+                     value="{{ service.name }}"
+                     {% if service.checked %}checked{% endif %} />
+              <span class="proxy-service-name mono">{{ service.name }}</span>
+            </label>
+          </li>
+          {% endfor %}
+        </ul>
+      </details>
+    </fieldset>
+
+    <div class="limits-actions">
+      <button type="submit" class="btn btn-primary" id="proxy-save">Save</button>
+      <span class="limits-note mono">the engine picks it up within a minute</span>
+    </div>
+  </form>
+
+  <!-- Check ---------------------------------------------------------------
+       A server-side request through the URL above: "which IP does the world
+       see?". The result is rendered on this page, never redirected, because
+       the proxy URL is a secret. -->
+  <form method="post" action="/admin/proxy/check" id="proxy-check-form"
+        class="proxy-check">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <label class="limits-label mono" for="proxy-check-url">
+      Check the proxy
+    </label>
+    <input id="proxy-check-url"
+           name="proxy_url"
+           type="text"
+           class="limits-input proxy-input"
+           placeholder="blank uses the stored URL"
+           autocomplete="off"
+           autocapitalize="off"
+           spellcheck="false"
+           aria-describedby="proxy-check-hint" />
+    <span class="limits-hint" id="proxy-check-hint">
+      one request to api.ipify.org through the proxy · 10 s timeout
+    </span>
+    <button type="submit" class="btn btn-secondary" id="proxy-check">
+      Check
+    </button>
+  </form>
+
+  {% if egress_probe %}
+  <p class="form-{% if egress_probe.ok %}notice{% else %}error{% endif %}"
+     id="proxy-probe-result" role="status">
+    {% if egress_probe.ok %}External IP: {% else %}Check failed: {% endif %}{{ egress_probe.detail }}
+  </p>
+  {% endif %}
+</section>
+
+<!-- WireGuard -------------------------------------------------------------
+     The panel writes the file and forgets it: applying a tunnel needs root, so
+     a watcher outside this container owns `wg0.conf` and writes `status.json`
+     back. Nothing on this page ever reads the private key. -->
+<section class="card panel" id="wireguard-card">
+  <div class="card-header panel-head">
+    <h2 class="card-title">WireGuard</h2>
+    <div class="card-actions">
+      <span class="badge {{ egress_status.badge() }}" id="wg-badge">
+        {{ egress_status.label() }}
+      </span>
+    </div>
+  </div>
+
+  <p class="limits-note" id="wireguard-note">
+    Upload a WireGuard <span class="mono">.conf</span> and the server applies it
+    on its own: this panel only writes the file
+    (<span class="mono">{{ egress_path }}</span>, mode 0600). In this mode the
+    engine dials the tunnel's SOCKS address, so no proxy URL is stored.
+  </p>
+
+  {% if egress_wg_error %}
+  <p class="form-error" role="alert">{{ egress_wg_error }}</p>
+  {% endif %}
+
+  <dl class="proxy-status" id="wg-status">
+    <div class="proxy-status-cell">
+      <dt class="limits-label mono">State</dt>
+      <dd class="proxy-status-value mono">{{ egress_status.label() }}</dd>
+    </div>
+    <div class="proxy-status-cell">
+      <dt class="limits-label mono">External IP</dt>
+      <dd class="proxy-status-value mono">
+        {{ egress_status.egress_ip or "—" }}
+      </dd>
+    </div>
+    <div class="proxy-status-cell">
+      <dt class="limits-label mono">SOCKS</dt>
+      <dd class="proxy-status-value mono">
+        {{ egress_status.socks or "—" }}
+      </dd>
+    </div>
+    <div class="proxy-status-cell">
+      <dt class="limits-label mono">Updated</dt>
+      <dd class="proxy-status-value mono">
+        {{ egress_status.updated_at or "—" }}
+      </dd>
+    </div>
+  </dl>
+
+  {% if egress_status.error %}
+  <p class="form-error" role="alert" id="wg-error">
+    Tunnel reports: {{ egress_status.error }}
+  </p>
+  {% endif %}
+
+  <form method="post" action="/admin/proxy/wireguard"
+        enctype="multipart/form-data" id="wireguard-form" class="cookies-add">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <div class="cookies-cell cookies-cell--file">
+      <label class="limits-label mono" for="wg-file">WireGuard config</label>
+      <input id="wg-file"
+             name="wg_file"
+             type="file"
+             accept=".conf,text/plain"
+             class="cookies-file-input"
+             required
+             aria-describedby="wg-file-hint" />
+      <span class="limits-hint" id="wg-file-hint">
+        [Interface] + [Peer] with PrivateKey, Address, Endpoint · {{ wg_max_kb }} KB max
+      </span>
+    </div>
+    <button type="submit" class="btn btn-primary cookies-add-btn"
+            aria-label="Apply this WireGuard config">Apply</button>
+  </form>
+
+  <div class="limits-actions">
+    <form method="post" action="/admin/proxy/status" class="cookies-inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <button type="submit" class="btn btn-secondary" id="wg-refresh">
+        Refresh status
+      </button>
+    </form>
+    {% if wg_present %}
+    <form method="post" action="/admin/proxy/wireguard/remove" class="cookies-inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <button type="submit" class="btn btn-danger" id="wg-remove">
+        Disconnect
+      </button>
+    </form>
+    {% endif %}
+    <span class="limits-note mono">
+      {% if wg_present %}a config is on disk{% else %}no config uploaded{% endif %}
+    </span>
+  </div>
+</section>
+
+</div>
+<!-- /panel-stack -->
+{% endblock %}
