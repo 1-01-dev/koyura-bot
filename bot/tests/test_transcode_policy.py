@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest  # noqa: E402
 
+import bot_settings  # noqa: E402
 import download_card  # noqa: E402
 import i18n  # noqa: E402
 import progress_card  # noqa: E402
@@ -691,7 +692,7 @@ class TestConvertingStage:
         assert i18n.t("stage.converting", "en") == "Converting…"
         assert i18n.t("stage.converting", "ru") == "Конвертирую…"
 
-    def test_the_caption_shows_converting_with_a_percentage(self):
+    def test_the_caption_shows_converting_with_a_bar(self):
         caption = _plain(
             progress_card.build_progress_caption(
                 INFO, {"percent": 42.0, "stage": "converting"},
@@ -699,21 +700,27 @@ class TestConvertingStage:
             )
         )
         assert "Converting…" in caption
-        # The bar is drawn from the same percentage ffmpeg reports; whether the
-        # number is printed next to it is the operator's progress-field choice
-        # (the default draws the bar alone).
+        # The bar is drawn from the same percentage ffmpeg reports and stays 12
+        # cells wide; whether the number sits next to it is a template choice.
         assert progress_card.progress_bar(42.0, show_percent=False) in caption
 
-    def test_the_percentage_is_shown_when_the_operator_wants_it(self):
-        import progress_fields
-
-        shown = progress_fields.Fields(
-            values={**progress_fields.DEFAULTS, "show_percent": True}
+    def test_the_percentage_is_shown_when_the_template_asks_for_it(
+        self, monkeypatch
+    ):
+        """The panel's own text decides: ``@bar @percent`` prints the number."""
+        base = bot_settings.defaults()
+        monkeypatch.setattr(
+            bot_settings, "cached",
+            lambda: bot_settings.Settings(
+                languages=base.languages,
+                default_language=base.default_language,
+                source="panel",
+                templates={"progress": {"en": "*@title*\n@stage\n@bar @percent"}},
+            ),
         )
         caption = _plain(
             progress_card.build_progress_caption(
                 INFO, {"percent": 42.0}, stage="converting", lang="en",
-                fields=shown,
             )
         )
         assert "Converting…" in caption
