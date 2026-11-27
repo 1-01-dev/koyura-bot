@@ -699,6 +699,24 @@ class TestConvertingStage:
             )
         )
         assert "Converting…" in caption
+        # The bar is drawn from the same percentage ffmpeg reports; whether the
+        # number is printed next to it is the operator's progress-field choice
+        # (the default draws the bar alone).
+        assert progress_card.progress_bar(42.0, show_percent=False) in caption
+
+    def test_the_percentage_is_shown_when_the_operator_wants_it(self):
+        import progress_fields
+
+        shown = progress_fields.Fields(
+            values={**progress_fields.DEFAULTS, "show_percent": True}
+        )
+        caption = _plain(
+            progress_card.build_progress_caption(
+                INFO, {"percent": 42.0}, stage="converting", lang="en",
+                fields=shown,
+            )
+        )
+        assert "Converting…" in caption
         assert "42%" in caption
 
     def test_the_russian_caption_says_konvertiruyu(self):
