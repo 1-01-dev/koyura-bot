@@ -279,6 +279,9 @@ def human_size(size: object) -> str:
 CHECK_STATUS_LABELS = {
     "ok": ("ok", "badge-success"),
     "auth": ("needs sign-in", "badge-warning"),
+    # ``blocked`` is not a spent session: the site refused the *IP*, so no cookie
+    # file can fix it and the hint under the badge says so.
+    "blocked": ("blocked · needs another IP", "badge-danger"),
     "error": ("error", "badge-danger"),
 }
 
@@ -327,12 +330,33 @@ AUTH_MARKERS = (
     "unauthorized",
 )
 
+#: The site refused the *address*: no cookie file can fix this, only another
+#: outbound IP. The list is what a datacentre block actually looks like — a
+#: Reddit 403 from the API, Cloudflare's page, a rate limit, a captcha wall.
+#: Checked first, because "HTTP Error 403: Blocked" also matches the 403 above
+#: and calling that "needs sign-in" would send the operator to the wrong page.
+BLOCKED_MARKERS = (
+    "unable to access the reddit api",
+    "http error 403: blocked",
+    "blocked",
+    "too many requests",
+    "429",
+    "captcha",
+)
+
 
 def classify_probe(returncode: int, stderr: str) -> str:
-    """``ok`` / ``auth`` / ``error`` for one simulate run."""
+    """``ok`` / ``blocked`` / ``auth`` / ``error`` for one simulate run.
+
+    ``blocked`` is decided before ``auth``: a datacentre block produces a 403
+    too, and telling the operator to upload cookies for it is advice that
+    cannot work. ``auth`` keeps only the genuine sign-in markers.
+    """
     if returncode == 0:
         return "ok"
     text = (stderr or "").lower()
+    if any(marker in text for marker in BLOCKED_MARKERS):
+        return "blocked"
     if any(marker in text for marker in AUTH_MARKERS):
         return "auth"
     return "error"
