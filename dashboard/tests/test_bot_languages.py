@@ -186,7 +186,11 @@ class TestBotSettingsApi:
     def test_the_default_pair_is_served(self, client):
         response = client.get("/api/bot-settings")
         assert response.status_code == 200
-        assert response.json() == {"languages": ["en", "ru"], "default_language": "en"}
+        body = response.json()
+        # The languages keys are this module's contract; the body also carries
+        # the progress switches (test_progress_fields.py owns those).
+        assert body["languages"] == ["en", "ru"]
+        assert body["default_language"] == "en"
 
     def test_a_saved_pair_is_served(self, client):
         asyncio.run(
@@ -196,10 +200,9 @@ class TestBotSettingsApi:
                 ).as_stored()
             )
         )
-        assert client.get("/api/bot-settings").json() == {
-            "languages": ["ru"],
-            "default_language": "ru",
-        }
+        body = client.get("/api/bot-settings").json()
+        assert body["languages"] == ["ru"]
+        assert body["default_language"] == "ru"
 
     def test_the_token_is_required_when_configured(self, client, monkeypatch):
         monkeypatch.setenv("INTERNAL_API_TOKEN", "s3cret-token-value")
