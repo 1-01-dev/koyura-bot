@@ -327,21 +327,31 @@ async def test_dashboard_stats_separate_today_from_yesterday(store):
     await _seed("today-done")
     await _seed("today-err", status="error", user_id=2, username="bob")
     await _seed("yesterday-done", user_id=3, username="carol")
-    # 25 h back: yesterday's calendar day, outside the rolling 24 h window.
-    _backdate("yesterday-done", now - timedelta(hours=25))
+    # 25 h back: yesterday's calendar day, outside the rolling 24 h window — except
+    # in the hour after midnight UTC, where "25 h ago" is already the day before
+    # yesterday. The expectations are derived from the same two boundaries the
+    # query uses (`yesterday`'s date and `now - 24 h`), so the test states the
+    # real contract instead of assuming the time of day.
+    backdated_at = now - timedelta(hours=25)
+    _backdate("yesterday-done", backdated_at)
     await _seed("ancient-done", user_id=4, username="dave")
     _backdate("ancient-done", now - timedelta(days=10))
 
     stats = await db.get_dashboard_stats()
 
+    yesterday = (now - timedelta(days=1)).date()
+    in_yesterday = backdated_at.date() == yesterday
+    inside_window = backdated_at >= now - timedelta(hours=24)
+
     assert stats["downloads_today"] == 1
     assert stats["total_today"] == 2
     assert stats["errors_today"] == 1
-    assert stats["downloads_yesterday"] == 1
+    assert stats["downloads_yesterday"] == (1 if in_yesterday else 0)
     # One of two attempts failed today.
     assert stats["error_rate"] == 50.0
-    # dave is far outside the rolling 24 h window.
-    assert stats["active_users_24h"] == 2
+    # dave is far outside the rolling 24 h window; carol is outside it too unless
+    # midnight just pushed her row inside.
+    assert stats["active_users_24h"] == (3 if inside_window else 2)
 
 
 @pytest.mark.asyncio
