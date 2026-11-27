@@ -447,6 +447,26 @@ that format without the picker, then the mode clears. If the welcome message is
 itself a reply to a link, the download starts immediately. `/settings` shows the
 armed mode, and `/mp3`/`/mp4` clear it (the user just said what they want).
 
+### Back to the welcome
+
+Every sub-screen — `Help`, `Platforms`, `Settings`, `Stats` and the MP3/MP4
+confirmation — carries one more button, `Back` / `Назад` (`nav:home`). It works
+the same whether the screen was opened from the welcome keyboard or with the
+plain command (`/help`, `/platforms`, `/settings`, `/stats`).
+
+Back is the **one** transition that edits instead of replacing: the message that
+carries the button becomes the welcome again (`editMessageText` with the welcome
+text and the `Help / Platforms / Settings / Stats / MP3 / MP4` keyboard). No new
+message is posted, so the chat cannot collect a second copy of the start screen,
+and the user does not have to send `/start`. The exception is a message Telegram
+refuses to edit at all (deleted, older than 48 h): `StageTracker.edit` classifies
+it and only then falls back to a fresh message.
+
+Back also clears an armed MP3/MP4 mode, so a user who tapped `MP3` by mistake
+gets out by pressing Back rather than by sending a link they did not mean to
+convert. The settings screen keeps its Back after a language switch, and the
+label follows the language (`Back` / `Назад`).
+
 ### `callback_data`
 
 | Scheme | Origin | Shape |
@@ -454,6 +474,7 @@ armed mode, and `/mp3`/`/mp4` clear it (the user just said what they want).
 | `lang:<code>` | first-contact picker | `lang:en`, `lang:ru` |
 | `lang:<code>:s` | the `/settings` language buttons | `lang:ru:s` (stay on settings) |
 | `welcome:<action>` | the welcome keyboard | `welcome:help` … `welcome:mp4` |
+| `nav:<action>` | the Back button of every sub-screen | `nav:home` |
 
-The three patterns are separate handlers, so the card router's contract
+The four patterns are separate handlers, so the card router's contract
 (`^(dl|fmt|qty):` and its four-field payload) is unchanged.

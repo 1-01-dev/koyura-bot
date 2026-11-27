@@ -98,7 +98,7 @@ async def stats_payload(user: User | None = None) -> str:
 
 
 async def settings_payload(user: User | None = None):
-    """The /settings answer and its language buttons (``(text, markup)``)."""
+    """The /settings answer, its language buttons and Back (``(text, markup)``)."""
     user_id = getattr(user, "id", None)
     settings, lang = await language.current_with_settings(user_id)
     prefs = state_store.get_prefs(user_id) if user_id is not None else {}
@@ -111,19 +111,37 @@ async def settings_payload(user: User | None = None):
         mode=mode,
         lang=lang,
     )
-    return text, keyboards.language_switch(settings, lang, from_settings=True)
+    return text, keyboards.with_back(
+        keyboards.language_switch(settings, lang, from_settings=True), lang
+    )
 
 
 async def reply_help(message: Message, user: User | None = None) -> None:
-    await message.reply_text(await help_payload(user), parse_mode=PARSE_MODE)
+    """A sub-screen always carries Back: the chat can never strand the user."""
+    lang = await _lang(user)
+    await message.reply_text(
+        await help_payload(user),
+        parse_mode=PARSE_MODE,
+        reply_markup=keyboards.back(lang),
+    )
 
 
 async def reply_platforms(message: Message, user: User | None = None) -> None:
-    await message.reply_text(await platforms_payload(user), parse_mode=PARSE_MODE)
+    lang = await _lang(user)
+    await message.reply_text(
+        await platforms_payload(user),
+        parse_mode=PARSE_MODE,
+        reply_markup=keyboards.back(lang),
+    )
 
 
 async def reply_stats(message: Message, user: User | None = None) -> None:
-    await message.reply_text(await stats_payload(user), parse_mode=PARSE_MODE)
+    lang = await _lang(user)
+    await message.reply_text(
+        await stats_payload(user),
+        parse_mode=PARSE_MODE,
+        reply_markup=keyboards.back(lang),
+    )
 
 
 async def reply_settings(message: Message, user: User | None = None) -> None:

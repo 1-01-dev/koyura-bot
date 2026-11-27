@@ -185,9 +185,9 @@ class TestPreferences:
         markup = update.message.reply_text.await_args.kwargs["reply_markup"]
         labels = [button.text for row in markup.inline_keyboard for button in row]
         datas = [button.callback_data for row in markup.inline_keyboard for button in row]
-        assert labels == ["✓ English", "Русский"]
-        # The settings switch keeps the user on the settings screen.
-        assert datas == ["lang:en:s", "lang:ru:s"]
+        assert labels == ["✓ English", "Русский", "Back"]
+        # The settings switch keeps the user on the settings screen; Back leaves.
+        assert datas == ["lang:en:s", "lang:ru:s", "nav:home"]
 
     @pytest.mark.asyncio
     async def test_settings_shows_the_armed_mode(self):
