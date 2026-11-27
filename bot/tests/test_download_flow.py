@@ -18,7 +18,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest  # noqa: E402
 
+import bot_settings  # noqa: E402
+import progress_fields  # noqa: E402
 from handlers import config, download_flow, sessions, stages  # noqa: E402
+
+# The caption shape here is "everything the engine knows", which is what these
+# tests were written against; the default is now title + bar only.
+ALL_FIELDS = progress_fields.Fields(
+    values=dict.fromkeys(progress_fields.FIELD_NAMES, True)
+)
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +36,28 @@ def _no_poll_delay(monkeypatch):
     async def _fast(delay, *args, **kwargs):
         await real_sleep(0)
     monkeypatch.setattr(download_flow.asyncio, "sleep", _fast)
+
+
+@pytest.fixture(autouse=True)
+def _show_every_progress_field(monkeypatch):
+    """Keep the pre-panel caption shape for this module.
+
+    ``conftest`` primes the panel defaults (title + bar). The tests that assert
+    on a percentage, a speed or an ETA need those lines on, so the panel answer
+    for this module turns every switch on; ``test_progress_fields.py`` covers
+    the default and the per-flag combinations.
+    """
+    base = bot_settings.defaults()
+    shown = bot_settings.Settings(
+        languages=base.languages,
+        default_language=base.default_language,
+        source="panel",
+        progress=ALL_FIELDS,
+    )
+    # Patch ``get`` itself, not just the cache: a test that fakes the clock
+    # (``time.monotonic``) would otherwise make the cached answer look stale and
+    # reach for the dashboard. ``monkeypatch`` undoes this after the test.
+    monkeypatch.setattr(bot_settings, "get", AsyncMock(return_value=shown))
 
 
 def _plain(text: str) -> str:

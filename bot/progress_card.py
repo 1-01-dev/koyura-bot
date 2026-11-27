@@ -9,6 +9,11 @@ not work on media), so the card stays a media message for its whole life:
 Everything here is pure: given the ``/api/info`` payload and the engine's
 ``progress`` dict it returns a MarkdownV2 caption. No Telegram, no clock, no
 network, so the formatting and throttling rules are unit-testable.
+
+*Which* lines a caption carries is the operator's choice — eight checkboxes in
+Admin → **Progress fields**, read by the bot through ``progress_fields`` and
+handed in as ``fields=``. The default is the title and the bar; a caption whose
+switches are all off still says the stage, so it can never be empty.
 """
 from __future__ import annotations
 
@@ -16,6 +21,7 @@ import math
 import time
 
 import download_card
+import progress_fields as fields_module
 from i18n import escape_md, t
 
 CAPTION_MAX = download_card.CAPTION_MAX
@@ -95,11 +101,16 @@ def format_eta(seconds: object) -> str | None:
     return f"{minutes}:{secs:02d}"
 
 
-def progress_bar(percent: object, width: int = BAR_WIDTH) -> str:
-    """``▓▓▓▓▓▓▓░░░░░ 62%`` — always ``width`` cells plus the percentage.
+def progress_bar(
+    percent: object, width: int = BAR_WIDTH, *, show_percent: bool = True
+) -> str:
+    """``▓▓▓▓▓▓▓░░░░░ 62%`` — always ``width`` cells, optionally the percentage.
 
-    The percentage is part of the string on purpose: clients render the bar in
-    a proportional font, so the glyphs alone can look misleading.
+    The cell count never depends on ``show_percent``: the bar is the one line
+    that is always the same physical size, so hiding the number must not make
+    the caption re-wrap between edits. The percentage is part of the string on
+    purpose: clients render the bar in a proportional font, so the glyphs alone
+    can look misleading.
     """
     value = as_number(percent)
     if value is None:
@@ -107,7 +118,7 @@ def progress_bar(percent: object, width: int = BAR_WIDTH) -> str:
     value = max(0.0, min(100.0, value))
     filled = int(value * width / 100.0 + 0.5)
     bar = BAR_FULL * filled + BAR_EMPTY * (width - filled)
-    return f"{bar} {value:.0f}%"
+    return f"{bar} {value:.0f}%" if show_percent else bar
 
 
 def _caption_title(info: dict, lang: object = None) -> str:
@@ -179,6 +190,83 @@ def _exact_total_bytes(progress: dict) -> float | None:
 # Progress caption
 # ---------------------------------------------------------------------------
 
+def _normalised_stage(stage: str, percent: float | None) -> str:
+    """The stage the caption talks about, with the 99.5% merge folded in."""
+    if stage in ("download", ""):
+        return "downloading"
+    if stage == "downloading" and percent is not None and percent >= 99.5:
+        # yt-dlp is finished; the engine is still merging/transcoding.
+        return "processing"
+    return stage
+
+
+def _bar_text(percent: float | None, shown: fields_module.Fields) -> str | None:
+    """The bar, the bare percentage, or nothing — whichever is switched on."""
+    if percent is None:
+        return None
+    if shown["show_bar"]:
+        return progress_bar(percent, show_percent=shown["show_percent"]) or None
+    if shown["show_percent"]:
+        return f"{percent:.0f}%"
+    return None
+
+
+def _size_fact(progress: dict) -> str | None:
+    """``30.8 MB / 30.8 MB``, or the downloaded amount when no exact total."""
+    downloaded = as_number(progress.get("downloaded_bytes"))
+    total = _exact_total_bytes(progress)
+    if downloaded is not None and total:
+        return f"{format_size(downloaded)} / {format_size(total)}"
+    if downloaded is not None and downloaded > 0:
+        # No exact size (HLS/DASH): show how much arrived, never a made-up total.
+        return format_size(downloaded)
+    return None
+
+
+def _speed_fact(progress: dict) -> str | None:
+    return format_speed(progress.get("speed"))
+
+
+def _eta_fact(progress: dict, percent: float | None, lang: object) -> str | None:
+    if percent is None or percent >= 100:
+        return None
+    eta = derive_eta(progress)
+    if eta is None:
+        return None
+    return t("progress.eta", lang, eta=format_eta(eta))
+
+
+def _elapsed_fact(elapsed: float | None, lang: object) -> str | None:
+    text = format_eta(elapsed) if elapsed is not None else None
+    return t("progress.elapsed", lang, elapsed=text) if text else None
+
+
+def _facts_line(
+    progress: dict,
+    shown: fields_module.Fields,
+    *,
+    percent: float | None,
+    quality: str | None,
+    elapsed: float | None,
+    lang: object,
+    percent_text: str | None = None,
+) -> str:
+    """The ``a · b · c`` line: every switched-on fact the engine actually knows.
+
+    ``percent_text`` carries the number here when there is no bar for it to sit
+    next to, so ``show_percent`` alone still says something.
+    """
+    candidates = (
+        ("show_percent", percent_text),
+        ("show_quality", str(quality) if quality else None),
+        ("show_size", _size_fact(progress)),
+        ("show_speed", _speed_fact(progress)),
+        ("show_eta", _eta_fact(progress, percent, lang)),
+        ("show_elapsed", _elapsed_fact(elapsed, lang)),
+    )
+    return " · ".join(text for name, text in candidates if shown[name] and text)
+
+
 def build_progress_caption(
     info: dict,
     progress: dict | None = None,
@@ -187,51 +275,54 @@ def build_progress_caption(
     quality: str | None = None,
     elapsed: float | None = None,
     lang: object = None,
+    fields: fields_module.Fields | None = None,
 ) -> str:
     """The card caption while a job runs.
 
-    Only real data is drawn: when the engine reports no total size the caption
-    shows the downloaded amount and the speed, never an invented percentage.
+    Which lines appear is the operator's choice (``progress_fields``, Admin →
+    Progress fields, default title + bar); only real data is drawn: when the
+    engine reports no total size the caption shows the downloaded amount and
+    the speed, never an invented percentage.
+
+    The stage line is the floor: it is drawn when there is nothing to measure
+    *and* when neither the bar nor the percentage is on, so the message can
+    never be empty — a caption with no words looks like a broken bot.
     """
     progress = progress if isinstance(progress, dict) else {}
+    shown = fields if fields is not None else fields_module.defaults()
     percent = derive_percent(progress)
-    if stage == "download" or stage == "":
-        stage = "downloading"
-    elif stage == "downloading" and percent is not None and percent >= 99.5:
-        # yt-dlp is finished; the engine is still merging/transcoding.
-        stage = "processing"
-
-    lines = [_caption_title(info, lang)]
-
+    stage = _normalised_stage(stage, percent)
     label = stage_label(stage, lang)
-    if percent is None or stage in ("starting", "processing", "uploading"):
+
+    lines: list[str] = []
+    if shown["show_title"]:
+        lines.append(_caption_title(info, lang))
+
+    measurable = percent is not None and stage == "downloading"
+    measure_on = shown["show_bar"] or shown["show_percent"]
+    if not measurable or not measure_on:
+        # Nothing is happening to measure, or both ways of showing it are off.
         lines.append(download_card.escape_md(label))
-    if percent is not None:
-        lines.append(download_card.escape_md(progress_bar(percent)))
 
-    facts: list[str] = []
-    if quality:
-        facts.append(str(quality))
-    downloaded = as_number(progress.get("downloaded_bytes"))
-    total = _exact_total_bytes(progress)
-    if downloaded is not None and total:
-        facts.append(f"{format_size(downloaded)} / {format_size(total)}")
-    elif downloaded is not None and downloaded > 0:
-        # No exact size (HLS/DASH): show how much arrived, never a made-up total.
-        facts.append(format_size(downloaded) or "")
-    speed = format_speed(progress.get("speed"))
-    if speed:
-        facts.append(speed)
-    eta = derive_eta(progress)
-    if eta is not None and percent is not None and percent < 100:
-        facts.append(t("progress.eta", lang, eta=format_eta(eta)))
-    elapsed_text = format_eta(elapsed) if elapsed is not None else None
-    if elapsed_text:
-        facts.append(t("progress.elapsed", lang, elapsed=elapsed_text))
+    bar = _bar_text(percent, shown)
+    if bar and shown["show_bar"]:
+        lines.append(download_card.escape_md(bar))
 
-    facts = [fact for fact in facts if fact]
+    facts = _facts_line(
+        progress,
+        shown,
+        percent=percent,
+        quality=quality,
+        elapsed=elapsed,
+        lang=lang,
+        percent_text=None if shown["show_bar"] else bar,
+    )
     if facts:
-        lines.append(download_card.escape_md(" · ".join(facts)))
+        lines.append(download_card.escape_md(facts))
+
+    if not lines:
+        # Every switch is off (title and bar included): say what is happening.
+        lines.append(download_card.escape_md(label))
     return _bounded(lines)
 
 
