@@ -1,0 +1,161 @@
+# Proxy and WireGuard (outbound route)
+
+**Admin → Proxy** decides how the engine leaves the machine. It exists because
+some sites refuse a datacentre address outright: Reddit answers
+
+```
+ERROR: [Reddit] ... Your IP address is unable to access the Reddit API
+ERROR: HTTP Error 403: Blocked
+```
+
+and a fresh cookie file does not change that — the site is refusing *the IP*,
+not the session. Routing the engine through another address does.
+
+## The three modes
+
+| Mode | What the engine does |
+| --- | --- |
+| **Off** (default) | Connects directly, exactly as every release before this page existed. |
+| **Manual proxy** | `yt-dlp --proxy <url>` with the URL you typed. |
+| **WireGuard** | `yt-dlp --proxy socks5h://<socks>` — the SOCKS address the tunnel reports. |
+
+Only one mode is active at a time. The rule is applied per job, when the
+download starts, so a change reaches the next download within a minute (the
+panel's answer is cached by the engine for 45 s).
+
+## Manual proxy
+
+The URL must start with one of:
+
+```
+socks5://    socks5h://    http://    https://
+```
+
+`user:pass@` is accepted before the host
+(`socks5h://user:secret@10.0.0.5:1080`). A path, query or fragment is refused —
+it is usually how a *target* URL gets pasted into the proxy field, which would
+never work.
+
+`socks5h://` is the one to prefer for this problem: it lets the **proxy** resolve
+the site's name, so a blocked DNS answer on this server stops mattering.
+
+**Check** sends one request to `https://api.ipify.org` through the URL
+(10 s timeout, server-side) and prints the external IP, or the error text. Use
+it before saving a proxy: a typo and a dead proxy both look like "the download
+failed" until you do.
+
+The password is stored in the panel's database (the engine needs it) and is
+**never rendered back**: the form shows `socks5h://***:***@host:port`, and
+leaving the field blank on a later save keeps the stored URL.
+
+## WireGuard
+
+Upload a `.conf` (≤ 64 KB) and press **Apply**. The file must carry:
+
+* an `[Interface]` section with `PrivateKey` and `Address`;
+* a `[Peer]` section with `Endpoint`.
+
+The panel only writes the file — `/var/lib/koyura2/egress/wg0.conf`, mode
+`0600`. A root-owned watcher on the host (`/usr/local/bin/koyura-egress`, started
+by `koyura-egress.path` — outside this repository's containers) applies the
+tunnel as soon as the file changes, and writes the result to
+`/var/lib/koyura2/egress/status.json`:
+
+```json
+{
+  "state": "up",
+  "egress_ip": "1.2.3.4",
+  "error": null,
+  "socks": "10.8.0.2:11080",
+  "updated_at": "2026-01-31T12:00:00Z"
+}
+```
+
+`state` is `up`, `down` or `error`. The page shows the state, the external IP,
+the SOCKS address, the timestamp and, for `error`, the watcher's message.
+**Refresh status** re-reads the file; the page never caches it.
+
+A config with fake keys reaches the watcher and comes back as `error` — that is
+the expected result of testing with dummy values, and it is a report, not a
+crash. In WireGuard mode the engine uses the tunnel's SOCKS address, so a dead
+tunnel means **direct**, never a half-configured proxy.
+
+**Disconnect** deletes the config; the watcher tears the tunnel down and the
+engine returns to a direct connection.
+
+## Apply it to: all, some, or all but some
+
+| Option | Meaning |
+| --- | --- |
+| **All services** | Every download goes through the route. |
+| **Selected services** | Only the ticked ones do; everything else is direct. |
+| **All except selected** | Everything except the ticked ones goes through it. |
+
+The list is the same catalogue **Admin → Cookies** offers — yt-dlp's own
+extractor names — so a name here is a name the engine can compute for a URL.
+Which service a link belongs to is decided by the same extractor table the
+cookie lookup uses: `https://www.reddit.com/r/x` is `reddit` for both features.
+
+For a datacentre block the usual setting is **Selected services** with the sites
+that refuse the server ticked (`reddit`, and whatever else reports `blocked`).
+YouTube keeps the direct connection, which is faster and avoids burning proxy
+bandwidth on files that never needed it.
+
+## Why a download says "blocked"
+
+The engine classifies the failure before it retries anything:
+
+* markers such as `unable to access the reddit api`, `http error 403: blocked`,
+  `blocked`, `429`, `too many requests` or `captcha` mean the **address** was
+  refused. The job ends with `error_code: "service_blocked"` and the bot says
+  *"Reddit blocks the server's IP address — a proxy is needed. Cookies will not
+  help."* — it does not try the next cookie jar, because another jar answers the
+  same 403.
+* the genuine sign-in markers (`sign in to confirm`, `login required`, `this
+  video is private`, `age-restricted`, and a plain `http error 403` with none of
+  the blocked words above) stay `cookies_required`: *"add a cookie file"*.
+
+**Admin → Cookies** shows the same distinction. A check that ends in
+`blocked · needs another IP` is a note about the server, not about the file —
+re-uploading the jar will not clear it. Fix it on this page, then re-run the
+check.
+
+## Checking the external IP without the panel
+
+```bash
+curl --silent --proxy 'socks5h://10.8.0.2:11080' https://api.ipify.org; echo
+curl --silent https://api.ipify.org; echo          # direct, for comparison
+```
+
+If the two differ, the route is live. If the proxied one prints your own
+address, the proxy is not being used; if it times out, the tunnel is down (see
+`status.json`).
+
+## Limits worth knowing
+
+* **One outbound IP for every service in the rule.** Two services in the same
+  rule share one address; a site that rate-limits per IP is rate-limited across
+  all of them.
+* **The route applies to yt-dlp, not to the panel.** Uploads, the dashboard's
+  own HTTP and Telegram traffic are unaffected.
+* **A proxy costs speed.** A slow tunnel slows the download; the estimate in the
+  progress card cannot know that.
+* **Nothing is retried through the direct connection.** If a job is in scope for
+  the rule and the proxy fails, the job fails — it does not silently fall back to
+  your own IP, because that is the address the site blocked.
+* **The WireGuard private key never leaves the file.** The panel writes the
+  bytes it was given and never reads them back; no page, log line or JSON
+  response contains the key.
+* **One tunnel at a time.** The watcher owns a single interface (`wg0`); a
+  second config replaces the first.
+
+## Environment
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `EGRESS_PATH` | `/var/lib/koyura2/egress` | Where `wg0.conf` is written and `status.json` is read. Shared by the panel and the engine, and mounted by the host watcher. |
+
+The egress *rule* itself lives in the panel's database (`egress.*` in the
+`settings` table), not in the environment: it is an operator decision, changed
+from the page. The engine reads it from `GET /api/egress` with the internal
+token.
