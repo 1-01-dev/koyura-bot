@@ -19,6 +19,7 @@ services:
       HOST: 0.0.0.0
       PORT: "8899"
       DOWNLOADS_PATH: /downloads
+      COOKIES_PATH: /var/lib/koyura2/cookies
       MAX_CONCURRENT_DOWNLOADS: ${MAX_CONCURRENT_DOWNLOADS:-2}
       PER_USER_MAX_ACTIVE: ${PER_USER_MAX_ACTIVE:-1}
       PER_USER_MAX_QUEUED: ${PER_USER_MAX_QUEUED:-1}
@@ -46,6 +47,9 @@ services:
     volumes:
       - downloads:/downloads
       - koyura-engine-state:/state
+      # The cookie jars the panel writes; read-only because only the panel may
+      # add or delete one. Same path inside both containers.
+      - cookies:/var/lib/koyura2/cookies:ro
     networks:
       - internal
     cap_drop:
@@ -133,6 +137,7 @@ services:
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
       DB_PATH: /data/koyura_bot.db
       DOWNLOADS_PATH: /downloads
+      COOKIES_PATH: /var/lib/koyura2/cookies
       KOYURA_ENGINE_URL: http://koyura-engine:8899
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN is required}
       CLEANUP_MAX_DISK_MB: ${CLEANUP_MAX_DISK_MB:-5000}
@@ -143,6 +148,9 @@ services:
       # Writable so the Admin page can delete files; the dashboard itself is
       # loopback-only and behind authentication.
       - downloads:/downloads
+      # The cookie jars live outside the purgeable downloads volume: the bot's
+      # cleanup and the panel's purge must never delete a sign-in session.
+      - cookies:/var/lib/koyura2/cookies
     # Loopback only: the admin panel must never be reachable from the LAN.
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-8080}:8080"
@@ -171,6 +179,9 @@ volumes:
   downloads:
   telegram-bot-api-data:
   dashboard-data:
+  # Service cookie jars: written by the panel, read by the engine. Deliberately
+  # not the downloads volume, which is purged on a schedule.
+  cookies:
   # Queue throughput EWMA; deliberately separate from the purgeable downloads.
   koyura-engine-state:
 
