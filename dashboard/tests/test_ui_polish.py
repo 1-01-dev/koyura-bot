@@ -103,7 +103,12 @@ def _seed_history_row() -> None:
     )
 
 
+def _strip_comments(css: str) -> str:
+    return re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+
+
 def _without_token_blocks(css: str) -> str:
+    """Drop the `:root` palette, the one place literals are allowed."""
     return re.sub(r":root[^{]*\{[^{}]*\}", "", css)
 
 
@@ -220,17 +225,84 @@ def test_done_card_labels_the_file_that_exists():
 # 4. The drawer trigger on a phone
 # ---------------------------------------------------------------------------
 
-def test_the_hamburger_moves_into_the_open_drawer():
-    css = (STATIC / "style.css").read_text()
-    assert ".sidebar-open .hamburger" in css
-    assert "--sidebar-width" in css.split(".sidebar-open .hamburger")[1].split("}")[0]
+def _rule(css: str, selector: str) -> str:
+    """The declaration block of one selector, whitespace-normalised.
 
-    # A 44x44 tap target, and an X in the open state.
-    hamburger = css.split(".hamburger {")[1].split("}")[0]
+    Split on the exact selector followed by `{`: a bare `.hamburger` would also
+    match `.hamburger span`, and `.sidebar-open .hamburger` must not pick up
+    the `:first-child` rules below it.
+    """
+    marker = selector + " {"
+    assert marker in css, f"no rule for {selector!r}"
+    body = css.split(marker, 1)[1].split("}", 1)[0]
+    return " ".join(body.split())
+
+
+def test_the_hamburger_moves_into_the_open_drawer():
+    css = _strip_comments((STATIC / "style.css").read_text())
+
+    # A 44x44 tap target that eases horizontally.
+    hamburger = _rule(css, ".hamburger")
     assert "width: 44px" in hamburger
     assert "height: 44px" in hamburger
     assert "transition: left" in hamburger
-    assert ":first-child" in css and "rotate(45deg)" in css
+
+    # Open: the button sits at the drawer's RIGHT edge, keeping the same 12px
+    # inset it has on the closed page (44px target + 12px = 56px), and the
+    # drawer's own left safe-area padding is subtracted so it stays on the
+    # content edge of a notched device.
+    opened = _rule(css, ".sidebar-open .hamburger")
+    left = opened.split("left:", 1)[1].split(";", 1)[0]
+    assert "var(--sidebar-width)" in left
+    assert "56px" in left
+    assert "var(--safe-left)" in left
+
+
+def test_the_open_icon_is_a_cross_not_a_chevron():
+    """Every bar shares the centre and only rotates, so the open state is a
+    symmetric X. A `translateY(...) rotate(...)` mix pushes the bars along a
+    slanted axis and reads as the "—>" the owner reported."""
+    css = _strip_comments((STATIC / "style.css").read_text())
+
+    bar = _rule(css, ".hamburger span")
+    assert "position: absolute" in bar
+    # Centred, not stacked in a flex column.
+    assert "top: calc(50% - 0.5px)" in bar
+    assert "left: calc(50% - 9px)" in bar
+
+    first = _rule(css, ".sidebar-open .hamburger span:first-child")
+    last = _rule(css, ".sidebar-open .hamburger span:last-child")
+    middle = _rule(css, ".sidebar-open .hamburger span:nth-child(2)")
+
+    assert first == "transform: translateY(0) rotate(45deg);"
+    assert last == "transform: translateY(0) rotate(-45deg);"
+    assert "opacity: 0" in middle
+    # No stray offset: a non-zero translate is what bent the cross.
+    assert "translateY(5px)" not in first and "translateY(5px)" not in last
+
+    # Closed: the same two bars offset by 5px, middle visible.
+    assert "translateY(-5px)" in _rule(css, ".hamburger span:first-child")
+    assert "translateY(5px)" in _rule(css, ".hamburger span:last-child")
+
+
+def test_the_hamburger_icon_does_not_animate_its_shape():
+    """The rotation is instant so no snapshot can catch a half-turned bar.
+    Only the colour eases."""
+    css = _strip_comments((STATIC / "style.css").read_text())
+    bar = _rule(css, ".hamburger span")
+    assert "transition: background" in bar
+    assert "transform" not in bar.split("transition:", 1)[1].split(";", 1)[0]
+    assert "opacity" not in bar.split("transition:", 1)[1].split(";", 1)[0]
+
+
+def test_the_drawer_transition_is_disabled_for_reduced_motion():
+    """koyura.css is the one place that turns every transition off; this keeps
+    the drawer's slide covered by it rather than adding a second copy."""
+    tokens = (STATIC / "koyura.css").read_text()
+    reduced = tokens.split("prefers-reduced-motion", 1)
+    assert len(reduced) > 1, "no reduced-motion block"
+    assert "transition: none !important" in reduced[1]
+
 
 
 def test_the_shell_toggles_the_root_class_and_the_label():
