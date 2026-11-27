@@ -16,7 +16,6 @@ import bot_languages
 import db
 import message_catalog
 import message_templates
-import progress_fields
 
 logger = logging.getLogger(__name__)
 
@@ -171,26 +170,29 @@ async def ingest_event(request: Request) -> dict[str, str]:
 
 @router.get("/api/bot-settings")
 async def bot_settings(request: Request) -> dict[str, Any]:
-    """The bot's operator-set preferences: languages and progress fields.
+    """The bot's operator-set preferences: languages and message templates.
 
     Read-only and internal: ``bot/bot_settings.py`` polls this once a minute and
-    caches the answer, so a toggle in the panel reaches the chat within that
+    caches the answer, so a change in the panel reaches the chat within that
     window. A request without the shared token is refused exactly like an event
     would be, and the response carries nothing but the public facts: the enabled
-    languages, the default one, and the eight progress switches nested under
-    ``progress`` so a client can tell them apart from the language pair.
+    languages, the default one, and the active custom message bodies.
+
+    The ``progress`` switches this body used to carry are gone: which lines the
+    live message draws is the ``progress`` template (in ``templates`` below).
+    Nothing here reads the retired ``bot_progress.*`` rows, so an upgraded panel
+    ignores them without a migration — and an old bot that still expects the
+    object simply renders its own built-in default.
     """
     if not _internal_token_ok(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     stored = await db.get_settings(prefix=bot_languages.SETTING_PREFIX)
     settings = bot_languages.BotLanguages.from_row(stored)
-    progress_stored = await db.get_settings(prefix=progress_fields.SETTING_PREFIX)
     rows = await db.active_message_templates()
     return {
         "languages": list(settings.languages),
         "default_language": settings.default_language,
-        "progress": progress_fields.ProgressFields.from_row(progress_stored).as_api(),
         # ``{kind: {lang: body}}``: one active custom body per pair, or nothing
         # at all. The bot renders the built-in default for every kind it does
         # not find here, so an empty object is a valid answer.

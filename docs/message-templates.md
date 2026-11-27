@@ -41,7 +41,7 @@ copying a default and moving a piece around.
 
 | Плейсхолдер | Что подставляет | Пример |
 | --- | --- | --- |
-| `@bar` | Полоса прогресса с процентами | `▓▓▓▓▓▓▓░░░░░ 62%` |
+| `@bar` | Полоса прогресса, 12 ячеек | `▓▓▓▓▓▓▓░░░░░` |
 | `@cached` | Сколько файлов лежит на диске | `7` |
 | `@category` | Категория ролика | `Образование` |
 | `@channel` | Канал и @ник одной строкой | `Кухня на каждый день · @kitchen` |
@@ -55,6 +55,7 @@ copying a default and moving a piece around.
 | `@error` | Текст ошибки | `Download timed out` |
 | `@errors` | Сколько было ошибок | `3` |
 | `@eta` | Сколько осталось | `0:42` |
+| `@facts` | Готовая строка фактов через · | `62% · 3,2 MB/s · 0:42` |
 | `@followers` | Число подписчиков | `1,3M` |
 | `@format` | Формат по умолчанию | `video` |
 | `@hint` | Подсказка про очередь | `Чат можно закрыть — файл придёт сюда.` |
@@ -112,7 +113,7 @@ copying a default and moving a piece around.
 | Загрузка | Поиск информации о ссылке | `stage.searching` | text | 4096 | — |
 | Загрузка | Начало загрузки | `stage.starting` | text | 4096 | — |
 | Загрузка | Карточка превью ссылки | `card` | caption | 1024 | `@title`, `@uploader`, `@channel`, `@followers`, `@duration`, `@views`, `@likes`, `@comments`, `@category`, `@uploaded`, `@source`, `@url`, `@meta` |
-| Загрузка | Прогресс загрузки | `progress` | caption | 1024 | `@title`, `@stage`, `@quality`, `@bar`, `@percent`, `@size`, `@speed`, `@eta`, `@elapsed` |
+| Загрузка | Прогресс загрузки | `progress` | caption | 1024 | `@title`, `@stage`, `@quality`, `@bar`, `@percent`, `@size`, `@speed`, `@eta`, `@elapsed`, `@facts` |
 | Загрузка | Задача в очереди | `queued` | caption | 1024 | `@title`, `@position`, `@wait`, `@hint` |
 | Загрузка | Подпись к готовому файлу | `done` | caption | 1024 | `@title`, `@quality`, `@size`, `@duration`, `@source` |
 | Загрузка | Вопрос о конвертации кодека | `transcode.ask` | caption | 1024 | `@title`, `@question`, `@quality`, `@codec`, `@note` |
