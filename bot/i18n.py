@@ -60,6 +60,8 @@ EN: dict[str, str] = {
     "button.stats": "Stats",
     "button.mp3": "MP3",
     "button.mp4": "MP4",
+    # -- navigation --------------------------------------------------------
+    "nav.back": "Back",
     # -- /help -------------------------------------------------------------
     "help.title": "How to use Koyura Bot:",
     "help.step1": "1. Send a link (YouTube, TikTok, etc.)",
@@ -208,6 +210,8 @@ RU: dict[str, str] = {
     "button.stats": "Статистика",
     "button.mp3": "MP3",
     "button.mp4": "MP4",
+    # -- navigation --------------------------------------------------------
+    "nav.back": "Назад",
     # -- /help -------------------------------------------------------------
     "help.title": "Как пользоваться Koyura Bot:",
     "help.step1": "1. Пришлите ссылку (YouTube, TikTok и т.д.)",

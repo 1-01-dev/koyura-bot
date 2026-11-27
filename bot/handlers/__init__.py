@@ -67,11 +67,13 @@ COMMAND_HANDLERS = (
 # tapping a button in an old message still works.
 CALLBACK_PATTERN = r"^(dl|fmt|qty):"
 
-# The two keyboards this release adds. They keep their own prefixes (rather than
+# The keyboards this release adds. They keep their own prefixes (rather than
 # extending ``CALLBACK_PATTERN``) so the card router's contract does not change:
-# a ``lang:`` tap never looks like a download.
+# a ``lang:`` tap never looks like a download, and ``nav:home`` never looks like
+# a language switch.
 LANGUAGE_PATTERN = r"^lang:"
 WELCOME_PATTERN = r"^welcome:"
+NAV_PATTERN = r"^nav:"
 
 
 def register_handlers(application) -> None:
@@ -87,6 +89,9 @@ def register_handlers(application) -> None:
     application.add_handler(
         CallbackQueryHandler(onboarding.on_welcome_button, pattern=WELCOME_PATTERN)
     )
+    application.add_handler(
+        CallbackQueryHandler(onboarding.on_nav_button, pattern=NAV_PATTERN)
+    )
     # Free text only: commands are handled above and must never reach the link
     # handler, which would fetch info for a "/help" the user just typed.
     application.add_handler(
@@ -98,6 +103,7 @@ __all__ = [
     "CALLBACK_PATTERN",
     "COMMAND_HANDLERS",
     "LANGUAGE_PATTERN",
+    "NAV_PATTERN",
     "WELCOME_PATTERN",
     "callbacks",
     "commands",

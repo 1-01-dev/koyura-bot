@@ -6,6 +6,7 @@ router can dispatch on the first field alone:
     lang:<code>          the first-contact language picker
     lang:<code>:s        the same switch, tapped on the /settings screen
     welcome:<action>     help / platforms / settings / stats / mp3 / mp4
+    nav:home             the Back button every sub-screen carries
 
 Keeping the data format next to the buttons means a button and its router can
 never disagree about the shape of the string, and the two ``lang:`` variants
@@ -27,6 +28,11 @@ BUTTONS_PER_ROW = 2
 # Callback prefixes. ``callback_prefixes`` is what ``register_handlers`` wires.
 LANGUAGE_PREFIX = "lang"
 WELCOME_PREFIX = "welcome"
+NAV_PREFIX = "nav"
+
+# The one navigation target so far: the welcome screen. A button carries a
+# ``callback_data`` and nothing else, so an old message stays valid.
+HOME_ACTION = "home"
 
 # The suffix that marks "this tap came from /settings, stay here".
 _SETTINGS_SUFFIX = "s"
@@ -46,6 +52,11 @@ def welcome_data(action: str) -> str:
     return f"{WELCOME_PREFIX}:{action}"
 
 
+def nav_data(action: str = HOME_ACTION) -> str:
+    """``nav:home`` — the Back button on every sub-screen."""
+    return f"{NAV_PREFIX}:{action}"
+
+
 def parse_language(data: object) -> tuple[str, bool] | None:
     """``"lang:ru:s"`` -> ``("ru", True)``; anything else -> ``None``."""
     parts = str(data or "").split(":")
@@ -59,6 +70,15 @@ def parse_welcome(data: object) -> str | None:
     """``"welcome:help"`` -> ``"help"``; anything else -> ``None``."""
     parts = str(data or "").split(":", 1)
     if len(parts) != 2 or parts[0] != WELCOME_PREFIX:
+        return None
+    action = parts[1].strip()
+    return action or None
+
+
+def parse_nav(data: object) -> str | None:
+    """``"nav:home"`` -> ``"home"``; anything else -> ``None``."""
+    parts = str(data or "").split(":", 1)
+    if len(parts) != 2 or parts[0] != NAV_PREFIX:
         return None
     action = parts[1].strip()
     return action or None
@@ -122,14 +142,43 @@ def welcome(lang: object = None):
     return InlineKeyboardMarkup(_rows(buttons))
 
 
+def back(lang: object = None):
+    """The single ``Back`` button every sub-screen carries (``nav:home``).
+
+    It is a plain callback rather than a link, so the answer is the welcome
+    screen **in the message the button sits on** — the user does not have to send
+    ``/start`` again and the chat does not grow a second copy of the welcome.
+    """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(t("nav.back", lang), callback_data=nav_data())]
+    ])
+
+
+def with_back(markup, lang: object = None):
+    """``markup`` with the Back row appended (``None`` markup -> Back only)."""
+    from telegram import InlineKeyboardMarkup
+
+    rows = list(getattr(markup, "inline_keyboard", []) or [])
+    rows.extend(back(lang).inline_keyboard)
+    return InlineKeyboardMarkup(rows)
+
+
 __all__ = [
     "BUTTONS_PER_ROW",
+    "HOME_ACTION",
     "LANGUAGE_PREFIX",
+    "NAV_PREFIX",
     "WELCOME_PREFIX",
+    "back",
     "language_data",
     "language_switch",
+    "nav_data",
     "parse_language",
+    "parse_nav",
     "parse_welcome",
     "welcome",
     "welcome_data",
+    "with_back",
 ]

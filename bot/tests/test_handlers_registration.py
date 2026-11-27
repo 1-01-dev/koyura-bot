@@ -139,11 +139,12 @@ class TestRegistration:
             if isinstance(h, CallbackQueryHandler)
         }
         assert set(by_pattern) == {
-            r"^(dl|fmt|qty):", r"^lang:", r"^welcome:",
+            r"^(dl|fmt|qty):", r"^lang:", r"^welcome:", r"^nav:",
         }
         assert by_pattern[r"^(dl|fmt|qty):"].callback is callbacks.on_format_button
         assert by_pattern[r"^lang:"].callback is onboarding.on_language_button
         assert by_pattern[r"^welcome:"].callback is onboarding.on_welcome_button
+        assert by_pattern[r"^nav:"].callback is onboarding.on_nav_button
 
     def test_the_legacy_card_pattern_is_unchanged(self, registered):
         card = [
@@ -159,6 +160,7 @@ class TestRegistration:
         # The language and welcome buttons are their own schemes.
         assert not pattern.match("lang:en")
         assert not pattern.match("welcome:help")
+        assert not pattern.match("nav:home")
 
     def test_the_text_handler_runs_last(self, registered):
         """Free text is the fallback: every button and command is tried first."""

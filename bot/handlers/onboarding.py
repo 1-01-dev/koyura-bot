@@ -155,7 +155,9 @@ async def on_welcome_button(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         "stats": commands.stats_payload,
     }
     if action in payloads:
-        await tracker.replace_text(await payloads[action](user))
+        await tracker.replace_text(
+            await payloads[action](user), reply_markup=keyboards.back(lang)
+        )
         return
 
     if action == "settings":
@@ -187,13 +189,15 @@ async def _arm_or_download(
     )
     safe, notice = await url_flow.safe_links(urls, lang=lang) if urls else ([], None)
     if notice:
-        await tracker.replace_text(notice)
+        await tracker.replace_text(notice, reply_markup=keyboards.back(lang))
         return
 
     if safe:
         # The welcome was a reply to a link: nothing to wait for.
         state_store.set_pending_format(user.id, None)
-        result = await tracker.replace_text(texts.mode_armed(fmt, lang))
+        result = await tracker.replace_text(
+            texts.mode_armed(fmt, lang), reply_markup=keyboards.back(lang)
+        )
         if not result.ok or result.message_id is None:
             return
         status = SimpleNamespace(chat_id=tracker.chat_id, message_id=result.message_id)
@@ -203,7 +207,53 @@ async def _arm_or_download(
         return
 
     state_store.set_pending_format(user.id, fmt)
-    await tracker.replace_text(texts.mode_armed(fmt, lang))
+    await tracker.replace_text(
+        texts.mode_armed(fmt, lang), reply_markup=keyboards.back(lang)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Back to the welcome screen
+# ---------------------------------------------------------------------------
+
+async def on_nav_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """``nav:home``: rewrite the tapped sub-screen into the welcome.
+
+    This is the one place where "back" is an **edit**, not a replacement: the
+    message that carries the button becomes the welcome again, so the chat does
+    not collect a second copy of the start screen and the user does not have to
+    send ``/start``. The armed MP3/MP4 mode is cleared on the way out — Back means
+    "forget the pending action and start over" — which is how a user who tapped
+    MP3 by mistake changes their mind.
+    """
+    query = update.callback_query
+    if query is None:
+        return
+    action = keyboards.parse_nav(query.data)
+    if action is None:
+        await query.answer()
+        return
+
+    user = update.effective_user
+    if user is None:
+        await query.answer()
+        return
+
+    lang = await language.current(user.id)
+    await query.answer()
+    if action != keyboards.HOME_ACTION:
+        logger.debug("Unknown navigation action: %s", action)
+        return
+
+    state_store.set_pending_format(user.id, None)
+    tracker = _tracker(update, context, query)
+    if tracker is None:
+        return
+    result = await tracker.edit(
+        texts.welcome_text(lang), reply_markup=keyboards.welcome(lang)
+    )
+    if not result.ok:
+        logger.debug("Could not go back to the welcome: %s", result.detail)
 
 
 # ---------------------------------------------------------------------------
@@ -225,9 +275,14 @@ def _tracker(update: Update, context: ContextTypes.DEFAULT_TYPE, query) -> stage
     if chat_id is None:
         logger.debug("Cannot replace a screen: the tapped message has no chat")
         return None
+    try:
+        chat_id = int(chat_id)
+    except (TypeError, ValueError):
+        logger.debug("Cannot replace a screen: chat id %r is not a number", chat_id)
+        return None
     return stages.StageTracker(
         context.bot,
-        int(chat_id),
+        chat_id,
         getattr(message, "message_id", None),
         photo=bool(getattr(message, "photo", None)),
     )
@@ -236,6 +291,7 @@ def _tracker(update: Update, context: ContextTypes.DEFAULT_TYPE, query) -> stage
 __all__ = [
     "MODE_FORMATS",
     "on_language_button",
+    "on_nav_button",
     "on_welcome_button",
     "show_welcome",
     "start_command",

@@ -146,7 +146,7 @@ class TestEmulatedOnboarding:
             b.text for row in bot.of("send_message")[0]["reply_markup"].inline_keyboard
             for b in row
         ]
-        assert labels == ["English", "✓ Русский"]
+        assert labels == ["English", "✓ Русский", "Назад"]
 
     @pytest.mark.asyncio
     async def test_mp3_mode_then_link(self, monkeypatch):

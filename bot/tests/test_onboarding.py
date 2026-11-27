@@ -196,7 +196,7 @@ class TestFirstContact:
         text = _plain(bot.of("send_message")[-1]["text"])
         assert "Ваши настройки:" in text
         labels = [b.text for b in keyboard_of(bot.of("send_message")[-1])]
-        assert labels == ["English", "✓ Русский"]
+        assert labels == ["English", "✓ Русский", "Назад"]
 
 
 class TestLanguageResolution:
