@@ -1,37 +1,214 @@
 {% extends "base.html" %}
 
-{% block title %} — admin · storage{% endblock %}
+{% block title %} — admin · cookies{% endblock %}
 
 {% block content %}
 <div class="page-head">
-  <h1 class="page-title">Storage</h1>
-  <p class="page-meta mono">Cookies · credentials</p>
+  <h1 class="page-title">Cookies</h1>
+  <p class="page-meta mono">Services · sign-in sessions</p>
 </div>
 
 {% include "_admin_tabs.html" %}
 
-<!-- Storage is a frame and an empty state for now: the cookies editor lands
-     here next, and the sidebar entry must already be a real page. -->
 <div class="panel-stack">
-  <section class="card panel" id="storage-card">
-    <div class="card-header panel-head">
-      <h2 class="card-title">Storage</h2>
-      <div class="card-actions">
-        <span class="limits-meta mono" id="storage-state">empty</span>
-      </div>
+
+<!-- Add a service and its first file -------------------------------------
+     One form does both jobs: the search field picks (or creates) the service
+     and the file field supplies the jar. The suggestions come from yt-dlp's
+     own extractor list as a native <datalist>, so the dropdown and the filter
+     work with JavaScript off and the field still accepts a name the list does
+     not carry. -->
+<section class="card panel" id="cookies-card">
+  <div class="card-header panel-head">
+    <h2 class="card-title">Cookie files</h2>
+    <div class="card-actions">
+      <span class="limits-meta mono" id="cookies-state">
+        {{ service_count }} service{{ "" if service_count == 1 else "s" }} ·
+        {{ cookies_total }} file{{ "" if cookies_total == 1 else "s" }}
+      </span>
+    </div>
+  </div>
+
+  <p class="limits-note" id="cookies-note">
+    Where the engine keeps what a site needs to let it in: a Netscape cookie
+    jar per account. A service may hold several files — they are tried in
+    order, and the next one is only used when the previous is refused.
+  </p>
+
+  {% if cookies_error %}
+  <p class="form-error" role="alert">{{ cookies_error }}</p>
+  {% endif %}
+  {% if cookies_notice %}
+  <p class="form-notice" role="status">{{ cookies_notice }}</p>
+  {% endif %}
+
+  <form method="post" action="/admin/cookies/add"
+        enctype="multipart/form-data" id="cookie-add-form" class="cookies-add">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+
+    <div class="cookies-cell cookies-cell--service">
+      <label class="limits-label mono" for="cookie-service">Service</label>
+      <input id="cookie-service"
+             name="service"
+             type="search"
+             list="service-suggestions"
+             class="limits-input cookies-input"
+             placeholder="reddit, instagram, 1tv.ru…"
+             autocomplete="off"
+             spellcheck="false"
+             required
+             aria-describedby="cookie-service-hint" />
+      {# yt-dlp's own extractor names: the same string the engine computes for
+         a URL, so a suggestion never misses the folder the engine looks in. #}
+      <datalist id="service-suggestions">
+        {% for name in all_services %}
+        <option value="{{ name }}"></option>
+        {% endfor %}
+      </datalist>
+      <span class="limits-hint" id="cookie-service-hint">
+        Pick a suggestion or type any name. Letters, digits, dot, dash.
+      </span>
     </div>
 
-    <p class="limits-note" id="storage-note">
-      Where the engine keeps what a site needs to let it in: cookies for a
-      logged-in account, nothing else. Empty means every download runs as a
-      guest and asks for a login on the sites that want one.
-    </p>
-
-    <div class="empty-state" id="storage-empty">
-      <span class="glyph" aria-hidden="true">空</span>
-      Nothing stored yet.<br />
-      Cookie management arrives in the next release.
+    <div class="cookies-cell cookies-cell--file">
+      <label class="limits-label mono" for="cookie-file">Cookie file</label>
+      <input id="cookie-file"
+             name="cookie_file"
+             type="file"
+             accept=".txt,text/plain"
+             class="cookies-file-input"
+             required
+             aria-describedby="cookie-file-hint" />
+      <span class="limits-hint" id="cookie-file-hint">
+        Netscape format · {{ max_cookie_kb }} KB max
+      </span>
     </div>
-  </section>
+
+    <button type="submit" class="btn btn-primary cookies-add-btn"
+            aria-label="Add this cookie file to the service">+</button>
+  </form>
+</section>
+
+<!-- One entry per service, its files in the order the engine tries them.
+
+     A list, not a table: each service is a full-width block whose file rows
+     open underneath it. A <details> inside a table cell cannot be made to fit
+     a 390px screen (its controls are wider than the column) — this layout is
+     the same at 390px and at 1440px. -->
+<section class="card panel" id="cookies-list-card">
+  <div class="card-header panel-head">
+    <h2 class="card-title">Stored services</h2>
+    <div class="card-actions">
+      <span class="limits-meta mono">order = retry order</span>
+    </div>
+  </div>
+
+  {% if services %}
+  <ul class="cookie-services">
+    {% for service in services %}
+    <li class="cookie-service-row">
+      <details class="cookies-details" {% if services|length == 1 %}open{% endif %}>
+        <summary class="cookies-summary">
+          <span class="cookie-service-name mono">{{ service.name }}</span>
+          <span class="cookie-service-count mono">
+            {{ service.count }} file{{ "" if service.count == 1 else "s" }}
+          </span>
+          <span class="badge {{ service.check_class }}">{{ service.check_label }}</span>
+          {% if service.checked_at %}
+          <span class="cookies-when mono">{{ service.checked_at[:16] }}</span>
+          {% endif %}
+          <span class="cookies-summary-hint mono" aria-hidden="true">files &amp; checks</span>
+        </summary>
+
+        <ol class="cookie-files">
+          {% for file in service.files %}
+          <li class="cookie-file">
+            <div class="cookie-file-head">
+              <span class="cookie-file-order mono" aria-hidden="true">{{ file.position }}</span>
+              <span class="cookie-file-name">{{ file.original_name }}</span>
+              <span class="cookie-file-size mono">{{ file.size }}</span>
+              <span class="badge {{ file.check_class }}">{{ file.check_label }}</span>
+
+              <span class="cookie-file-actions">
+                <form method="post" action="/admin/cookies/move" class="cookies-inline-form">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                  <input type="hidden" name="cookie_id" value="{{ file.id }}" />
+                  <input type="hidden" name="direction" value="up" />
+                  <button type="submit" class="btn btn-secondary cookie-icon-btn"
+                          {% if file.is_first %}disabled{% endif %}
+                          aria-label="Try {{ file.original_name }} earlier">↑</button>
+                </form>
+                <form method="post" action="/admin/cookies/move" class="cookies-inline-form">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                  <input type="hidden" name="cookie_id" value="{{ file.id }}" />
+                  <input type="hidden" name="direction" value="down" />
+                  <button type="submit" class="btn btn-secondary cookie-icon-btn"
+                          {% if file.is_last %}disabled{% endif %}
+                          aria-label="Try {{ file.original_name }} later">↓</button>
+                </form>
+                <form method="post" action="/admin/cookies/delete" class="cookies-inline-form">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                  <input type="hidden" name="cookie_id" value="{{ file.id }}" />
+                  <button type="submit" class="btn btn-danger cookie-icon-btn"
+                          aria-label="Delete {{ file.original_name }}">✕</button>
+                </form>
+              </span>
+            </div>
+
+            <div class="cookie-file-forms">
+              <form method="post" action="/admin/cookies/replace"
+                    enctype="multipart/form-data" class="cookie-file-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <input type="hidden" name="cookie_id" value="{{ file.id }}" />
+                <label class="cookies-sr-only" for="replace-{{ file.id }}">Replacement file for {{ file.original_name }}</label>
+                <input id="replace-{{ file.id }}"
+                       name="cookie_file"
+                       type="file"
+                       accept=".txt,text/plain"
+                       class="cookies-file-input cookies-file-input--compact"
+                       required />
+                <button type="submit" class="btn btn-secondary cookie-form-btn">Replace</button>
+              </form>
+
+              <form method="post" action="/admin/cookies/check" class="cookie-file-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <input type="hidden" name="cookie_id" value="{{ file.id }}" />
+                <label class="cookies-sr-only" for="probe-{{ file.id }}">URL to test {{ file.original_name }} with</label>
+                <input id="probe-{{ file.id }}"
+                       name="test_url"
+                       type="url"
+                       class="limits-input cookies-input cookies-probe-input"
+                       value="{{ service.probe_url }}"
+                       placeholder="https://… (a post page)"
+                       inputmode="url" />
+                <button type="submit" class="btn btn-secondary cookie-form-btn">Check</button>
+              </form>
+            </div>
+          </li>
+          {% endfor %}
+        </ol>
+
+        <form method="post" action="/admin/cookies/delete-service" class="cookies-delete-service">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          <input type="hidden" name="service" value="{{ service.name }}" />
+          <button type="submit" class="btn btn-danger cookie-form-btn"
+                  aria-label="Delete every cookie file of {{ service.name }}">
+            Delete service
+          </button>
+        </form>
+      </details>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="empty-state" id="cookies-empty">
+    <span class="glyph" aria-hidden="true">空</span>
+    Nothing stored yet.<br />
+    Add a service above when a site asks for a sign-in.
+  </div>
+  {% endif %}
+</section>
+
 </div>
+<!-- /panel-stack -->
 {% endblock %}

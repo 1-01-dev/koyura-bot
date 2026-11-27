@@ -1,6 +1,7 @@
 """Page routes for the Koyura admin dashboard."""
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from collections.abc import Iterable
@@ -19,6 +20,8 @@ import download_limits as limits_settings
 import message_catalog
 import message_templates
 import progress_fields
+import service_catalog
+import service_cookies
 
 router = APIRouter()
 
@@ -232,6 +235,88 @@ def _pretty_bound(value: float) -> str:
     return str(int(value)) if float(value) == int(value) else f"{value:g}"
 
 
+# ---------------------------------------------------------------------------
+# Admin: cookies (the Storage page)
+# ---------------------------------------------------------------------------
+
+def _cookies_notice(
+    *,
+    added: int = 0,
+    replaced: int = 0,
+    deleted: int = 0,
+    moved: str | None = None,
+    checked: str | None = None,
+    service: str | None = None,
+) -> str | None:
+    """The one green line a redirect may carry (``?added=1`` → a sentence)."""
+    name = service or ""
+    if added:
+        return f"Cookie file added{' for ' + name if name else ''}."
+    if replaced:
+        return "Cookie file replaced."
+    if deleted:
+        return f"Deleted {deleted} cookie file{'s' if deleted != 1 else ''}."
+    if moved:
+        return f"Order updated ({moved})."
+    if checked:
+        return f"Check finished: {checked}."
+    return None
+
+
+async def _cookies_context() -> dict:
+    """Every stored service, its jars in priority order, and the suggestions.
+
+    The template only ever sees names, sizes, positions and the last verdict;
+    a stored path is not part of the context, so a template cannot print one.
+    """
+    rows = await db.list_service_cookies()
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["service"]), []).append(row)
+
+    services = []
+    for name in sorted(grouped):
+        files = []
+        for row in grouped[name]:
+            label, badge = service_cookies.check_label(row.get("check_status"))
+            files.append({
+                "id": int(row["id"]),
+                "original_name": row.get("original_name") or "(no name)",
+                "size": service_cookies.human_size(row.get("size")),
+                "position": int(row.get("position") or 0) + 1,
+                "checked_at": row.get("checked_at"),
+                "check_label": label,
+                "check_class": badge,
+                "is_first": int(row.get("position") or 0) == 0,
+                "is_last": int(row.get("position") or 0) == len(grouped[name]) - 1,
+            })
+        # The table's "last check" column is the newest verdict of the service:
+        # checking jar #2 tells the operator more than the stale #1 result.
+        checked_rows = [row for row in grouped[name] if row.get("checked_at")]
+        newest = max(checked_rows, key=lambda row: str(row.get("checked_at")), default=None)
+        label, badge = service_cookies.check_label(
+            newest.get("check_status") if newest else None
+        )
+        services.append({
+            "name": name,
+            "files": files,
+            "count": len(files),
+            "check_label": label,
+            "check_class": badge,
+            "checked_at": newest.get("checked_at") if newest else None,
+            "probe_url": service_cookies.default_probe_url(name),
+        })
+
+    return {
+        "services": services,
+        "cookies_total": len(rows),
+        "service_count": len(services),
+        "suggestions": service_catalog.suggestions(limit=24),
+        "all_services": service_catalog.service_names(),
+        "max_cookie_kb": service_cookies.MAX_COOKIE_BYTES // 1024,
+    }
+
+
 def _languages_context(stored: dict[str, str], error: str | None = None,
                        notice: str | None = None) -> dict:
     """Template context for the Bot languages section.
@@ -405,17 +490,25 @@ async def _templates_error(
 #: tab strip both loop over this, so a new section is one row here plus a
 #: template — the navigation cannot drift from the routes.
 ADMIN_SECTIONS: tuple[dict[str, str], ...] = (
-    {"key": "storage", "label": "Storage", "href": "/admin/storage"},
+    {"key": "cookies", "label": "Cookies", "href": "/admin/cookies"},
     {"key": "limits", "label": "Limits", "href": "/admin/limits"},
     {"key": "bot", "label": "Bot settings", "href": "/admin/bot"},
     {"key": "system", "label": "System", "href": "/admin/system"},
 )
 
 ADMIN_SECTION_TEMPLATES = {
-    "storage": "admin_storage.html",
+    "cookies": "admin_cookies.html",
     "limits": "admin_limits.html",
     "bot": "admin_bot.html",
     "system": "admin_system.html",
+}
+
+#: A section that was renamed keeps its old path as a redirect. The owner has
+#: seen ``/admin/storage`` in a chat message and a bookmark, and a 404 there
+#: would read as "the feature is gone" — so an old path lands on the current
+#: page with a permanent redirect.
+ADMIN_SECTION_ALIASES: dict[str, str] = {
+    "storage": "cookies",
 }
 
 #: Where a bare ``/admin`` lands. System is the page that only reads: the first
@@ -618,6 +711,13 @@ async def admin_section_page(
     lang: str | None = None,
     template: int | None = None,
     templates_notice: str | None = None,
+    added: int = 0,
+    replaced: int = 0,
+    deleted: int = 0,
+    moved: str | None = None,
+    checked: str | None = None,
+    service: str | None = None,
+    cookies_error: str | None = None,
 ) -> Response:
     """One page per section; the query string only carries a notice.
 
@@ -627,6 +727,14 @@ async def admin_section_page(
     user = _require_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
+    # A renamed section keeps its old path alive: the owner has booked
+    # /admin/storage, and a 404 would read as "the page is gone".
+    alias = ADMIN_SECTION_ALIASES.get(section)
+    if alias is not None:
+        target = f"/admin/{alias}"
+        if request.query_params:
+            target = f"{target}?{request.query_params}"
+        return RedirectResponse(url=target, status_code=301)
     if section not in ADMIN_SECTION_TEMPLATES:
         return RedirectResponse(url=f"/admin/{ADMIN_HOME}", status_code=303)
 
@@ -636,7 +744,13 @@ async def admin_section_page(
         context.update(_system_context())
         return _render_admin(request, section, context)
 
-    if section == "storage":
+    if section == "cookies":
+        context.update(await _cookies_context())
+        context["cookies_notice"] = _cookies_notice(
+            added=added, replaced=replaced, deleted=deleted,
+            moved=moved, checked=checked, service=service,
+        )
+        context["cookies_error"] = cookies_error
         return _render_admin(request, section, context)
 
     if section == "limits":
@@ -1020,3 +1134,269 @@ async def reset_message_templates(request: Request) -> Response:
 def _pretty_value(value: float) -> str:
     number = float(value)
     return str(int(number)) if number == int(number) else f"{number:g}"
+
+
+# ---------------------------------------------------------------------------
+# Admin: cookie actions
+# ---------------------------------------------------------------------------
+#
+# Five POSTs, each a plain form so nothing depends on JavaScript: add a service
+# (search + "+" + upload), replace one jar, delete one jar, move one jar up or
+# down, and the "Check" run. They all share one prologue — session, CSRF, then a
+# redirect back to the page with a one-line notice, because a browser refresh
+# must not repeat an upload.
+
+#: Where a cookie action sends the browser back to, with its notice.
+def _cookies_redirect(**params: object) -> RedirectResponse:
+    query = "&".join(
+        f"{key}={value}" for key, value in params.items() if value not in (None, "", 0)
+    )
+    target = "/admin/cookies" + (f"?{query}" if query else "")
+    return RedirectResponse(url=target, status_code=303)
+
+
+async def _cookies_request(
+    request: Request,
+) -> tuple[str, FormData] | RedirectResponse:
+    """Session + CSRF for every cookie POST; a refusal is already a response."""
+    user = _require_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    form = await request.form()
+    submitted = str(form.get(auth.CSRF_FORM_FIELD, ""))
+    if not auth.verify_csrf(request, submitted):
+        return _cookies_redirect(
+            cookies_error="Your session expired. Reload the page and try again."
+        )
+    return user, form
+
+
+async def _read_upload(form: FormData) -> tuple[bytes, str]:
+    """The uploaded file's bytes and its original name.
+
+    ``python-multipart`` is a declared dependency, and a form with no file part
+    is a user error, not a crash: both cases raise a :class:`CookieError` whose
+    sentence is shown as-is.
+    """
+    upload = form.get("cookie_file")
+    filename = getattr(upload, "filename", None)
+    if not upload or not filename or isinstance(upload, str):
+        raise service_cookies.CookieError("Choose a cookie file to upload.")
+    data = await upload.read()
+    # The original name is shown back, so it is trimmed and bounded; it never
+    # becomes a path (the stored name is generated).
+    name = str(filename).replace("\\", "/").split("/")[-1][:120] or "cookies.txt"
+    return data, name
+
+
+@router.post("/admin/cookies/add")
+async def add_cookies(request: Request) -> Response:
+    """Add a service (if needed) and its first, or next, cookie file.
+
+    One form does both jobs because they are one decision: the search field
+    picks the service, the file field supplies the jar. A service that already
+    exists simply gains another jar — that is how an operator adds the second
+    account whose cookies should be tried after the first fails.
+    """
+    prologue = await _cookies_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    _user, form = prologue
+
+    try:
+        service = service_cookies.sanitise_service(form.get("service"))
+        data, original_name = await _read_upload(form)
+        stored_name, digest, size = service_cookies.write_cookie_file(service, data)
+    except service_cookies.CookieError as error:
+        return _cookies_redirect(cookies_error=str(error))
+    except OSError as error:
+        logging.getLogger("koyura.dashboard").warning(
+            "Could not store a cookie file for %s: %s", form.get("service"), error
+        )
+        return _cookies_redirect(
+            cookies_error="Could not write the cookie file. Check the COOKIES_PATH mount."
+        )
+
+    await db.add_service_cookie(
+        service=service,
+        stored_name=stored_name,
+        original_name=original_name,
+        size=size,
+        sha256=digest,
+    )
+    # One line per change: the service, the size, the hash prefix. Never a
+    # cookie, and never a hash long enough to be mistaken for one.
+    logging.getLogger("koyura.dashboard").info(
+        "cookie file added for %s (%d bytes, sha256 %.12s)", service, size, digest
+    )
+    return _cookies_redirect(added=1, service=service)
+
+
+@router.post("/admin/cookies/replace")
+async def replace_cookies(request: Request) -> Response:
+    """Swap the bytes behind one row, keeping its position in the order.
+
+    A refreshed jar must not jump to the end of the list: its place in the retry
+    order is the whole reason the operator arranged it. The old file is
+    removed only after the new one is on disk.
+    """
+    prologue = await _cookies_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    _user, form = prologue
+
+    raw_id = str(form.get("cookie_id") or "")
+    row = (
+        await db.get_service_cookie(int(raw_id))
+        if raw_id.isdigit()
+        else None
+    )
+    if row is None:
+        return _cookies_redirect(cookies_error="That cookie file no longer exists.")
+
+    try:
+        data, original_name = await _read_upload(form)
+        stored_name, digest, size = service_cookies.write_cookie_file(
+            str(row["service"]), data
+        )
+    except service_cookies.CookieError as error:
+        return _cookies_redirect(cookies_error=str(error))
+    except OSError:
+        return _cookies_redirect(
+            cookies_error="Could not write the cookie file. Check the COOKIES_PATH mount."
+        )
+
+    await db.update_service_cookie_file(
+        int(row["id"]),
+        stored_name=stored_name,
+        original_name=original_name,
+        size=size,
+        sha256=digest,
+    )
+    if stored_name != row["stored_name"]:
+        service_cookies.remove_cookie_file(str(row["service"]), row["stored_name"])
+    logging.getLogger("koyura.dashboard").info(
+        "cookie file replaced for %s (%d bytes)", row["service"], size
+    )
+    return _cookies_redirect(replaced=1, service=str(row["service"]))
+
+
+@router.post("/admin/cookies/delete")
+async def delete_cookies(request: Request) -> Response:
+    """Delete one jar from the database and from the disk."""
+    prologue = await _cookies_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    _user, form = prologue
+
+    raw_id = str(form.get("cookie_id") or "")
+    deleted = (
+        await db.delete_service_cookie(int(raw_id))
+        if raw_id.isdigit()
+        else None
+    )
+    if deleted is None:
+        return _cookies_redirect(cookies_error="That cookie file no longer exists.")
+    service_cookies.remove_cookie_file(str(deleted["service"]), deleted["stored_name"])
+    logging.getLogger("koyura.dashboard").info(
+        "cookie file deleted for %s", deleted["service"]
+    )
+    return _cookies_redirect(deleted=1, service=str(deleted["service"]))
+
+
+@router.post("/admin/cookies/move")
+async def move_cookies(request: Request) -> Response:
+    """Move one jar one step up or down inside its service."""
+    prologue = await _cookies_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    _user, form = prologue
+
+    raw_id = str(form.get("cookie_id") or "")
+    direction = str(form.get("direction") or "")
+    if not raw_id.isdigit() or direction not in ("up", "down"):
+        return _cookies_redirect(cookies_error="Unknown move.")
+    row = await db.get_service_cookie(int(raw_id))
+    if row is None:
+        return _cookies_redirect(cookies_error="That cookie file no longer exists.")
+    await db.move_service_cookie(int(raw_id), -1 if direction == "up" else 1)
+    return _cookies_redirect(moved=direction, service=str(row["service"]))
+
+
+@router.post("/admin/cookies/check")
+async def check_cookies(request: Request) -> Response:
+    """Run ``yt-dlp --simulate`` with one jar and store the verdict.
+
+    The run is synchronous on purpose: it takes a couple of seconds, and the
+    operator is waiting for exactly this answer. The URL is either the service's
+    own site (when its name is a domain) or whatever the operator typed, which
+    is why the form has a field for it — a bare extractor key has no site to
+    guess. The result is stored, so the table keeps it after a reload.
+    """
+    prologue = await _cookies_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    _user, form = prologue
+
+    raw_id = str(form.get("cookie_id") or "")
+    row = (
+        await db.get_service_cookie(int(raw_id))
+        if raw_id.isdigit()
+        else None
+    )
+    if row is None:
+        return _cookies_redirect(cookies_error="That cookie file no longer exists.")
+
+    url = str(form.get("test_url") or "").strip()
+    if not url:
+        url = service_cookies.default_probe_url(row["service"])
+    if not url:
+        return _cookies_redirect(
+            cookies_error="Enter the URL to test this service with (for example a post page)."
+        )
+    try:
+        service_cookies.check_probe_url(url)
+    except service_cookies.CookieError as error:
+        return _cookies_redirect(cookies_error=str(error))
+
+    try:
+        path = service_cookies.cookie_path(str(row["service"]), row["stored_name"])
+    except service_cookies.CookieError:
+        return _cookies_redirect(cookies_error="That cookie file no longer exists.")
+
+    status, detail = service_cookies.probe_cookie(path, url)
+    await db.record_cookie_check(int(row["id"]), status)
+    label, _badge = service_cookies.check_label(status)
+    logging.getLogger("koyura.dashboard").info(
+        "cookie check for %s: %s (%s)", row["service"], status, detail[:120] or "-"
+    )
+    return _cookies_redirect(checked=label, service=str(row["service"]))
+
+
+@router.post("/admin/cookies/delete-service")
+async def delete_cookie_service(request: Request) -> Response:
+    """Drop a whole service: every row, every file, and the empty directory."""
+    prologue = await _cookies_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    _user, form = prologue
+
+    try:
+        service = service_cookies.sanitise_service(form.get("service"))
+    except service_cookies.CookieError as error:
+        return _cookies_redirect(cookies_error=str(error))
+
+    removed = await db.delete_service(service)
+    for row in removed:
+        service_cookies.remove_cookie_file(service, row["stored_name"])
+    # Files the database never learned about (a crash between the write and the
+    # insert) still go: the operator asked for the service to be gone.
+    directory = service_cookies.cookies_root() / service
+    for orphan in service_cookies.service_files(service):
+        service_cookies.remove_cookie_file(service, orphan)
+    with contextlib.suppress(OSError):
+        directory.rmdir()
+    logging.getLogger("koyura.dashboard").info(
+        "cookie service deleted: %s (%d file(s))", service, len(removed)
+    )
+    return _cookies_redirect(deleted=max(1, len(removed)), service=service)
