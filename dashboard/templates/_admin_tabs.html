@@ -1,0 +1,12 @@
+{# The four admin sub-pages as a tab strip.
+
+   Same links as the sidebar group, repeated in the page: the rail is icon-only
+   between 768 and 1023px, and that is the only place the sub-pages would
+   otherwise be unreachable. #}
+<nav class="admin-tabs" aria-label="Admin sections">
+  {% for item in admin_links %}
+  <a class="admin-tab{% if item.key == admin_section %} active{% endif %}"
+     href="{{ item.href }}"
+     aria-current="{{ 'page' if item.key == admin_section else 'false' }}">{{ item.label }}</a>
+  {% endfor %}
+</nav>

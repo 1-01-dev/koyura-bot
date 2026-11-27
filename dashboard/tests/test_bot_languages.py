@@ -229,7 +229,7 @@ class TestBotSettingsApi:
 
 class TestAdminForm:
     def test_the_section_is_on_the_admin_page(self, admin):
-        page = admin.get("/admin")
+        page = admin.get("/admin/bot")
         assert page.status_code == 200
         body = page.text
         assert 'id="languages-card"' in body
@@ -242,7 +242,7 @@ class TestAdminForm:
         assert 'id="default-language"' in body
 
     def test_the_current_pair_is_reflected(self, admin):
-        body = admin.get("/admin").text
+        body = admin.get("/admin/bot").text
         assert 'value="en"' in body and 'value="ru"' in body
         assert "en, ru · default en" in body
 
@@ -257,7 +257,7 @@ class TestAdminForm:
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert response.headers["location"] == "/admin?languages_saved=1"
+        assert response.headers["location"] == "/admin/bot?languages_saved=1"
         stored = asyncio.run(_stored())
         assert stored["bot_settings.languages"] == "ru"
         assert stored["bot_settings.default_language"] == "ru"

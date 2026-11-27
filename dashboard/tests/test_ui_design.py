@@ -192,7 +192,11 @@ def test_favicon_exists_and_is_served():
     assert resp.content.startswith(b"<svg")
 
 
-@pytest.mark.parametrize("page", ["/login", "/", "/history", "/errors", "/admin"])
+@pytest.mark.parametrize(
+    "page",
+    ["/login", "/", "/history", "/errors", "/admin",
+     "/admin/storage", "/admin/limits", "/admin/bot", "/admin/system"],
+)
 def test_every_page_links_a_working_favicon(page: str):
     html = _client().get("/login").text if page == "/login" else _page(page)
     match = re.search(r'<link rel="icon" href="([^"]+)"', html)
@@ -357,11 +361,23 @@ def test_dashboard_keeps_the_ids_its_javascript_uses(element_id: str):
     assert f'id="{element_id}"' in html, f"#{element_id} disappeared from the dashboard"
 
 
+#: The four admin sub-pages, in sidebar order. Every one of them is a page of
+#: its own now, so the tests below name the page that owns the markup.
+ADMIN_PAGES = ("/admin/storage", "/admin/limits", "/admin/bot", "/admin/system")
+
+
 def test_admin_uses_data_action_hooks_and_no_inline_handlers():
-    html = _page("/admin")
+    html = _page("/admin/system")
     assert "onclick=" not in html, "inline handlers are blocked by the CSP"
     for action in ("delete-selected", "purge-open", "purge-close", "purge-confirm"):
         assert f'data-action="{action}"' in html
+
+
+def test_no_admin_page_carries_an_inline_handler():
+    for path in ADMIN_PAGES:
+        html = _page(path)
+        assert "onclick=" not in html, f"{path} has an inline handler"
+        assert "<script>" not in html, f"{path} has an inline script"
 
 
 def test_dashboard_js_wires_every_admin_data_action():
@@ -375,7 +391,7 @@ def test_dashboard_js_wires_every_admin_data_action():
 def test_admin_page_has_the_download_limits_contract():
     """The limits section is a plain form: no inline JS, server-side validation,
     a preset button per server size and the detected hardware underneath."""
-    html = _page("/admin")
+    html = _page("/admin/limits")
     for field in ("max_concurrent", "per_user_active", "per_user_queued",
                   "max_queue_length", "max_wait_seconds", "estimate_mbps"):
         assert f'name="{field}"' in html, field
@@ -387,7 +403,7 @@ def test_admin_page_has_the_download_limits_contract():
 
 
 def test_admin_page_keeps_its_destructive_confirmations():
-    html = _page("/admin")
+    html = _page("/admin/system")
     assert 'id="purge-modal"' in html
     assert 'id="purge-confirm"' in html
     assert 'id="select-all"' in html
@@ -426,7 +442,7 @@ def test_history_filters_and_pagination_contracts():
 
 
 def test_every_page_has_theme_toggle_and_footer():
-    for path in ("/", "/history", "/errors", "/admin"):
+    for path in ("/", "/history", "/errors", *ADMIN_PAGES):
         html = _page(path)
         assert 'id="theme-toggle"' in html, path
         assert "©2026 Koyura" in html, path
@@ -434,7 +450,7 @@ def test_every_page_has_theme_toggle_and_footer():
 
 
 def test_pages_load_the_shared_stylesheet():
-    for path in ("/", "/history", "/errors", "/admin", "/login"):
+    for path in ("/", "/history", "/errors", *ADMIN_PAGES, "/login"):
         html = _page(path) if path != "/login" else _client().get("/login").text
         assert "/static/koyura.css" in html, path
 

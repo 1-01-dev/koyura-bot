@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %} — admin · bot{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">Bot settings</h1>
+  <p class="page-meta mono">Languages · progress · messages</p>
+</div>
+
+{% include "_admin_tabs.html" %}
+
+{# Three long panels on one page: the anchor strip jumps to one without a
+   second router, and every link is a plain fragment so it works with JS off. #}
+<nav class="admin-anchors" aria-label="On this page">
+  <a class="admin-anchor" href="#languages-card">Languages</a>
+  <a class="admin-anchor" href="#progress-card">Progress fields</a>
+  <a class="admin-anchor" href="#templates-card">Message templates</a>
+</nav>
+
+<div class="panel-stack">
+
+{% include "_admin_languages.html" %}
+
+{% include "_admin_progress.html" %}
+
+{% include "_admin_templates.html" %}
+
+</div>
+<!-- /panel-stack -->
+{% endblock %}

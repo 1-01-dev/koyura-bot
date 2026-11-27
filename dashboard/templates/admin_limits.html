@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block title %} — admin · limits{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">Limits</h1>
+  <p class="page-meta mono">Slots · queue · timeout</p>
+</div>
+
+{% include "_admin_tabs.html" %}
+
+<div class="panel-stack">
+
+<!-- Download limits -->
+<section class="card panel" id="limits-card">
+  <div class="card-header panel-head">
+    <h2 class="card-title">Download limits</h2>
+    <div class="card-actions">
+      <span class="limits-meta mono" id="limits-state">
+        slots {{ limits.max_concurrent }} · queue {{ limits.max_queue_length }} · wait {{ limits.max_wait_seconds }} s
+      </span>
+    </div>
+  </div>
+
+  <div class="limits-presets panel-body" role="group" aria-label="Server presets">
+    {% for preset in presets %}
+    <button type="button"
+            class="preset-btn{% if preset.key == recommended_key %} preset-btn--recommended{% endif %}"
+            data-action="limit-preset"
+            data-preset='{{ preset.fields | tojson }}'
+            data-preset-label="{{ preset.label }}"
+            aria-pressed="false">
+      <span class="preset-label mono">{{ preset.label }}</span>
+      {% if preset.key == recommended_key %}
+      <span class="preset-tag mono">recommended</span>
+      {% endif %}
+    </button>
+    {% endfor %}
+  </div>
+
+  <p class="limits-note panel-body mono" id="hardware-line">
+    This server: {{ hardware.cpu }} vCPU · {{ hardware.memory_gb }} —
+    recommended preset:
+    {% for preset in presets %}{% if preset.key == recommended_key %}{{ preset.label }}{% endif %}{% endfor %}
+    · per-user active: {{ limits.per_user_active }}
+  </p>
+
+  {% if limits_error %}
+  <p class="form-error" role="alert">{{ limits_error }}</p>
+  {% endif %}
+  {% if limits_notice %}
+  <p class="form-notice" role="status">{{ limits_notice }}</p>
+  {% endif %}
+
+  <form method="post" action="/admin/limits" id="limits-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <div class="limits-grid">
+      {% for field in limit_fields %}
+      <div class="limits-cell">
+        <label class="limits-label mono" for="limit-{{ field.name }}">{{ field.label }}</label>
+        <input class="limits-input"
+               id="limit-{{ field.name }}"
+               name="{{ field.name }}"
+               type="number"
+               inputmode="decimal"
+               step="{% if field.name == 'estimate_mbps' %}0.1{% else %}1{% endif %}"
+               min="{{ field.min }}"
+               max="{{ field.max }}"
+               value="{{ field.value }}"
+               required
+               aria-describedby="hint-{{ field.name }}{% if field.hint %} note-{{ field.name }}{% endif %}" />
+        <span class="limits-hint mono" id="hint-{{ field.name }}">{{ field.unit }} · {{ field.min }}…{{ field.max }}</span>
+        {% if field.hint %}
+        <span class="limits-hint" id="note-{{ field.name }}">{{ field.hint }}</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+
+    <p class="limits-note mono" id="per-user-hint">
+      Per-user active: 1 — the fairest choice when more than one person uses the
+      bot (nobody can take every slot). 2 — faster for a single user: one person
+      holds both slots while everyone else waits.
+    </p>
+
+    <div class="limits-actions">
+      <button type="submit" class="btn btn-primary" id="limits-save">Save limits</button>
+      <span class="limits-note mono">applied to the engine immediately, no restart</span>
+    </div>
+  </form>
+</section>
+
+</div>
+<!-- /panel-stack -->
+{% endblock %}

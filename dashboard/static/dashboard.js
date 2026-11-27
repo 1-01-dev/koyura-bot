@@ -34,10 +34,13 @@ function bootDashboard() {
 }
 
 function bootAdmin() {
-  if (!document.getElementById('file-table')) return;
-  initSelectAll();
+  /* The admin page is four pages now: the file table and the purge dialog live
+     on /admin/system, the presets on /admin/limits, the editor on /admin/bot.
+     Each wiring starts on its own hook, so a page without that section costs
+     nothing and no section is skipped because one id is missing. */
   initAdminActions(ADMIN_ACTIONS);
-  initTemplates();
+  initSelectAll();
+  if (document.getElementById('templates-card')) initTemplates();
 }
 
 function boot() {
