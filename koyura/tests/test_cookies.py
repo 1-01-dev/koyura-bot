@@ -274,7 +274,9 @@ class TestRetryOrder:
         """The whole point of several files: the second one is tried."""
         attempted: list[str | None] = []
 
-        def fake_attempt(job_id, url, fmt, format_id, *, cookies_path):
+        def fake_attempt(
+            job_id, url, fmt, format_id, *, cookies_path, proxy_url=None
+        ):
             attempted.append(cookies_path)
             # Refuse the first jar, accept the second.
             return "auth" if cookies_path and cookies_path.endswith("one.txt") else "done"
@@ -300,7 +302,9 @@ class TestRetryOrder:
     def test_every_jar_refused_ends_with_cookies_required(self, monkeypatch):
         attempted: list[str | None] = []
 
-        def fake_attempt(job_id, url, fmt, format_id, *, cookies_path):
+        def fake_attempt(
+            job_id, url, fmt, format_id, *, cookies_path, proxy_url=None
+        ):
             attempted.append(cookies_path)
             return "auth"
 
@@ -325,7 +329,9 @@ class TestRetryOrder:
     def test_an_unrelated_failure_is_not_retried(self, monkeypatch):
         attempted: list[str | None] = []
 
-        def fake_attempt(job_id, url, fmt, format_id, *, cookies_path):
+        def fake_attempt(
+            job_id, url, fmt, format_id, *, cookies_path, proxy_url=None
+        ):
             attempted.append(cookies_path)
             return "failed"
 
@@ -342,7 +348,9 @@ class TestRetryOrder:
     def test_no_cookies_means_no_flag(self, monkeypatch):
         attempted: list[str | None] = []
 
-        def fake_attempt(job_id, url, fmt, format_id, *, cookies_path):
+        def fake_attempt(
+            job_id, url, fmt, format_id, *, cookies_path, proxy_url=None
+        ):
             attempted.append(cookies_path)
             return "done"
 
