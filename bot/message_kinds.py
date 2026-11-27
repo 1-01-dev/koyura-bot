@@ -342,7 +342,7 @@ KINDS: tuple[Kind, ...] = (
         media="caption",
         placeholders=(
             "title", "stage", "quality", "bar", "percent", "size", "speed",
-            "eta", "elapsed",
+            "eta", "elapsed", "facts",
         ),
         i18n_keys=("stage.starting", "stage.downloading", "stage.processing", "stage.uploading", "stage.converting", "progress.eta", "progress.elapsed"),
         templates=_templates(_progress),
