@@ -476,6 +476,54 @@ KINDS: tuple[Kind, ...] = (
         category="errors", media="text", placeholders=(),
         i18n_keys=("card.render_failed",), templates=_one_line("card.render_failed"),
     ),
+    # A streaming link (Spotify, Apple Music, Deezer) that cannot be replaced by
+    # a downloadable recording. One kind per reason the engine can give, so the
+    # owner can reword "not found" without touching "this needs an API key".
+    Kind(
+        id="track.not_found",
+        category="errors", media="text", placeholders=(),
+        i18n_keys=("track.not_found",), templates=_one_line("track.not_found"),
+    ),
+    Kind(
+        id="track.unsupported_type",
+        category="errors", media="text", placeholders=(),
+        i18n_keys=("track.unsupported_type",),
+        templates=_one_line("track.unsupported_type"),
+    ),
+    Kind(
+        id="track.unsupported_service",
+        category="errors", media="text", placeholders=(),
+        i18n_keys=("track.unsupported_service",),
+        templates=_one_line("track.unsupported_service"),
+    ),
+    Kind(
+        id="track.unsupported_site",
+        category="errors", media="text", placeholders=(),
+        i18n_keys=("track.unsupported_site",),
+        templates=_one_line("track.unsupported_site"),
+    ),
+    Kind(
+        id="track.drm_only",
+        category="errors", media="text", placeholders=(),
+        i18n_keys=("track.drm_only",), templates=_one_line("track.drm_only"),
+    ),
+    Kind(
+        id="track.metadata_failed",
+        category="errors", media="text", placeholders=(),
+        i18n_keys=("track.metadata_failed",),
+        templates=_one_line("track.metadata_failed"),
+    ),
+    Kind(
+        id="track.disabled",
+        category="errors", media="text", placeholders=(),
+        i18n_keys=("track.disabled",), templates=_one_line("track.disabled"),
+    ),
+    Kind(
+        id="track.no_candidates",
+        category="errors", media="text", placeholders=(),
+        i18n_keys=("track.no_candidates",),
+        templates=_one_line("track.no_candidates"),
+    ),
     Kind(
         id="intake.unsafe",
         category="errors", media="text", placeholders=(),

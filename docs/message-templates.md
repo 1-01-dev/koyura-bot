@@ -136,6 +136,14 @@ copying a default and moving a piece around.
 | Ошибки и отказы | Не удалось получить данные ссылки | `engine.info_failed` | text | 4096 | `@error` |
 | Ошибки и отказы | Ошибка движка | `engine.error` | text | 4096 | `@error` |
 | Ошибки и отказы | Не удалось показать карточку | `card.render_failed` | text | 4096 | — |
+| Ошибки и отказы | Трек не найден | `track.not_found` | text | 4096 | — |
+| Ошибки и отказы | Ссылка на альбом или плейлист | `track.unsupported_type` | text | 4096 | — |
+| Ошибки и отказы | Сервису нужен API-ключ | `track.unsupported_service` | text | 4096 | — |
+| Ошибки и отказы | Сайт не поддерживается | `track.unsupported_site` | text | 4096 | — |
+| Ошибки и отказы | Только DRM-варианты | `track.drm_only` | text | 4096 | — |
+| Ошибки и отказы | Не удалось прочитать метаданные | `track.metadata_failed` | text | 4096 | — |
+| Ошибки и отказы | Подмена источника выключена | `track.disabled` | text | 4096 | — |
+| Ошибки и отказы | Нет вариантов трека | `track.no_candidates` | text | 4096 | — |
 | Ошибки и отказы | Ссылка запрещена | `intake.unsafe` | text | 4096 | — |
 | Ошибки и отказы | Слишком много ссылок в сообщении | `intake.too_many` | text | 4096 | `@limit` |
 | Статистика | Статистика (/stats) | `stats` | text | 4096 | `@uptime`, `@downloads`, `@errors`, `@cached`, `@disk`, `@sessions`, `@version` |
@@ -967,6 +975,134 @@ Could not render this link. Try /mp4 or /mp3 instead.
 
 ```text
 Не удалось показать эту ссылку. Попробуйте /mp4 или /mp3.
+```
+
+### Трек не найден (`track.not_found`)
+
+`text` · limit 4096 · i18n: `track.not_found`
+
+#### en
+
+```text
+Could not find this track. Try another link or add the artist name.
+```
+
+#### ru
+
+```text
+Не удалось найти этот трек. Попробуйте другую ссылку или добавьте имя исполнителя.
+```
+
+### Ссылка на альбом или плейлист (`track.unsupported_type`)
+
+`text` · limit 4096 · i18n: `track.unsupported_type`
+
+#### en
+
+```text
+Only single tracks are supported so far — send the link to one song.
+```
+
+#### ru
+
+```text
+Пока поддерживаются только отдельные треки — пришлите ссылку на одну песню.
+```
+
+### Сервису нужен API-ключ (`track.unsupported_service`)
+
+`text` · limit 4096 · i18n: `track.unsupported_service`
+
+#### en
+
+```text
+This service needs an API key, so it is not supported yet.
+```
+
+#### ru
+
+```text
+Этому сервису нужен API-ключ, поэтому он пока не поддерживается.
+```
+
+### Сайт не поддерживается (`track.unsupported_site`)
+
+`text` · limit 4096 · i18n: `track.unsupported_site`
+
+#### en
+
+```text
+This site is not supported.
+```
+
+#### ru
+
+```text
+Этот сайт не поддерживается.
+```
+
+### Только DRM-варианты (`track.drm_only`)
+
+`text` · limit 4096 · i18n: `track.drm_only`
+
+#### en
+
+```text
+Every match for this track is DRM protected, so it cannot be downloaded.
+```
+
+#### ru
+
+```text
+Все найденные варианты этого трека защищены DRM, скачать их нельзя.
+```
+
+### Не удалось прочитать метаданные (`track.metadata_failed`)
+
+`text` · limit 4096 · i18n: `track.metadata_failed`
+
+#### en
+
+```text
+Could not read this track's details. Try again in a moment.
+```
+
+#### ru
+
+```text
+Не удалось прочитать данные трека. Попробуйте через минуту.
+```
+
+### Подмена источника выключена (`track.disabled`)
+
+`text` · limit 4096 · i18n: `track.disabled`
+
+#### en
+
+```text
+These links are not supported on this bot.
+```
+
+#### ru
+
+```text
+Такие ссылки на этом боте не поддерживаются.
+```
+
+### Нет вариантов трека (`track.no_candidates`)
+
+`text` · limit 4096 · i18n: `track.no_candidates`
+
+#### en
+
+```text
+No versions of this track were found.
+```
+
+#### ru
+
+```text
+Не нашлось ни одного варианта этого трека.
 ```
 
 ### Ссылка запрещена (`intake.unsafe`)

@@ -144,6 +144,31 @@ EN: dict[str, str] = {
     "card.label_value": "{label}: {value}",
     "card.via": "via Koyura",
     "card.best_quality": "Best quality",
+    # -- track links from a streaming service (Spotify, Apple Music, Deezer) ---
+    # The card shows the track's own metadata and says nothing about where the
+    # audio was found: the user sent a track, and a track is what arrives.
+    "card.track": "{artist} — {title}",
+    "card.pick_track": "Pick the version:",
+    # The three ways a track link cannot be served. Each says what the user can
+    # do instead; none of them repeats a yt-dlp error line.
+    "track.not_found": (
+        "Could not find this track. Try another link or add the artist name."
+    ),
+    "track.unsupported_type": (
+        "Only single tracks are supported so far — send the link to one song."
+    ),
+    "track.unsupported_service": (
+        "This service needs an API key, so it is not supported yet."
+    ),
+    "track.unsupported_site": "This site is not supported.",
+    "track.drm_only": (
+        "Every match for this track is DRM protected, so it cannot be downloaded."
+    ),
+    "track.metadata_failed": (
+        "Could not read this track's details. Try again in a moment."
+    ),
+    "track.disabled": "These links are not supported on this bot.",
+    "track.no_candidates": "No versions of this track were found.",
     # -- engine answers ----------------------------------------------------
     "engine.info_failed": "Failed to fetch info: {error}",
     "engine.error": "Error: {error}",
@@ -346,6 +371,28 @@ RU: dict[str, str] = {
     "card.label_value": "{label}: {value}",
     "card.via": "через Koyura",
     "card.best_quality": "Лучшее качество",
+    # -- ссылки на треки из стриминга (Spotify, Apple Music, Deezer) ----------
+    "card.track": "{artist} — {title}",
+    "card.pick_track": "Выберите версию:",
+    "track.not_found": (
+        "Не удалось найти этот трек. Попробуйте другую ссылку "
+        "или добавьте имя исполнителя."
+    ),
+    "track.unsupported_type": (
+        "Пока поддерживаются только отдельные треки — пришлите ссылку на одну песню."
+    ),
+    "track.unsupported_service": (
+        "Этому сервису нужен API-ключ, поэтому он пока не поддерживается."
+    ),
+    "track.unsupported_site": "Этот сайт не поддерживается.",
+    "track.drm_only": (
+        "Все найденные варианты этого трека защищены DRM, скачать их нельзя."
+    ),
+    "track.metadata_failed": (
+        "Не удалось прочитать данные трека. Попробуйте через минуту."
+    ),
+    "track.disabled": "Такие ссылки на этом боте не поддерживаются.",
+    "track.no_candidates": "Не нашлось ни одного варианта этого трека.",
     # -- engine answers ----------------------------------------------------
     "engine.info_failed": "Не удалось получить данные: {error}",
     "engine.error": "Ошибка: {error}",
