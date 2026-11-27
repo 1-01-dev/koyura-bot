@@ -257,11 +257,14 @@ def test_the_hamburger_keeps_its_id_and_control_attributes():
 def test_admin_groups_its_blocks_into_separate_panels():
     html = _page("/admin")
     assert 'class="panel-stack"' in html
-    assert html.count('class="card panel"') == 3
-    for title in ("Disk management", "System info", "Download limits"):
+    # Disk management, System info, Download limits and Bot languages: one
+    # frame and one header strip each, so the next panel costs no CSS.
+    assert html.count('class="card panel"') >= 4
+    assert html.count('class="card panel" id="limits-card"') == 1
+    assert html.count('class="card panel" id="languages-card"') == 1
+    for title in ("Disk management", "System info", "Download limits", "Bot languages"):
         assert title in html
-    # Each panel keeps a header strip, so the rule under a title is edge to edge.
-    assert html.count('class="card-header panel-head"') == 3
+    assert html.count('class="card-header panel-head"') >= 4
 
 
 def test_admin_keeps_the_limits_form_contract():
