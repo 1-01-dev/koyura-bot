@@ -423,6 +423,34 @@ textarea::placeholder {
   color: var(--ink);
 }
 
+/* A quality the deployment cannot send: shown, so the list keeps its shape,
+   struck through and inert. Hover does nothing — the reason lives in the
+   title and in the note beside the chips. */
+.q-chip--too-large,
+.q-chip:disabled {
+  color: var(--dim);
+  border-color: var(--line);
+  text-decoration: line-through;
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.q-chip--too-large:hover,
+.q-chip:disabled:hover {
+  color: var(--dim);
+  border-color: var(--line);
+  background: transparent;
+}
+
+/* One mono line beside the chips, when a format was withheld. */
+.card-note {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
 /* Failed extraction: the frame takes the accent, the glyph says why. */
 .card.card-error {
   border-color: var(--red);
