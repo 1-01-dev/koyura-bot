@@ -110,9 +110,17 @@ def sanitise_service(raw: object) -> str:
 
 
 def dashboard_url() -> str:
-    """Address of the admin panel (``KOYURA_DASHBOARD_URL``, else compose)."""
-    value = os.environ.get("KOYURA_DASHBOARD_URL", "").strip()
-    return (value or "http://dashboard:8080").rstrip("/")
+    """Address of the admin panel — ``egress``'s answer, so there is one rule.
+
+    ``egress`` owns the precedence (``KOYURA_DASHBOARD_URL``, then
+    ``DASHBOARD_URL``, then the compose host) because it is the module that was
+    silently wrong; asking it here keeps the two panel requests — the egress
+    rule and this registry — pointing at the same host instead of drifting
+    apart. Imported lazily: ``egress`` imports this module for its URL lookup.
+    """
+    import egress
+
+    return egress.dashboard_url()
 
 
 # ---------------------------------------------------------------------------

@@ -1743,6 +1743,9 @@ def validate_startup_config() -> None:
 
 if __name__ == "__main__":
     validate_startup_config()
+    # One INFO line naming the panel the egress rule comes from: the failure the
+    # operator hit was that this address was silently wrong.
+    egress.log_configuration()
     host = os.environ.get("HOST", "127.0.0.1")
     port = _env_int("PORT", 8899, minimum=1)
     app.run(host=host, port=port, threaded=True)

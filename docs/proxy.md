@@ -19,9 +19,45 @@ not the session. Routing the engine through another address does.
 | **Manual proxy** | `yt-dlp --proxy <url>` with the URL you typed. |
 | **WireGuard** | `yt-dlp --proxy socks5h://<socks>` — the SOCKS address the tunnel reports. |
 
-Only one mode is active at a time. The rule is applied per job, when the
-download starts, so a change reaches the next download within a minute (the
-panel's answer is cached by the engine for 45 s).
+Only one mode is active at a time. The rule is applied per job and per metadata
+lookup — the preview (`POST /api/info`) leaves through the same address the
+download would, so a page that only renders from the right IP is not refused on
+its card — and the panel's answer is cached by the engine for 45 s, so a change
+reaches the next job within a minute.
+
+## How the engine finds the panel
+
+The rule lives in the panel, so the engine has to know where the panel is. It
+reads two names, in this order:
+
+| Variable | Notes |
+| --- | --- |
+| `KOYURA_DASHBOARD_URL` | The engine's own name. Wins when both are set. |
+| `DASHBOARD_URL` | The name the bot and every native `/etc/koyura/koyura.env` already uses — what a native install normally relies on. |
+
+Neither set means `http://dashboard:8080`, the compose service address. On a
+native install that host does not exist, so a panel listening on
+`127.0.0.1:8090` must be named in `DASHBOARD_URL`; otherwise the engine cannot
+read the rule at all.
+
+Startup names the address it uses, in one line:
+
+```text
+INFO koyura.engine.egress: Egress panel: http://127.0.0.1:8090 (from DASHBOARD_URL)
+```
+
+When the panel cannot be read, the engine keeps the last good rule (or `off`)
+and — after three unreadable polls in a row — says so, once per three:
+
+```text
+WARNING koyura.engine.egress: Egress panel http://127.0.0.1:8090 could not be
+read 3 times in a row (Connection refused); the engine keeps using off. Check
+that the panel is running and that KOYURA_DASHBOARD_URL / DASHBOARD_URL names it.
+```
+
+A proxy that "does nothing" while `GET /api/egress` on the engine still answers
+`{"mode": "off"}` is almost always that line: the engine is asking the wrong
+host. Fix the variable, not the proxy.
 
 ## Manual proxy
 
@@ -153,6 +189,8 @@ address, the proxy is not being used; if it times out, the tunnel is down (see
 
 | Variable | Default | What it does |
 | --- | --- | --- |
+| `KOYURA_DASHBOARD_URL` | *(empty)* | Panel address the engine asks for the rule. Wins over `DASHBOARD_URL`. |
+| `DASHBOARD_URL` | `http://dashboard:8080` | Panel address, shared with the bot. Native runs must set it (`http://127.0.0.1:8090`). |
 | `EGRESS_PATH` | `/var/lib/koyura2/egress` | Where `wg0.conf` is written and `status.json` is read. Shared by the panel and the engine, and mounted by the host watcher. |
 
 The egress *rule* itself lives in the panel's database (`egress.*` in the

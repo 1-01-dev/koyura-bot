@@ -17,10 +17,14 @@ The panel is never reached: ``KOYURA_DASHBOARD_URL`` points at a closed port.
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
 import sys
 import tempfile
+import threading
 from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -75,6 +79,42 @@ def _payload(**overrides) -> dict:
     }
     payload.update(overrides)
     return payload
+
+
+@pytest.fixture()
+def panel() -> Iterator:
+    """A throwaway panel answering ``/api/egress``; returns its base URL.
+
+    The address comes from the environment, so a test can only prove that the
+    *right* variable is read by letting the module dial a real socket: a closed
+    port answers ``off``, the stub answers the rule it was given.
+    """
+    started: list[ThreadingHTTPServer] = []
+
+    def _serve(payload: dict | None = None) -> str:
+        answered = payload if payload is not None else _payload()
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - http.server's own name
+                body = json.dumps(answered).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - http.server's signature
+                """Stay quiet: pytest owns the output here."""
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        started.append(server)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
+    yield _serve
+    for server in started:
+        server.shutdown()
+        server.server_close()
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +294,125 @@ class TestCache:
         assert "reddit" in described
         assert "secret" not in described
         assert PROXY not in described
+
+
+# ---------------------------------------------------------------------------
+# Which panel is asked
+# ---------------------------------------------------------------------------
+
+class TestPanelAddress:
+    """The incident: the engine read a name the native install never sets.
+
+    ``KOYURA_DASHBOARD_URL`` is this service's own name and nothing but compose
+    could have set it; every ``/etc/koyura/koyura.env`` names the panel
+    ``DASHBOARD_URL``. The engine therefore asked ``http://dashboard:8080``,
+    failed, and kept ``off`` without a word.
+    """
+
+    def test_the_engine_name_wins_over_the_shared_one(self, monkeypatch):
+        monkeypatch.setenv("KOYURA_DASHBOARD_URL", "http://127.0.0.1:8090")
+        monkeypatch.setenv("DASHBOARD_URL", "http://127.0.0.1:8080")
+        assert egress.dashboard_url() == "http://127.0.0.1:8090"
+        assert egress.dashboard_source() == "KOYURA_DASHBOARD_URL"
+
+    def test_the_shared_name_is_read_when_the_engine_one_is_absent(self, monkeypatch):
+        monkeypatch.delenv("KOYURA_DASHBOARD_URL", raising=False)
+        monkeypatch.setenv("DASHBOARD_URL", "http://127.0.0.1:8090/")
+        # The trailing slash would double up with ``/api/egress``.
+        assert egress.dashboard_url() == "http://127.0.0.1:8090"
+        assert egress.dashboard_source() == "DASHBOARD_URL"
+
+    def test_the_compose_host_is_the_last_resort(self, monkeypatch):
+        for name in egress.DASHBOARD_URL_ENV_NAMES:
+            monkeypatch.delenv(name, raising=False)
+        assert egress.dashboard_url() == "http://dashboard:8080"
+        assert egress.dashboard_source() == "default"
+
+    def test_a_native_panel_address_is_actually_used(self, monkeypatch, panel):
+        """Only ``DASHBOARD_URL`` set: the rule the panel holds must apply."""
+        monkeypatch.delenv("KOYURA_DASHBOARD_URL", raising=False)
+        monkeypatch.setenv("DASHBOARD_URL", panel())
+        egress.reset_cache()
+        assert egress.rule().mode == "manual"
+        assert egress.proxy_for_url("https://www.reddit.com/r/x") == PROXY
+
+    def test_the_engine_name_still_wins_end_to_end(self, monkeypatch, panel):
+        """Both set: the panel at ``KOYURA_DASHBOARD_URL`` is the one dialled."""
+        monkeypatch.setenv("KOYURA_DASHBOARD_URL", panel())
+        # A closed port, so reading the wrong name cannot look like success.
+        monkeypatch.setenv("DASHBOARD_URL", "http://127.0.0.1:9")
+        egress.reset_cache()
+        assert egress.rule().mode == "manual"
+
+
+# ---------------------------------------------------------------------------
+# The log lines that make a silent panel visible
+# ---------------------------------------------------------------------------
+
+class TestDiagnostics:
+    def _lines(self, caplog, marker: str, level: int) -> list[logging.LogRecord]:
+        return [
+            record for record in caplog.records
+            if marker in record.getMessage() and record.levelno >= level
+        ]
+
+    def test_the_panel_address_is_named_once_at_startup(self, monkeypatch, caplog):
+        monkeypatch.delenv("DASHBOARD_URL", raising=False)
+        monkeypatch.setenv("KOYURA_DASHBOARD_URL", "http://127.0.0.1:8090")
+        with caplog.at_level(logging.INFO, logger="koyura.engine.egress"):
+            egress.log_configuration()
+            egress.log_configuration()
+        lines = self._lines(caplog, "Egress panel:", logging.INFO)
+        assert len(lines) == 1, "one line per process, not one per request"
+        assert "http://127.0.0.1:8090" in lines[0].getMessage()
+        assert "KOYURA_DASHBOARD_URL" in lines[0].getMessage()
+
+    def test_the_default_address_says_it_is_the_default(self, monkeypatch, caplog):
+        for name in egress.DASHBOARD_URL_ENV_NAMES:
+            monkeypatch.delenv(name, raising=False)
+        with caplog.at_level(logging.INFO, logger="koyura.engine.egress"):
+            egress.log_configuration()
+        line = self._lines(caplog, "Egress panel:", logging.INFO)[0].getMessage()
+        assert "http://dashboard:8080" in line
+        assert "default" in line
+
+    def test_three_unreadable_polls_in_a_row_warn(self, monkeypatch, caplog):
+        """Two misses are a restart; three are a panel the engine cannot see."""
+        monkeypatch.delenv("DASHBOARD_URL", raising=False)
+        monkeypatch.setenv("KOYURA_DASHBOARD_URL", "http://127.0.0.1:9")
+        with caplog.at_level(logging.WARNING, logger="koyura.engine.egress"):
+            for expected in (0, 0, 1):
+                monkeypatch.setattr(egress, "_expires", 0.0)
+                assert egress.rule().mode == "off"
+                warnings = self._lines(caplog, "could not be read", logging.WARNING)
+                assert len(warnings) == expected
+        message = self._lines(caplog, "could not be read", logging.WARNING)[0].getMessage()
+        assert "http://127.0.0.1:9" in message
+        assert "KOYURA_DASHBOARD_URL" in message
+
+    def test_a_recovered_panel_is_noted_and_stops_the_warning(
+        self, monkeypatch, caplog, panel
+    ):
+        monkeypatch.delenv("DASHBOARD_URL", raising=False)
+        monkeypatch.setenv("KOYURA_DASHBOARD_URL", "http://127.0.0.1:9")
+        with caplog.at_level(logging.INFO, logger="koyura.engine.egress"):
+            for _ in range(egress.FAILURE_WARN_THRESHOLD):
+                monkeypatch.setattr(egress, "_expires", 0.0)
+                egress.rule()
+            assert len(self._lines(caplog, "could not be read", logging.WARNING)) == 1
+
+            monkeypatch.setenv("KOYURA_DASHBOARD_URL", panel())
+            monkeypatch.setattr(egress, "_expires", 0.0)
+            assert egress.rule().mode == "manual"
+            assert self._lines(caplog, "answers again", logging.INFO), (
+                "a recovered panel has to be visible too"
+            )
+
+            # And the counter starts over: no warning on the next miss.
+            monkeypatch.setenv("KOYURA_DASHBOARD_URL", "http://127.0.0.1:9")
+            monkeypatch.setattr(egress, "_expires", 0.0)
+            egress.rule()
+            assert len(self._lines(caplog, "could not be read", logging.WARNING)) == 1
 
 
 # ---------------------------------------------------------------------------
