@@ -1,37 +1,43 @@
-"""The languages this bot offers, as the admin panel decides them.
+"""The bot's operator-set preferences: the languages it offers and the lines
+it draws in a progress message.
 
-The panel owns the setting (``bot_settings.languages`` /
-``bot_settings.default_language`` in its ``settings`` table); the bot only reads
-it from the internal API:
+The panel owns both settings (``bot_settings.*`` and ``bot_progress.*`` in its
+``settings`` table); the bot only reads them from the internal API:
 
     GET {DASHBOARD_URL}/api/bot-settings
     X-Internal-Token: ****
+
+    {"languages": ["en", "ru"], "default_language": "en",
+     "progress": {"show_title": true, "show_bar": true, ...}}
 
 Three properties matter more than the request itself:
 
 * **the bot works with the panel down.** A dashboard that is restarting must not
   take the chat down with it, so an unreachable panel (or a payload we cannot
   parse, or an empty language set) falls back to the built-in defaults
-  ``("en", "ru")`` with ``en`` as the default. The fallback is a normal state,
-  not an error: it is logged at DEBUG.
+  ``("en", "ru")`` with ``en`` as the default and title + bar for the progress
+  card. The fallback is a normal state, not an error: it is logged at DEBUG.
 * **one fetch per minute, not one per message.** Every message would otherwise
   cost a round trip before the bot could answer. The answer is cached for
   ``TTL_SECONDS``; a settings change in the panel reaches the bot within that
   window, which is what the owner expects from a preference.
 * **only the languages the code can render.** ``i18n`` knows ``en`` and ``ru``;
   an unknown code in the setting is dropped instead of producing a bot that
-  answers in a catalogue that does not exist.
+  answers in a catalogue that does not exist. The same rule applies to the
+  progress switches: an unknown or unreadable one is its default (see
+  ``progress_fields``), never an error.
 """
 from __future__ import annotations
 
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
 import i18n
+import progress_fields
 
 logger = logging.getLogger(__name__)
 
@@ -54,11 +60,14 @@ DEFAULT_LANGUAGE: str = i18n.DEFAULT_LANGUAGE
 
 @dataclass(frozen=True)
 class Settings:
-    """Enabled languages, in display order, plus the one used by default."""
+    """Enabled languages, their default, and the progress lines to draw."""
 
     languages: tuple[str, ...]
     default_language: str
     source: str = "fallback"
+    progress: progress_fields.Fields = field(
+        default_factory=progress_fields.defaults
+    )
 
     def resolve(self, choice: object) -> str:
         """The language to speak to one user: their choice, else the default.
@@ -78,7 +87,11 @@ class Settings:
 
 def defaults() -> Settings:
     """The built-in answer: used before the first fetch and when it fails."""
-    return Settings(languages=DEFAULT_LANGUAGES, default_language=DEFAULT_LANGUAGE)
+    return Settings(
+        languages=DEFAULT_LANGUAGES,
+        default_language=DEFAULT_LANGUAGE,
+        progress=progress_fields.defaults(),
+    )
 
 
 def _dashboard_url() -> str:
@@ -93,9 +106,10 @@ def _headers() -> dict[str, str]:
 def normalise_payload(payload: object) -> Settings:
     """Turn an API body into ``Settings``, dropping what cannot be rendered.
 
-    ``{"languages": ["en", "ru"], "default_language": "ru"}`` is the contract; an
-    unknown code is skipped, an empty result is the default set, and a default
-    that is not enabled becomes the first enabled language.
+    ``{"languages": ["en", "ru"], "default_language": "ru", "progress": {...}}``
+    is the contract; an unknown code is skipped, an empty result is the default
+    set, and a default that is not enabled becomes the first enabled language.
+    A body without ``progress`` (an older panel) gets the built-in fields.
     """
     if not isinstance(payload, dict):
         return defaults()
@@ -115,7 +129,12 @@ def normalise_payload(payload: object) -> Settings:
 
     wanted = i18n.normalise(payload.get("default_language"))
     default = wanted if wanted in enabled else enabled[0]
-    return Settings(languages=tuple(enabled), default_language=default, source="panel")
+    return Settings(
+        languages=tuple(enabled),
+        default_language=default,
+        source="panel",
+        progress=progress_fields.normalise(payload),
+    )
 
 
 async def fetch() -> Settings:
@@ -135,9 +154,10 @@ async def fetch() -> Settings:
         return defaults()
     settings = normalise_payload(payload)
     logger.debug(
-        "Bot settings from the panel: %s (default %s)",
+        "Bot settings from the panel: %s (default %s), progress: %s",
         ",".join(settings.languages),
         settings.default_language,
+        settings.progress.describe(),
     )
     return settings
 
