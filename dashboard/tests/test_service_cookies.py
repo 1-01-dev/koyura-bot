@@ -418,8 +418,12 @@ class TestPage:
         assert 'id="cookie-add-form"' in body
         assert 'enctype="multipart/form-data"' in body
         assert 'list="service-suggestions"' in body
-        # yt-dlp knows reddit; a suggestion must be there without a network call.
+        # The dropdown is populated from the built-in catalogue, so it is
+        # non-empty even in an image without yt-dlp (which is the Docker case).
         assert 'value="reddit"' in body
+        assert '<datalist id="service-suggestions">' in body
+        options = body.count("<option value=")
+        assert options >= 80, f"only {options} suggestions reached the page"
 
     def test_uploading_adds_the_row_and_the_file(self, admin):
         response = _upload(admin)
@@ -644,12 +648,105 @@ class TestSecrecy:
 # ---------------------------------------------------------------------------
 
 class TestSuggestions:
-    def test_the_list_comes_from_yt_dlp(self):
+    """The suggestion list must never be empty, with or without yt-dlp.
+
+    The dashboard image does not install yt-dlp (the engine owns it), so a
+    suite that only passes when the package is importable hides a real bug:
+    every Docker deployment would show an empty dropdown. Each test here
+    states which of the two sources it is exercising.
+    """
+
+    def test_the_list_is_never_empty(self):
+        """The whole point: a dropdown with nothing in it is the bug."""
         names = service_catalog.service_names()
-        assert "reddit" in names
-        assert "youtube" in names
-        # generic extractors are not services
-        assert "generic" not in names
+        assert names, "the suggestion list is empty"
+        assert len(names) >= 80, f"only {len(names)} services are suggested"
+
+    @pytest.mark.parametrize(
+        "service",
+        ["reddit", "youtube", "instagram", "tiktok", "twitter", "vimeo",
+         "soundcloud", "twitch", "facebook", "vk", "dailymotion", "bilibili",
+         "rumble", "lbry"],
+    )
+    def test_the_popular_services_are_always_suggested(self, service):
+        assert service in service_catalog.service_names(), service
+
+    def test_the_builtin_catalogue_alone_is_usable(self, monkeypatch):
+        """With yt-dlp unavailable, the built-in list still answers."""
+        monkeypatch.setattr(service_catalog, "_extractor_names", list)
+        service_catalog.reset_cache()
+        try:
+            names = service_catalog.service_names()
+            assert set(names) == set(service_catalog.FALLBACK_SERVICES)
+            assert "reddit" in names
+            assert len(names) >= 80
+        finally:
+            service_catalog.reset_cache()
+
+    def test_an_absent_yt_dlp_is_not_an_error(self, monkeypatch):
+        """The import is optional; a missing package must not raise."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def blocked(name, *args, **kwargs):
+            if name.startswith("yt_dlp"):
+                raise ImportError("No module named 'yt_dlp'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", blocked)
+        service_catalog.reset_cache()
+        try:
+            names = service_catalog.service_names()
+            assert names
+            assert "reddit" in names
+        finally:
+            service_catalog.reset_cache()
+
+    def test_a_present_yt_dlp_only_widens_the_list(self, monkeypatch):
+        """A yt-dlp release may rename an extractor; the brand still shows."""
+        monkeypatch.setattr(
+            service_catalog,
+            "_extractor_names",
+            lambda: ["some-new-site", "another.example"],
+        )
+        service_catalog.reset_cache()
+        try:
+            names = set(service_catalog.service_names())
+            assert {"some-new-site", "another.example"} <= names
+            assert set(service_catalog.FALLBACK_SERVICES) <= names
+        finally:
+            service_catalog.reset_cache()
+
+    def test_every_builtin_name_looks_like_a_service(self):
+        """No generic matcher and no empty or absurdly long entry."""
+        for name in service_catalog.FALLBACK_SERVICES:
+            assert name, "an empty name is in the catalogue"
+            assert name not in service_catalog._GENERIC, name
+            assert len(name) <= 64, name
+            assert name == name.strip().lower(), name
+
+    def test_the_catalogue_has_no_duplicates_and_is_sorted(self):
+        names = service_catalog.FALLBACK_SERVICES
+        assert list(names) == sorted(names), "the catalogue must be alphabetical"
+        assert len(names) == len(set(names)), "the catalogue carries a duplicate"
+
+    def test_the_builtin_names_are_real_yt_dlp_extractors(self):
+        """A name the engine never computes would be a folder it never reads.
+
+        Skipped when yt-dlp is not installed (the CI case): the catalogue is
+        still correct there, this test just cannot prove it. ``odysee`` is the
+        warning — it is ``lbry`` upstream, so ``lbry`` is the entry.
+        """
+        pytest.importorskip("yt_dlp")
+        from yt_dlp.extractor import gen_extractor_classes
+
+        real = {
+            str(getattr(extractor, "IE_NAME", "")).strip().lower().split(":")[0]
+            for extractor in gen_extractor_classes()
+        }
+        phantom = [n for n in service_catalog.FALLBACK_SERVICES if n not in real]
+        assert not phantom, f"not a yt-dlp extractor: {phantom}"
 
     def test_the_list_is_a_tuple_and_stable(self):
         first = service_catalog.service_names()
@@ -664,6 +761,13 @@ class TestSuggestions:
         found = service_catalog.suggestions("tube", limit=10)
         assert found
         assert all("tube" in name for name in found)
+
+    def test_a_prefix_match_comes_before_a_middle_match(self):
+        found = service_catalog.suggestions("you", limit=10)
+        assert found[0].startswith("you")
+
+    def test_the_search_is_case_insensitive(self):
+        assert service_catalog.suggestions("REDDIT", limit=3)[0] == "reddit"
 
     def test_an_empty_query_returns_a_bounded_list(self):
         assert len(service_catalog.suggestions(limit=5)) == 5
