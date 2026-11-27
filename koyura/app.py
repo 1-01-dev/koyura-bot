@@ -28,10 +28,13 @@ import uuid
 from flask import Flask, jsonify, render_template, request, send_file
 
 import download_queue
+import egress
 import media_meta
 import transcode
 from cookies import (
+    blocked_message,
     cookie_paths,
+    looks_blocked,
     looks_like_auth_failure,
     required_message,
     service_for_url,
@@ -678,11 +681,19 @@ def _do_download(job_id: str, url: str, format_choice: str, format_id: str | Non
     to confirm", a 403, a private video — moves on to the second. Any other
     failure is final on the first attempt: re-running a broken URL would only
     burn time and confuse the error the user gets.
+
+    The egress rule is resolved once, here, and travels with every attempt: the
+    panel's assignment decides whether this job leaves through a proxy, and it
+    is the same ``service`` the cookie lookup just used.
     """
     service = service_for_url(url)
+    proxy_url = egress.proxy_for_url(url)
     paths = cookie_paths(service) if service else []
     if not paths:
-        _attempt_download(job_id, url, format_choice, format_id, cookies_path=None)
+        _attempt_download(
+            job_id, url, format_choice, format_id,
+            cookies_path=None, proxy_url=proxy_url,
+        )
         return
 
     result = "failed"
@@ -693,7 +704,8 @@ def _do_download(job_id: str, url: str, format_choice: str, format_id: str | Non
             job_id, index + 1, len(paths), service,
         )
         result = _attempt_download(
-            job_id, url, format_choice, format_id, cookies_path=path
+            job_id, url, format_choice, format_id,
+            cookies_path=path, proxy_url=proxy_url,
         )
         if result != "auth":
             return
@@ -721,16 +733,21 @@ def _attempt_download(
     format_id: str | None,
     *,
     cookies_path: str | None,
+    proxy_url: str | None = None,
 ) -> str:
     """Run yt-dlp once and return ``done``, ``failed`` or ``auth``.
 
     ``auth`` means the failure looks like a refused session, so the caller may
     try the next cookie jar; everything else is terminal and already recorded
-    on the job.
+    on the job. ``proxy_url`` is the egress rule's answer for this service —
+    empty for a direct connection — and the URL itself is never logged.
     """
     cmd = _build_download_cmd(job_id, url, format_choice, format_id)
     if cookies_path:
         cmd = with_cookies(cmd, cookies_path)
+    if proxy_url:
+        cmd = egress.with_proxy(cmd, proxy_url)
+        logger.info("Job %s: leaving through the configured proxy", job_id)
     logger.info("Job %s: starting download", job_id)
 
     process = subprocess.Popen(
@@ -818,9 +835,28 @@ def _attempt_download(
 
     if returncode != 0:
         _cleanup_partial_files(job_id)
+        # A *blocked address* is checked first and is terminal: the same 403
+        # would greet the next cookie jar, so retrying only costs a minute and
+        # ends in the wrong advice ("add cookies") for a problem cookies cannot
+        # fix. The job carries its own code and sentence instead.
+        joined = "\n".join(stderr_lines[-20:])
+        if looks_blocked(joined):
+            service = service_for_url(url)
+            _job_update(
+                job_id,
+                status="error",
+                error=blocked_message(service),
+                error_code="service_blocked",
+                cookies_service=service,
+            )
+            logger.info(
+                "Job %s: %s is refusing this IP (proxy needed)",
+                job_id, service or "the site",
+            )
+            return "blocked"
         # A refused session is the one failure worth retrying with another jar;
         # the job stays ``downloading`` so the next attempt owns the outcome.
-        if cookies_path and looks_like_auth_failure("\n".join(stderr_lines[-20:])):
+        if cookies_path and looks_like_auth_failure(joined):
             logger.info("Job %s: cookie file refused, trying the next one", job_id)
             return "auth"
         _job_update(job_id, status="error", error=last_stderr or "Unknown error")
@@ -1434,6 +1470,20 @@ def service_cookies(service: str):
         "files": [os.path.basename(path) for path in paths],
         "count": len(paths),
     })
+
+
+@app.route("/api/egress")
+def egress_rule():
+    """The outbound rule the panel configured (internal, read-only).
+
+    ``{mode, proxy_url, wg_socks, assignment: {mode, services[]}}``. The engine
+    polls this and caches it for 45 s; ``proxy_url`` is the only field that can
+    carry a secret, it travels over the shared token on the internal network,
+    and it is never logged (``egress.Rule.describe`` prints the mode and the
+    scope only). A panel that never configured anything answers ``mode: off``,
+    which the engine treats exactly like an unreachable panel: direct.
+    """
+    return jsonify(egress.rule().as_payload())
 
 
 @app.route("/api/settings", methods=["POST"])

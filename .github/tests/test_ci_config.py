@@ -368,3 +368,38 @@ def test_both_services_are_told_where_the_cookies_live(compose):
     for service in ("dashboard", "koyura-engine"):
         environment = compose["services"][service]["environment"]
         assert environment["COOKIES_PATH"] == "/var/lib/koyura2/cookies", service
+
+
+def test_the_egress_tree_is_mounted_for_the_panel_and_the_engine(compose):
+    """The panel writes wg0.conf, the host watcher applies it, the engine reads it.
+
+    Same shape as the cookie tree: one volume, two containers, and the engine
+    read-only because it never applies a tunnel itself.
+    """
+    dashboard = compose["services"]["dashboard"]["volumes"]
+    engine = compose["services"]["koyura-engine"]["volumes"]
+
+    dashboard_mounts = [v for v in dashboard if "egress" in v]
+    engine_mounts = [v for v in engine if "egress" in v]
+    assert dashboard_mounts, "the dashboard must mount the egress tree to write it"
+    assert engine_mounts, "the engine must mount the egress tree to read status.json"
+
+    assert dashboard_mounts[0].endswith(":/var/lib/koyura2/egress"), dashboard_mounts
+    assert engine_mounts[0].endswith(":/var/lib/koyura2/egress:ro"), engine_mounts
+    assert "egress" in compose["volumes"], "the volume must be declared"
+
+
+def test_both_services_are_told_where_the_egress_tree_lives(compose):
+    """One name, both containers: the panel and the engine agree on the path."""
+    for service in ("dashboard", "koyura-engine"):
+        environment = compose["services"][service]["environment"]
+        assert environment["EGRESS_PATH"] == "/var/lib/koyura2/egress", service
+
+
+def test_the_egress_config_is_not_in_the_purgeable_downloads_tree(compose):
+    """wg0.conf carries a private key; a purge must never be able to delete it."""
+    for service in ("dashboard", "koyura-engine"):
+        mounts = compose["services"][service]["volumes"]
+        egress = [v for v in mounts if "egress" in v]
+        assert egress, service
+        assert not any("/downloads" in mount for mount in egress)

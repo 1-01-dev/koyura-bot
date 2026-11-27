@@ -176,6 +176,17 @@ EN: dict[str, str] = {
         "{service} refused every stored cookie file — upload a fresh one in the "
         "panel → Storage."
     ),
+    # The site refused the server's address, not the session. Deliberately does
+    # not mention cookies: advice that cannot work is worse than none.
+    "download.service_blocked": (
+        "{service} blocks the server's IP address — a proxy is needed. "
+        "Cookies will not help."
+    ),
+    "download.service_blocked_admin": (
+        "{service} blocks the server's IP address — route the engine through a "
+        "proxy in the panel: {panel_link}"
+    ),
+    "download.proxy_panel_link": "open Proxy",
     "download.retry_hint": "Tap a format to try again.",
     "download.busy_user": "You already have a download running. Try again in {when}.",
     "download.busy_service": "The service is overloaded right now — try again in {when}.",
@@ -365,6 +376,15 @@ RU: dict[str, str] = {
         "{service} отклонил все сохранённые файлы cookies — загрузите новый в "
         "панели → Storage."
     ),
+    "download.service_blocked": (
+        "{service} блокирует IP-адрес сервера — нужен прокси. "
+        "Cookies здесь не помогут."
+    ),
+    "download.service_blocked_admin": (
+        "{service} блокирует IP-адрес сервера — направьте движок через прокси в "
+        "панели: {panel_link}"
+    ),
+    "download.proxy_panel_link": "открыть Proxy",
     "download.retry_hint": "Нажмите формат, чтобы попробовать снова.",
     "download.busy_user": "У вас уже идёт загрузка. Повторите через {when}.",
     "download.busy_service": "Сервис перегружен — повторите через {when}.",

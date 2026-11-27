@@ -14,6 +14,7 @@ from pydantic import BaseModel
 import auth
 import bot_languages
 import db
+import egress
 import message_catalog
 import message_templates
 
@@ -198,6 +199,29 @@ async def bot_settings(request: Request) -> dict[str, Any]:
         # not find here, so an empty object is a valid answer.
         "templates": message_templates.active_bodies(rows),
     }
+
+
+# ---------------------------------------------------------------------------
+# Egress rule (internal, read-only)
+# ---------------------------------------------------------------------------
+
+@router.get("/api/egress")
+async def egress_rule(request: Request) -> dict[str, Any]:
+    """The outbound proxy rule the engine applies to the next job.
+
+    ``{mode, proxy_url, wg_socks, assignment: {mode, services[]}}``. This is the
+    only endpoint that carries the proxy URL itself — a password lives in it —
+    so it is behind the shared internal token and never logged. A WireGuard mode
+    sends the SOCKS address the watcher reported and ``""`` when the tunnel is
+    not up, so a dead tunnel degrades to a direct connection instead of a broken
+    proxy.
+    """
+    if not _internal_token_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    stored = await db.get_settings(prefix=egress.SETTING_PREFIX)
+    settings = egress.Egress.from_row(stored)
+    return settings.as_engine_payload(egress.read_status())
 
 
 # ---------------------------------------------------------------------------

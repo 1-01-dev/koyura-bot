@@ -20,6 +20,8 @@ services:
       PORT: "8899"
       DOWNLOADS_PATH: /downloads
       COOKIES_PATH: /var/lib/koyura2/cookies
+      # Where the panel writes wg0.conf; the engine reads status.json from it.
+      EGRESS_PATH: /var/lib/koyura2/egress
       MAX_CONCURRENT_DOWNLOADS: ${MAX_CONCURRENT_DOWNLOADS:-2}
       PER_USER_MAX_ACTIVE: ${PER_USER_MAX_ACTIVE:-1}
       PER_USER_MAX_QUEUED: ${PER_USER_MAX_QUEUED:-1}
@@ -50,6 +52,9 @@ services:
       # The cookie jars the panel writes; read-only because only the panel may
       # add or delete one. Same path inside both containers.
       - cookies:/var/lib/koyura2/cookies:ro
+      # The WireGuard config and its status: the panel writes, the host watcher
+      # applies. Read-only here — the engine only reads status.json.
+      - egress:/var/lib/koyura2/egress:ro
     networks:
       - internal
     cap_drop:
@@ -138,6 +143,7 @@ services:
       DB_PATH: /data/koyura_bot.db
       DOWNLOADS_PATH: /downloads
       COOKIES_PATH: /var/lib/koyura2/cookies
+      EGRESS_PATH: /var/lib/koyura2/egress
       KOYURA_ENGINE_URL: http://koyura-engine:8899
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN is required}
       CLEANUP_MAX_DISK_MB: ${CLEANUP_MAX_DISK_MB:-5000}
@@ -151,6 +157,10 @@ services:
       # The cookie jars live outside the purgeable downloads volume: the bot's
       # cleanup and the panel's purge must never delete a sign-in session.
       - cookies:/var/lib/koyura2/cookies
+      # The WireGuard config the host watcher applies, and the status.json it
+      # writes back. The panel is the only writer; the watcher (root) reads it
+      # through this volume's host path.
+      - egress:/var/lib/koyura2/egress
     # Loopback only: the admin panel must never be reachable from the LAN.
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-8080}:8080"
@@ -182,6 +192,9 @@ volumes:
   # Service cookie jars: written by the panel, read by the engine. Deliberately
   # not the downloads volume, which is purged on a schedule.
   cookies:
+  # The egress tree: wg0.conf written by the panel, status.json written by the
+  # host's koyura-egress.path watcher. Shared so both see the same files.
+  egress:
   # Queue throughput EWMA; deliberately separate from the purgeable downloads.
   koyura-engine-state:
 

@@ -527,10 +527,16 @@ async def _advance(job: Job, context: ContextTypes.DEFAULT_TYPE, stage, *, direc
 
     if status.get("status") == "error":
         # A spent cookie session has its own sentence: "add cookies for Reddit"
-        # is actionable, the raw yt-dlp line is not. The message is built from
-        # the service the engine named, so nothing here knows a site's name.
+        # is actionable, the raw yt-dlp line is not. A *blocked address* is the
+        # other special case: it also arrives as a 403, but cookies cannot fix
+        # it and the sentence has to say so. Both are built from the service the
+        # engine named, so nothing here knows a site's name.
         if cookie_help.needs_cookies(status):
             detail = cookie_help.message(
+                status, user_id=job.user_id, lang=job.lang
+            )
+        elif cookie_help.is_blocked(status):
+            detail = cookie_help.blocked_message(
                 status, user_id=job.user_id, lang=job.lang
             )
         else:
