@@ -147,14 +147,22 @@ The engine classifies the failure before it retries anything:
   *"Reddit blocks the server's IP address — a proxy is needed. Cookies will not
   help."* — it does not try the next cookie jar, because another jar answers the
   same 403.
-* the genuine sign-in markers (`sign in to confirm`, `login required`, `this
-  video is private`, `age-restricted`, and a plain `http error 403` with none of
-  the blocked words above) stay `cookies_required`: *"add a cookie file"*.
+* the genuine sign-in markers (`sign in to confirm`, `login required`,
+  `account authentication is required` — Reddit's preview line — `this video is
+  private`, `age-restricted`, and a plain `http error 403` with none of the
+  blocked words above) stay `cookies_required`: *"add a cookie file"*.
 
 **Admin → Cookies** shows the same distinction. A check that ends in
 `blocked · needs another IP` is a note about the server, not about the file —
 re-uploading the jar will not clear it. Fix it on this page, then re-run the
 check.
+
+The preview (`POST /api/info`) answers with the same two codes, because the
+first request a user makes is the metadata lookup: a blocked address returns
+`code: "service_blocked"` there too, and a service whose jars were all refused
+(or that has none) returns `code: "cookies_required"` with the sentence the bot
+shows instead of the raw yt-dlp line. The preview never burns a second jar on a
+blocked address.
 
 ## Checking the external IP without the panel
 

@@ -315,11 +315,15 @@ PROBE_TIMEOUT_SECONDS = 45.0
 
 #: Substrings yt-dlp (or the site) emits when the session is not good enough.
 #: Mirrors ``koyura/cookies.py``; a jar that fails this way is "needs sign-in",
-#: which is a different sentence from "the URL was wrong".
+#: which is a different sentence from "the URL was wrong". Reddit's preview text
+#: (``Account authentication is required``) is included for the same reason the
+#: engine needs it: a spent jar has to be recognised as a spent jar.
 AUTH_MARKERS = (
     "sign in to confirm",
     "login required",
     "log in to confirm",
+    "account authentication is required",
+    "authentication required",
     "private video",
     "this video is private",
     "http error 403",

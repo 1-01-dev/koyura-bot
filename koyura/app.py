@@ -33,7 +33,9 @@ import media_meta
 import transcode
 from cookies import (
     blocked_message,
+    blocked_payload,
     cookie_paths,
+    cookie_required_payload,
     looks_blocked,
     looks_like_auth_failure,
     required_message,
@@ -541,6 +543,28 @@ def _yt_dlp_cmd(*args: str) -> list[str]:
     found there even though it works in an interactive shell.
     """
     return [sys.executable, "-m", "yt_dlp", *args]
+
+
+def _build_info_cmd(
+    url: str,
+    *,
+    cookies_path: str | None = None,
+    proxy_url: str = "",
+) -> list[str]:
+    """yt-dlp's argument vector for one metadata lookup.
+
+    The flags are the ones the download path uses, for the same reasons: a
+    ``--cookies`` jar when the service has one, and ``--proxy`` when the
+    panel's egress rule covers this service. Both are options in the option
+    block, so the URL stays last. With neither the command is the plain one
+    this endpoint always ran.
+    """
+    cmd = _yt_dlp_cmd("--no-playlist", "-j", "--no-warnings", url)
+    if cookies_path:
+        cmd = with_cookies(cmd, cookies_path)
+    if proxy_url:
+        cmd = egress.with_proxy(cmd, proxy_url)
+    return cmd
 
 
 def _build_download_cmd(job_id: str, url: str, format_choice: str, format_id: str | None) -> list[str]:
@@ -1265,29 +1289,66 @@ def index():
 
 @app.route("/api/info", methods=["POST"])
 def get_info():
+    """Metadata for one URL, trying the service's cookie jars in order.
+
+    The download path has always retried with the next jar; the preview did
+    not, so a service that answers "account authentication is required" before
+    any download starts (Reddit) failed on the card the user never got, with a
+    cookie file sitting in the panel. The jars, their order and the retry rule
+    are therefore the same here: the panel's first file first, and only an
+    authorization failure moves on to the second. The egress rule travels with
+    every attempt, exactly as it does for a download.
+    """
     data = request.get_json(silent=True) or {}
     try:
         url = validate_url(data.get("url"))
     except UnsafeURLError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    rc, stdout, stderr, timed_out = _run_capture(
-        _yt_dlp_cmd("--no-playlist", "-j", "--no-warnings", url),
-        timeout=INFO_TIMEOUT,
-    )
-    if timed_out:
-        return jsonify({"error": "Timed out fetching video info"}), 400
+    service = service_for_url(url)
+    proxy_url = egress.proxy_for_url(url)
+    paths = cookie_paths(service) if service else []
+    # With no jar the endpoint makes one plain attempt, as it always did; the
+    # loop shape only exists so the retry order has a single owner.
+    attempts: list[str | None] = list(paths) or [None]
+    tried = 0
+    rc, stdout, stderr = 0, "", ""
+    for cookies_path in attempts:
+        if cookies_path:
+            tried += 1
+            # The jar path is a name, never its content: safe to log.
+            logger.info(
+                "Info: attempt %d/%d with cookies for %s",
+                tried, len(paths), service,
+            )
+        rc, stdout, stderr, timed_out = _run_capture(
+            _build_info_cmd(url, cookies_path=cookies_path, proxy_url=proxy_url),
+            timeout=INFO_TIMEOUT,
+        )
+        if timed_out:
+            return jsonify({"error": "Timed out fetching video info"}), 400
+        if rc == 0:
+            break
+        # A refused *address* is terminal here too: another jar answers the
+        # same 403, and "add cookies" would be the wrong advice for it.
+        if service and looks_blocked(stderr):
+            logger.info("Info: %s is refusing this IP (proxy needed)", service)
+            return jsonify(blocked_payload(service)), 400
+        # Only a refused session is worth the next jar.
+        if not (cookies_path and looks_like_auth_failure(stderr)):
+            break
+    else:
+        # Every jar was refused: the operator has to add a working one, and the
+        # bot turns the code into "this service needs cookies".
+        logger.info("Info: cookies_required for %s after %d file(s)", service, tried)
+        return jsonify(cookie_required_payload(service, tried)), 400
+
     if rc != 0:
+        # A service with no jar at all gets the same answer — add one — instead
+        # of a raw yt-dlp line: the operator can fix it, and the bot says so.
+        if service and looks_like_auth_failure(stderr):
+            return jsonify(cookie_required_payload(service, tried)), 400
         message = (stderr or "").strip().split("\n")[-1] if stderr else "Unknown error"
-        # A refusal that wants a session is the one info failure the operator
-        # can fix; saying so here saves a round of "it just says 403".
-        service = service_for_url(url)
-        if service and not cookie_paths(service) and looks_like_auth_failure(stderr):
-            return jsonify({
-                "error": required_message(service),
-                "code": "cookies_required",
-                "service": service,
-            }), 400
         return jsonify({"error": message}), 400
 
     try:

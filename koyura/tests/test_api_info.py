@@ -16,12 +16,24 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("INTERNAL_API_TOKEN", "test-internal-token-0123456789abcdef")
 os.environ.setdefault("DOWNLOADS_PATH", tempfile.mkdtemp())
 os.environ.setdefault("MAX_CONCURRENT_DOWNLOADS", "3")
+# Never let a test reach a real panel: the egress rule and the cookie registry
+# would both dial it. A closed port answers "direct" immediately.
+os.environ.setdefault("KOYURA_DASHBOARD_URL", "http://127.0.0.1:9")
 
 import pytest  # noqa: E402
 
 import app as koyura_app  # noqa: E402
+import egress  # noqa: E402
 
 HEADERS = {"X-Internal-Token": os.environ["INTERNAL_API_TOKEN"]}
+
+#: A service that wants a session before it answers anything: Reddit refuses the
+#: *preview* with exactly this line, which is why the cookie retry has to exist on
+#: /api/info — and why the line has to be recognised as an auth failure at all.
+REDDIT_URL = "https://www.reddit.com/r/interestingasfuck/comments/abc/x/"
+AUTH_STDERR = (
+    "ERROR: [Reddit] abc: Account authentication is required to view this post"
+)
 
 #: The URL the request body carries; the engine only validates its shape here.
 SAMPLE_URL = "https://www.youtube.com/watch?v=Ke6XX8FHOHM"
@@ -142,3 +154,143 @@ class TestInfoPayload:
                 "/api/info", json={"url": "https://www.youtube.com/watch?v=x"},
             )
         assert resp.status_code == 401
+
+
+class TestInfoCookies:
+    """The preview has to try the jars the download path already tries.
+
+    Live failure: jars uploaded in the panel, and Reddit answered /api/info with
+    "Account authentication is required" because the command carried no
+    ``--cookies`` at all.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_panel(self, monkeypatch):
+        """A direct connection unless a test asks for something else."""
+        egress.reset_cache()
+        monkeypatch.setattr(egress, "proxy_for_url", lambda url: "")
+        yield
+        egress.reset_cache()
+
+    def _run(self, monkeypatch, results, paths):
+        """Call /api/info with yt-dlp scripted; returns (responses, commands)."""
+        commands: list[list[str]] = []
+        scripted = list(results)
+
+        def fake_run(cmd, timeout):
+            commands.append(cmd)
+            return scripted.pop(0)
+
+        monkeypatch.setattr(koyura_app, "_run_capture", fake_run)
+        monkeypatch.setattr(koyura_app, "cookie_paths", lambda service: list(paths))
+        client = koyura_app.app.test_client()
+        response = client.post("/api/info", json={"url": REDDIT_URL}, headers=HEADERS)
+        return response, commands
+
+    def test_a_jar_reaches_the_command(self, monkeypatch):
+        response, commands = self._run(
+            monkeypatch,
+            [(0, json.dumps(YTDLP_JSON), "", False)],
+            ["/cookies/reddit/one.txt"],
+        )
+        assert response.status_code == 200
+        assert len(commands) == 1
+        cmd = commands[0]
+        assert "--cookies" in cmd
+        assert cmd[cmd.index("--cookies") + 1] == "/cookies/reddit/one.txt"
+        assert cmd[-1] == REDDIT_URL, "the URL stays last"
+
+    def test_without_a_jar_the_command_carries_no_cookies(self, monkeypatch):
+        response, commands = self._run(
+            monkeypatch, [(0, json.dumps(YTDLP_JSON), "", False)], []
+        )
+        assert response.status_code == 200
+        assert "--cookies" not in commands[0]
+
+    def test_a_refused_session_moves_on_to_the_second_jar(self, monkeypatch):
+        response, commands = self._run(
+            monkeypatch,
+            [
+                (1, "", AUTH_STDERR, False),
+                (0, json.dumps(YTDLP_JSON), "", False),
+            ],
+            ["/cookies/reddit/one.txt", "/cookies/reddit/two.txt"],
+        )
+        assert response.status_code == 200
+        tried = [cmd[cmd.index("--cookies") + 1] for cmd in commands]
+        assert tried == ["/cookies/reddit/one.txt", "/cookies/reddit/two.txt"]
+
+    def test_every_jar_refused_is_cookies_required(self, monkeypatch):
+        response, commands = self._run(
+            monkeypatch,
+            [(1, "", AUTH_STDERR, False)] * 2,
+            ["/cookies/reddit/one.txt", "/cookies/reddit/two.txt"],
+        )
+        assert response.status_code == 400
+        assert len(commands) == 2
+        body = response.get_json()
+        assert body["code"] == "cookies_required"
+        assert body["service"] == "reddit"
+        assert body["cookies_tried"] == 2
+        # The sentence the bot shows instead of the raw yt-dlp line.
+        assert "cookies" in body["error"]
+        assert "Account authentication" not in body["error"]
+
+    def test_no_jar_and_a_refusal_is_still_cookies_required(self, monkeypatch):
+        """The old behaviour has to survive: add a file in the panel."""
+        response, commands = self._run(monkeypatch, [(1, "", AUTH_STDERR, False)], [])
+        assert response.status_code == 400
+        assert len(commands) == 1
+        body = response.get_json()
+        assert body["code"] == "cookies_required"
+        assert body["cookies_tried"] == 0
+
+    def test_a_blocked_address_does_not_burn_the_next_jar(self, monkeypatch):
+        """Another jar answers the same 403; the advice has to be "proxy"."""
+        blocked = "ERROR: [Reddit] Unable to download webpage: HTTP Error 403: Blocked"
+        response, commands = self._run(
+            monkeypatch,
+            [(1, "", blocked, False)],
+            ["/cookies/reddit/one.txt", "/cookies/reddit/two.txt"],
+        )
+        assert response.status_code == 400
+        assert len(commands) == 1
+        body = response.get_json()
+        assert body["code"] == "service_blocked"
+        assert "proxy" in body["error"].lower()
+
+    def test_an_unrelated_failure_keeps_the_plain_error(self, monkeypatch):
+        response, commands = self._run(
+            monkeypatch,
+            [(1, "", "ERROR: Video unavailable", False)],
+            [],
+        )
+        assert response.status_code == 400
+        assert len(commands) == 1
+        body = response.get_json()
+        assert "code" not in body
+        assert body["error"] == "ERROR: Video unavailable"
+
+    def test_the_proxy_travels_with_every_attempt(self, monkeypatch):
+        """A preview behind the wrong IP fails the way the download would."""
+        monkeypatch.setattr(egress, "proxy_for_url", lambda url: "socks5h://10.0.0.5:1080")
+        response, commands = self._run(
+            monkeypatch,
+            [(0, json.dumps(YTDLP_JSON), "", False)],
+            ["/cookies/reddit/one.txt"],
+        )
+        assert response.status_code == 200
+        cmd = commands[0]
+        assert cmd[cmd.index("--proxy") + 1] == "socks5h://10.0.0.5:1080"
+        assert cmd.index("--cookies") < cmd.index("--proxy") < len(cmd) - 1
+        assert cmd[-1] == REDDIT_URL
+
+    def test_a_timeout_is_reported_without_trying_another_jar(self, monkeypatch):
+        response, commands = self._run(
+            monkeypatch,
+            [(1, "", "", True)],
+            ["/cookies/reddit/one.txt", "/cookies/reddit/two.txt"],
+        )
+        assert response.status_code == 400
+        assert len(commands) == 1
+        assert "Timed out" in response.get_json()["error"]

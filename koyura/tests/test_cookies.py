@@ -163,6 +163,9 @@ class TestClassification:
             "ERROR: HTTP Error 403: Forbidden",
             "ERROR: Use --cookies for the authentication",
             "ERROR: age-restricted content",
+            # What Reddit answers on the preview the user sees first; without
+            # this marker the next jar was never tried.
+            "ERROR: [Reddit] abc: Account authentication is required to view this post",
         ],
     )
     def test_authorization_failures_are_recognised(self, stderr):
