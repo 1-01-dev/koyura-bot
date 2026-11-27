@@ -15,7 +15,7 @@
 <body>
 
   <!-- Hamburger button (mobile only) -->
-  <button class="hamburger" id="hamburger" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">
+  <button class="hamburger" id="hamburger" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">
     <span></span><span></span><span></span>
   </button>
 
@@ -65,6 +65,24 @@
       </footer>
     </div>
   </main>
+
+  <!-- Full-URL dialog, shared by /history and /errors.
+
+       The tables show a compact "Link" button instead of the URL, so a long
+       query string cannot widen the grid. The button carries the URL in a
+       data-* attribute; the dialog fills itself from it in js/linkmodal.js. -->
+  <div class="modal-overlay" id="link-modal" role="dialog" aria-modal="true"
+       aria-labelledby="link-modal-title" hidden>
+    <div class="modal-card">
+      <h2 class="modal-title" id="link-modal-title">Link</h2>
+      <p class="link-modal-url mono" id="link-modal-url" data-link-text></p>
+      <p class="link-modal-status mono" data-link-status role="status" aria-live="polite"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-secondary" data-link-copy>Copy</button>
+        <button type="button" class="btn btn-primary" data-link-close>Close</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Toast container -->
   <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="false"></div>

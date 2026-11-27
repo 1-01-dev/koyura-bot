@@ -13,7 +13,12 @@
     function setOpen(open) {
       sidebar.classList.toggle('open', open);
       if (overlay) overlay.classList.toggle('visible', open);
+      /* The trigger is fixed to the viewport while the drawer is a sibling, so
+         the page root carries the state: that is the only hook CSS has to
+         move the button inside the open drawer. */
+      document.documentElement.classList.toggle('sidebar-open', open);
       hamburger.setAttribute('aria-expanded', open ? 'true' : 'false');
+      hamburger.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
     }
 
     hamburger.addEventListener('click', function () {

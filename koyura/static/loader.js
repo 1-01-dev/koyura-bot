@@ -15,6 +15,8 @@
    Everything the engine reports (titles, uploader names, error strings) is
    written with textContent: response data is never parsed as markup. */
 
+import { DEFAULT_MAX_MB, pickFormats } from './format_list.js';
+
 /* ---------------------------------------------------------
    1. Engine access
    --------------------------------------------------------- */
@@ -33,6 +35,40 @@ function injectedToken() {
 }
 
 const API_TOKEN = injectedToken();
+
+/* Deployment knobs live in their own JSON node so the token element keeps
+   exactly one value. Missing or malformed values fall back to the engine's
+   default, never to a hard crash. */
+function injectedConfig() {
+  const node = document.getElementById('api-config');
+  if (!node) return {};
+  try {
+    const value = JSON.parse(node.textContent || '{}');
+    return value && typeof value === 'object' ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+const API_CONFIG = injectedConfig();
+
+/* The send ceiling in megabytes. Telegram refuses anything above the Bot API
+   limit and the engine applies the same number with `--max-filesize`, so the
+   list of qualities should not offer what can only fail. */
+function injectedMaxMb() {
+  const value = Number(API_CONFIG.max_send_mb);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_MAX_MB;
+}
+
+/* A response may carry its own ceiling (the engine knows `MAX_FILESIZE_MB`),
+   and it wins over the page's value: the two are the same number today, and
+   reading it from the answer keeps them the same when one of them moves. */
+function sendLimitMb(data) {
+  const value = Number(data && data.max_file_size_mb);
+  return Number.isFinite(value) && value >= 0 ? value : MAX_SEND_MB;
+}
+
+const MAX_SEND_MB = injectedMaxMb();
 
 function headers(extra) {
   const merged = Object.assign({}, extra || {});
@@ -248,15 +284,30 @@ function actions(card, index) {
     case 'ready': {
       row.appendChild(button('Download', 'card-dl-btn', () => downloadCard(index)));
       /* Quality only exists when the extractor listed more than one format,
-         and only for video: MP3 has nothing to choose. */
+         and only for video: MP3 has nothing to choose. A chip the engine
+         would refuse for its size keeps its place but cannot be picked. */
       if (!audio && card.formats && card.formats.length > 1) {
         for (const format of card.formats) {
+          const label = format.label === null || format.label === undefined
+            ? ''
+            : String(format.label);
           const chip = button(
-            format.label === null || format.label === undefined ? '' : String(format.label),
-            `q-chip${format.id === card.selectedFormatId ? ' active' : ''}`,
+            label,
+            `q-chip${format.id === card.selectedFormatId ? ' active' : ''}`
+              + (format.too_large ? ' q-chip--too-large' : ''),
             () => selectFormat(index, format.id),
           );
+          if (format.too_large) {
+            chip.disabled = true;
+            chip.title = `Too large to send \u2014 over the ${card.maxSendMb || MAX_SEND_MB} MB limit`;
+            chip.setAttribute('aria-disabled', 'true');
+          }
           row.appendChild(chip);
+        }
+        if (card.filteredFormats) {
+          row.appendChild(
+            block('card-note', `Qualities over ${card.maxSendMb || MAX_SEND_MB} MB are not shown`),
+          );
         }
       }
       break;
@@ -278,8 +329,10 @@ function actions(card, index) {
       break;
     }
     case 'done': {
+      /* Rendered from the saved file, not from the pill: after an MP4/MP3
+         switch the card still has to point at the file that exists. */
       row.appendChild(button('Save', 'card-dl-btn done', () => saveCard(index)));
-      row.appendChild(block('card-status done', card.filename || ''));
+      row.appendChild(block('card-status done', `${savedLabel(card)} \u00b7 ${card.filename || ''}`));
       break;
     }
     case 'error': {
@@ -300,6 +353,52 @@ function actions(card, index) {
   }
 
   return row;
+}
+
+/* The engine reports bytes; the card speaks in the same units the quality
+   chips do (32.1MB / 1.2GB). Mirrors media_meta.format_filesize so the two
+   never disagree. */
+function sizeLabel(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  for (const [unit, factor] of [['GB', 1024 ** 3], ['MB', 1024 ** 2], ['KB', 1024]]) {
+    if (value >= factor) {
+      const amount = value / factor;
+      return `${amount.toFixed(amount < 100 ? 1 : 0)}${unit}`;
+    }
+  }
+  return `${Math.round(value)}B`;
+}
+
+/* Card caption: who uploaded it, how long it is, and how big the file is —
+   the size of the picked quality while the card is open, and of the file on
+   disk once it is done. Every part is optional; empty joins drop out so no
+   separator dangles at either end. */
+function metaText(card) {
+  const parts = [];
+  if (card.uploader) parts.push(card.uploader);
+  const duration = card.duration ? durationText(card.duration) : '';
+  if (duration) parts.push(duration);
+
+  const saved = card.status === 'done' ? card.fileSizeLabel : '';
+  const size = saved || (state.format === 'audio'
+    ? (card.audio && card.audio.size_label)
+    : selectedSizeLabel(card));
+  if (size) parts.push(size);
+
+  return parts.join(' \u00b7 ');
+}
+
+/* A finished card names the container that is actually on disk. Reading it
+   from the filename keeps the label truthful when the pill is switched after
+   the download: the caption and the size follow the new choice, the file
+   behind "Save" does not change. */
+function savedLabel(card) {
+  const name = String(card.filename || '');
+  const dot = name.lastIndexOf('.');
+  const ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
+  if (ext) return ext.toUpperCase();
+  return card.downloadedFormat === 'audio' ? 'MP3' : 'MP4';
 }
 
 /* One renderer per state; each returns the two cells of the card. */
@@ -328,11 +427,9 @@ const RENDERERS = {
 
   default(card, index) {
     const body = block('card-body');
-    const meta = card.uploader || '';
-    const duration = card.duration ? ` \u00b7 ${durationText(card.duration)}` : '';
     body.append(
       block('card-title', card.title || 'Untitled'),
-      block('card-meta', meta + duration),
+      block('card-meta', metaText(card)),
       actions(card, index),
     );
     return { thumb: thumbnail(card), body, className: 'card' };
@@ -349,14 +446,28 @@ function renderCard(index) {
 
   node.className = className;
   node.replaceChildren(thumb, body);
+  renderDownloadAll();
 }
 
+/* The bulk bar is a function of the cards, never a flag that survives them:
+   it is rebuilt after every state change, and it is removed outright when
+   fewer than two cards are still waiting for a click. A disabled button on a
+   page with nothing to download is a dead control, so it is not rendered at
+   all. */
 function renderDownloadAll() {
   const existing = document.getElementById('dl-all-bar');
-  if (existing) existing.remove();
-
   const ready = state.cards.filter((card) => card.status === 'ready').length;
-  if (ready < 2) return;
+
+  if (ready < 2) {
+    if (existing) existing.remove();
+    return;
+  }
+  if (existing) {
+    /* Re-append moves it: a card created after the bar must not push it up
+       the list, or the button would drift between rows. */
+    document.getElementById('cards').appendChild(existing);
+    return;
+  }
 
   const bar = block('dl-all-bar');
   bar.id = 'dl-all-bar';
@@ -375,13 +486,23 @@ function setFormat(pill) {
   }
   pill.classList.add('active');
   state.format = pill.dataset.format;
+
+  /* A format is a property of the whole page, so every card is redrawn: the
+     thumbnail, the size in the caption, the quality chips and the "done"
+     label all depend on it. Without this a finished card kept the previous
+     format's styling and filename. */
+  state.cards.forEach((_card, index) => renderCard(index));
 }
 
 async function fetchInfo(url) {
   try {
     const { data } = await postJson('/api/info', { url });
     if (data.error) return { status: 'info-error', error: data.error };
-    const formats = data.formats || [];
+    /* The engine offers every stream it found; the chips only offer what can
+       be sent. pickFormats keeps the list non-empty and flags the rest. */
+    const limitMb = sendLimitMb(data);
+    const picked = pickFormats(data.formats || [], limitMb);
+    const formats = picked.formats;
     return {
       status: 'ready',
       title: data.title || '',
@@ -389,6 +510,12 @@ async function fetchInfo(url) {
       duration: data.duration,
       uploader: data.uploader || '',
       formats,
+      filteredFormats: picked.filtered,
+      maxSendMb: limitMb,
+      /* Kept so the MP3 caption can name a size: the pill has no quality list
+         to pick from, and the card would otherwise lose the one number the
+         engine did report. */
+      audio: data.audio || null,
       selectedFormatId: formats[0] ? formats[0].id : null,
     };
   } catch (err) {
@@ -427,6 +554,15 @@ function selectedSize(card) {
   return chosen && chosen.size_bytes ? Number(chosen.size_bytes) : undefined;
 }
 
+/** Human size of the picked quality, or of the audio stream for MP3. */
+function selectedSizeLabel(card) {
+  if (state.format === 'audio') {
+    return (card.audio && card.audio.size_label) || '';
+  }
+  const chosen = (card.formats || []).find((format) => format.id === card.selectedFormatId);
+  return (chosen && chosen.size_label) || '';
+}
+
 function selectFormat(index, formatId) {
   state.cards[index].selectedFormatId = formatId;
   renderCard(index);
@@ -438,6 +574,7 @@ async function downloadCard(index) {
   card.error = null;
   card.position = null;
   card.waitSeconds = null;
+  card.downloadedFormat = state.format;
   renderCard(index);
 
   let result;
@@ -515,6 +652,7 @@ function pollCard(index) {
     if (data.status === 'done') {
       card.status = 'done';
       card.filename = data.filename;
+      card.fileSizeLabel = sizeLabel(data.file_size_bytes);
       renderCard(index);
       refreshLimits();
       saveCard(index);

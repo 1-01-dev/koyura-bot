@@ -63,7 +63,19 @@
 
 <div class="card table-card">
   <div class="table-scroll">
-    <table class="data-table">
+    <table class="data-table data-table--history">
+      <colgroup>
+        <col class="col-time" />
+        <col class="col-user" />
+        <col class="col-title" />
+        <col class="col-link" />
+        <col class="col-platform" />
+        <col class="col-format" />
+        <col class="col-quality" />
+        <col class="col-size" />
+        <col class="col-status" />
+        <col class="col-duration" />
+      </colgroup>
       <thead>
         <tr>
           <th scope="col">Timestamp</th>
@@ -84,9 +96,8 @@
         {% set title = row.title or '' %}
         {% set short_title = title[:60] %}
         {% set url = row.url or '' %}
-        {% set short_url = url[:50] %}
         <tr>
-          <td class="mono text-secondary">{{ row.started_at[:19] if row.started_at else '—' }}</td>
+          <td class="mono text-secondary time-cell">{{ row.started_at[:19] if row.started_at else '—' }}</td>
           <td>{{ row.username or row.user_id or '—' }}</td>
           <td class="title-cell">
             {%- if title -%}
@@ -95,9 +106,13 @@
             —
             {%- endif -%}
           </td>
-          <td>
+          <td class="link-cell">
             {%- if url -%}
-            <a href="{{ url }}" target="_blank" rel="noopener" class="url-cell" title="{{ url }}">{{ short_url }}{% if short_url != url %}…{% endif %}</a>
+            <button type="button" class="btn btn-secondary link-btn mono"
+                    data-link-url="{{ url }}"
+                    aria-haspopup="dialog"
+                    aria-controls="link-modal"
+                    title="Show the full URL">Link</button>
             {%- else -%}
             —
             {%- endif -%}

@@ -54,6 +54,12 @@
        It is data, not code: loader.js reads it and sends it as a header (or
        as ?token= on the file link, which cannot carry a header). -->
   <script id="api-token" type="application/json">{{ api_token|tojson }}</script>
+
+  <!-- Deployment knobs for the page. `max_send_mb` is the send ceiling the
+       quality chips respect; it defaults to the engine's own MAX_FILESIZE_MB
+       default, so the page is correct before a deploy passes the real value
+       in. Kept as a separate data node so the token element stays one string. -->
+  <script id="api-config" type="application/json">{{ {"max_send_mb": max_send_mb | default(2000)} | tojson }}</script>
   <script type="module" src="/static/loader.js"></script>
 </body>
 </html>

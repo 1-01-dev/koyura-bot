@@ -9,9 +9,14 @@
   <p class="page-meta mono">Files · disk · purge</p>
 </div>
 
+<!-- One panel per block: each owns its frame and its header strip, and the
+     stack supplies the gap between them, so System info and Download limits
+     no longer read as one ruled page. -->
+<div class="panel-stack">
+
 <!-- Disk Management -->
-<div class="card section-card">
-  <div class="card-header">
+<section class="card panel">
+  <div class="card-header panel-head">
     <h2 class="card-title">Disk management</h2>
     <div class="card-actions">
       <button type="button" class="btn btn-secondary" data-action="delete-selected">Delete selected</button>
@@ -76,11 +81,11 @@
       </tbody>
     </table>
   </div>
-</div>
+</section>
 
 <!-- System Info -->
-<div class="card section-card">
-  <div class="card-header">
+<section class="card panel">
+  <div class="card-header panel-head">
     <h2 class="card-title">System info</h2>
   </div>
   <table class="info-table">
@@ -103,11 +108,11 @@
       </tr>
     </tbody>
   </table>
-</div>
+</section>
 
 <!-- Download limits -->
-<div class="card section-card" id="limits-card">
-  <div class="card-header">
+<section class="card panel" id="limits-card">
+  <div class="card-header panel-head">
     <h2 class="card-title">Download limits</h2>
     <div class="card-actions">
       <span class="limits-meta mono" id="limits-state">
@@ -116,7 +121,7 @@
     </div>
   </div>
 
-  <div class="limits-presets" role="group" aria-label="Server presets">
+  <div class="limits-presets panel-body" role="group" aria-label="Server presets">
     {% for preset in presets %}
     <button type="button"
             class="preset-btn{% if preset.key == recommended_key %} preset-btn--recommended{% endif %}"
@@ -132,7 +137,7 @@
     {% endfor %}
   </div>
 
-  <p class="limits-note mono" id="hardware-line">
+  <p class="limits-note panel-body mono" id="hardware-line">
     This server: {{ hardware.cpu }} vCPU · {{ hardware.memory_gb }} —
     recommended preset:
     {% for preset in presets %}{% if preset.key == recommended_key %}{{ preset.label }}{% endif %}{% endfor %}
@@ -182,11 +187,11 @@
       <span class="limits-note mono">applied to the engine immediately, no restart</span>
     </div>
   </form>
-</div>
+</section>
 
 <!-- Bot languages -->
-<div class="card section-card" id="languages-card">
-  <div class="card-header">
+<section class="card panel" id="languages-card">
+  <div class="card-header panel-head">
     <h2 class="card-title">Bot languages</h2>
     <div class="card-actions">
       <span class="limits-meta mono" id="languages-state">
@@ -248,10 +253,13 @@
       <span class="limits-note mono">the bot picks this up within a minute, no restart</span>
     </div>
   </form>
+</section>
+
 </div>
+<!-- /panel-stack -->
 
 <!-- Purge Modal -->
-<div class="modal-overlay" id="purge-modal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="purge-modal-title">
+<div class="modal-overlay" id="purge-modal" role="dialog" aria-modal="true" aria-labelledby="purge-modal-title" hidden>
   <div class="modal-card modal-card--danger">
     <h2 class="modal-title" id="purge-modal-title">Purge all files</h2>
     <p class="modal-body">This will permanently delete <strong>all files</strong> in the downloads directory. This action cannot be undone.</p>
