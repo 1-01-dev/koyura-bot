@@ -19,7 +19,6 @@ import db
 import download_limits as limits_settings
 import message_catalog
 import message_templates
-import progress_fields
 import service_catalog
 import service_cookies
 
@@ -334,23 +333,6 @@ def _languages_context(stored: dict[str, str], error: str | None = None,
     }
 
 
-def _progress_context(stored: dict[str, str], error: str | None = None,
-                      notice: str | None = None) -> dict:
-    """Template context for the Progress fields section.
-
-    The form shows what is stored (per key, the default when a row is missing);
-    a rejected submission arrives as ``error`` next to the values that were
-    submitted, so no checkbox the admin ticked is lost.
-    """
-    settings = progress_fields.ProgressFields.from_row(stored)
-    return {
-        "progress_fields": settings.as_form(),
-        "progress_summary": settings.describe(),
-        "progress_error": error,
-        "progress_notice": notice,
-    }
-
-
 # ---------------------------------------------------------------------------
 # Message templates
 # ---------------------------------------------------------------------------
@@ -622,16 +604,19 @@ def _system_context() -> dict:
 async def _bot_context(
     *,
     languages_error: str | None = None,
-    progress_error: str | None = None,
     template_error: str | None = None,
     **template_kwargs,
 ) -> dict:
-    """The three panels of /admin/bot, with at most one showing a failure."""
+    """The two panels of /admin/bot, with at most one showing a failure.
+
+    The third panel that used to live here — the ``Progress fields`` switches —
+    is gone: which lines the live message carries is now the ``progress``
+    message template, edited in the section below the languages. Old
+    ``bot_progress.*`` rows may still sit in ``settings``; nothing reads them.
+    """
     stored_languages = await db.get_settings(prefix=bot_languages.SETTING_PREFIX)
-    stored_progress = await db.get_settings(prefix=progress_fields.SETTING_PREFIX)
     context: dict = {}
     context.update(_languages_context(stored_languages, error=languages_error))
-    context.update(_progress_context(stored_progress, error=progress_error))
     context.update(await _templates_context(error=template_error, **template_kwargs))
     return context
 
@@ -661,7 +646,6 @@ async def _bot_page(
     user: str,
     *,
     languages_error: str | None = None,
-    progress_error: str | None = None,
     template_error: str | None = None,
     languages: dict | None = None,
     status_code: int = 200,
@@ -672,7 +656,6 @@ async def _bot_page(
     context.update(
         await _bot_context(
             languages_error=languages_error,
-            progress_error=progress_error,
             template_error=template_error,
             **template_kwargs,
         )
@@ -775,11 +758,14 @@ async def admin_section_page(
         if languages_saved and not context.get("languages_error")
         else None
     )
-    context["progress_notice"] = (
-        "Progress fields saved. The bot picks them up within a minute."
-        if progress_saved and not context.get("progress_error")
-        else None
-    )
+    if progress_saved:
+        # The Progress fields section is retired; an old redirect still points
+        # here, so the notice says where the setting went instead of pretending
+        # a form was saved.
+        context["templates_notice"] = (
+            "Progress is set by the Message templates now — the `progress` body. "
+            "Nothing else to save."
+        )
     if templates_saved and not context.get("template_error"):
         context["template_notice"] = (
             "Template saved and activated. The bot picks it up within a minute."
@@ -907,12 +893,13 @@ async def save_languages(request: Request) -> Response:
 
 @router.post("/admin/progress")
 async def save_progress(request: Request) -> Response:
-    """Store the eight progress switches the bot draws with.
+    """Retired endpoint: the progress fields are a message template now.
 
-    There is nothing to push: the bot polls ``GET /api/bot-settings`` and caches
-    it for under a minute, so saving here is enough. An unchecked box is simply
-    absent from the form; the only rejected submission is a name this panel does
-    not know.
+    The section is gone, but the form is still out there in a cached page and in
+    an old bookmark, so the URL keeps its answer instead of 404-ing: a signed-in
+    operator is sent to the section that replaced it (`Admin → Message
+    templates`, anchored at the ``progress`` body) with the CSRF check intact.
+    Nothing is written to ``settings``.
     """
     user = _require_user(request)
     if not user:
@@ -924,36 +911,18 @@ async def save_progress(request: Request) -> Response:
         return await _bot_page(
             request,
             user,
-            progress_error="Your session expired. Reload the page and try again.",
+            template_error="Your session expired. Reload the page and try again.",
             status_code=403,
         )
 
-    checked = [str(value) for value in form.getlist("fields")]
-    parsed, errors = progress_fields.parse(checked)
-    if parsed is None or errors:
-        message = " ".join(errors) or "Could not save these progress fields."
-        context = await _bot_context(progress_error=message)
-        # Echo the submission so the checkboxes keep what the admin clicked.
-        context.update(_progress_context(
-            {f"{progress_fields.SETTING_PREFIX}{name}": "true" for name in checked}
-        ))
-        context["progress_error"] = message
-        return _render_admin(
-            request, "bot", {"user": user, **context}, status_code=400
-        )
-
-    before = progress_fields.ProgressFields.from_row(
-        await db.get_settings(prefix=progress_fields.SETTING_PREFIX)
-    )
-    await db.save_settings(parsed.as_stored())
-    # One line per save: who changed what, from which value to which.
     logging.getLogger("koyura.dashboard").info(
-        "bot progress fields updated by %s: %s -> %s",
+        "retired /admin/progress form submitted by %s; sent to message templates",
         user,
-        before.describe(),
-        parsed.describe(),
     )
-    return RedirectResponse(url="/admin/bot?progress_saved=1", status_code=303)
+    kind, lang = _template_defaults("progress", None)
+    return RedirectResponse(
+        url=f"/admin/bot?kind={kind}&lang={lang}#templates-card", status_code=303
+    )
 
 
 # ---------------------------------------------------------------------------

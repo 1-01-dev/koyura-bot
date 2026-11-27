@@ -590,9 +590,6 @@ async def poll_until_finished(job: Job, job_id: str, stage) -> dict | None:
         min_interval=config.PROGRESS_EDIT_INTERVAL,
         min_percent_delta=config.PROGRESS_MIN_PERCENT_DELTA,
     )
-    # One settings read for the whole download: which lines the operator wants
-    # does not change mid-job, and the answer is cached for 45 s anyway.
-    shown = (await language.settings()).progress
 
     for _ in range(config.POLL_ATTEMPTS):
         await asyncio.sleep(config.POLL_INTERVAL)
@@ -656,7 +653,6 @@ async def poll_until_finished(job: Job, job_id: str, stage) -> dict | None:
                 quality=job.quality,
                 elapsed=elapsed,
                 lang=job.lang,
-                fields=shown,
             )
         )
 

@@ -385,7 +385,6 @@ Pre-rewrite locations (the text is these days a catalogue entry):
 | `TIMED_OUT` | `Download timed out.` | `handlers.py:1087` |
 | `UNKNOWN_ERROR` | `Unknown error` | `handlers.py:795` |
 | (unchanged modules) | progress, queue, busy, error captions | `progress_card.py` |
-| (new module) | the eight progress switches (`fields=` for the caption) | `progress_fields.py` |
 | (unchanged module) | preview card, format labels, file caption | `download_card.py` |
 
 ---
@@ -456,84 +455,91 @@ Pre-rewrite locations (the text is these days a catalogue entry):
 
 ---
 
-## 9. Progress fields (what the live message shows)
+## 9. The live progress message (a message template)
 
 The progress card used to print everything the engine knew: the title, the bar,
-`62%`, `30.8 MB / 30.8 MB`, `58.9 MB/s`, `ETA 0:42` and `0:13 elapsed`. That is
-too much for a chat message, so each line is now a switch the operator sets in
-Admin → **Progress fields**. The default is the title and the bar and nothing
-else.
+`62%`, `30.8 MB / 30.8 MB`, `58.9 MB/s`, `ETA 0:42` and `0:13 elapsed`. It then
+grew a separate `Progress fields` panel with eight checkboxes — and once
+**Message templates** existed, that panel was a second way to write the same
+thing. It is gone: the `progress` template *is* the choice.
 
-### The eight switches
+### The template
 
-Stored in the dashboard's `settings` table, one row per key, values
-`true`/`false`:
-
-| Key | Draws | Default |
-| --- | --- | --- |
-| `bot_progress.show_title` | the video's title, bold, first line | **on** |
-| `bot_progress.show_bar` | the 12-cell bar `▓▓▓▓▓▓▓░░░░░` | **on** |
-| `bot_progress.show_percent` | `62%` | off |
-| `bot_progress.show_size` | `30.8 MB / 30.8 MB` | off |
-| `bot_progress.show_speed` | `58.9 MB/s` | off |
-| `bot_progress.show_eta` | `ETA 0:42` / `осталось 0:42` | off |
-| `bot_progress.show_elapsed` | `0:13 elapsed` / `0:13 прошло` | off |
-| `bot_progress.show_quality` | `1440p` | off |
-
-Rules the tests pin (`bot/tests/test_progress_fields.py`):
-
-* the bar is **12 cells** whether or not the percentage is on, so the caption
-  never re-wraps between edits;
-* with the bar off and the percentage on, the number stands alone on the facts
-  line instead of vanishing;
-* with **everything** off the caption is the stage line ("Downloading…" /
-  "Скачиваю…") — a progress message is never blank;
-* an unknown size draws no `show_size`, `show_percent` or `show_eta` line at all
-  (the same rule as before: never a made-up denominator);
-* a stage with nothing to measure (starting / processing / uploading) keeps its
-  stage line, and a facts line with no bar or percentage keeps it too;
-* the titles are not translated — the panel is English-only, the card follows
-  the chat language.
-
-The rendered shapes, for the same 30.8 MB download:
+`progress` is an ordinary catalogue kind (`caption`, limit 1024). Its built-in
+body is the one the bot sends when nobody edited anything:
 
 ```text
-default (title + bar)          percent + speed + eta           everything on
-*Artemis II to the Moon*       *Artemis II to the Moon*        *Artemis II to the Moon*
-▓▓▓▓▓▓▓░░░░░                   ▓▓▓▓▓▓▓░░░░░ 62%                ▓▓▓▓▓▓▓░░░░░ 62%
-                               3.2 MB/s · ETA 0:42             1080p · 19.1 MB / 30.8 MB ·
-                                                              3.2 MB/s · ETA 0:42 · 0:13 elapsed
+*@title*
+@stage
+@bar
 ```
 
-### Where the setting comes from
+`@bar` is the 12-cell bar **without** a number; `@percent` is the number alone,
+so a body that wants the old look writes `@bar @percent`. The full set of values
+the bot fills in:
 
-`GET /api/bot-settings` (the same route the languages use) grew one object:
+| Placeholder | Value | Example |
+| --- | --- | --- |
+| `@title` | the video's title | `Artemis II to the Moon` |
+| `@stage` | the word for the current stage | `Downloading…` / `Скачиваю…` |
+| `@bar` | 12 fixed cells, no number | `▓▓▓▓▓▓▓░░░░░` |
+| `@percent` | the percentage | `62%` |
+| `@size` | downloaded / exact total | `20.0 MB / 32.1 MB` |
+| `@speed` | the engine's speed | `3.2 MB/s` |
+| `@eta` | time left | `0:42` |
+| `@elapsed` | time so far | `0:13` |
+| `@quality` | the format that was picked | `1080p` |
+| `@facts` | all of the above joined by ` · ` | `62% · 3.2 MB/s · ETA 0:42` |
+
+Rules that survive any template, pinned by `bot/tests/test_progress_template.py`:
+
+* **the stage is always a value.** "Downloading…" is never missing from the
+  words on offer, so even a body of `` `@stage` `` alone says what is happening;
+* an unknown number is the empty string, and a line whose placeholders are all
+  empty disappears — no invented `0%` and no invented denominator;
+* `@bar` needs a percentage, so a stage with nothing to measure (starting /
+  processing / uploading) simply drops that line;
+* a **body that cannot be rendered** — empty, blank, an unknown `@placeholder`,
+  Markdown it cannot pair — is logged at DEBUG and the built-in caption above is
+  sent instead. The bot never sends an empty message.
+
+The three shapes, for the same 30.8 MB download:
+
+```text
+default body                 *@title* — @percent            @facts
+*Artemis II to the Moon*     Artemis II to the Moon — 62%   62% · 1080p · 20.0 MB / 32.1 MB
+Downloading…                                                 · 3.2 MB/s · ETA 0:42 · 0:13 elapsed
+▓▓▓▓▓▓▓░░░░░
+```
+
+### Where the body comes from
+
+The same `GET /api/bot-settings` answer the languages use carries it, under
+`templates`:
 
 ```json
 {"languages": ["en", "ru"], "default_language": "en",
- "progress": {"show_title": true, "show_bar": true, "show_percent": false,
-              "show_size": false, "show_speed": false, "show_eta": false,
-              "show_elapsed": false, "show_quality": false}}
+ "templates": {"progress": {"en": "*@title*\n@stage\n@bar @percent"}}}
 ```
 
-`bot/bot_settings.py` reads it with the languages (one request, cached for
-`TTL_SECONDS` = 45 s) and `bot/progress_fields.py` turns the object into a set of
-switches. Panel down, 401, bad JSON, or no `progress` key at all (an older
-panel) → the built-in default, title + bar. An unreadable value for one key is
-that key's default, never an error. `handlers.download_flow.poll_until_finished`
-reads the set **once** per job, before the poll loop, so a mid-download change
-lands on the next download rather than switching mid-caption.
+`bot/bot_settings.py` reads it once (cached for `TTL_SECONDS` = 45 s) and
+`bot/progress_card.py` renders `progress` from the cached snapshot through the
+same `message_templates` renderer every other message uses — so the panel's
+preview and the chat cannot disagree. Panel down, 401, bad JSON, no `templates`
+key (an older panel) or no body for this language → the built-in body above.
+
+The retired `bot_progress.*` rows are no longer read by either service. The
+dashboard deletes them on its next start (`db.delete_settings("bot_progress.")`),
+best effort: a failure is logged and the panel starts anyway.
 
 ### The panel section
 
-`dashboard/templates/_admin_progress.html` is a partial and `admin_bot.html`
-holds exactly one line — `{% include "_admin_progress.html" %}` — right after the
-`Bot languages` include. That is deliberate: the section is one file, so the
-page around it can grow without touching it. The markup reuses the existing
-`card` / `limits-grid` / `limits-cell` / `language-choice` classes, so it needs
-no new CSS. The form (`POST /admin/progress`) carries the double-submit CSRF
-token, stores the eight rows, and redirects to `/admin/bot?progress_saved=1`;
-the bot picks the change up within 45 s, no restart.
+`Bot languages` decides *which* languages exist and points at
+`Admin → Message templates` for what they say; the `progress` body is edited
+there like any other kind, with the built-in Default one click away.
+`POST /admin/progress` is retired but not 404: a cached page still holding the
+old form is redirected to the templates section after the usual CSRF check, and
+nothing is written.
 
 ## 10. Languages (English / Russian)
 

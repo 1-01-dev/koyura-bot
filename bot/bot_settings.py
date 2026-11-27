@@ -1,31 +1,32 @@
-"""The bot's operator-set preferences: the languages it offers and the lines
-it draws in a progress message.
+"""The bot's operator-set preferences: the languages it offers and the message
+bodies it renders.
 
-The panel owns both settings (``bot_settings.*`` and ``bot_progress.*`` in its
-``settings`` table); the bot only reads them from the internal API:
+The panel owns both settings (``bot_settings.*`` in its ``settings`` table and
+the ``message_templates`` table); the bot only reads them from the internal API:
 
     GET {DASHBOARD_URL}/api/bot-settings
     X-Internal-Token: ****
 
     {"languages": ["en", "ru"], "default_language": "en",
-     "progress": {"show_title": true, "show_bar": true, ...}}
+     "templates": {"progress": {"en": "*@title*\n@stage\n@bar"}}}
 
 Three properties matter more than the request itself:
 
 * **the bot works with the panel down.** A dashboard that is restarting must not
   take the chat down with it, so an unreachable panel (or a payload we cannot
   parse, or an empty language set) falls back to the built-in defaults
-  ``("en", "ru")`` with ``en`` as the default and title + bar for the progress
-  card. The fallback is a normal state, not an error: it is logged at DEBUG.
+  ``("en", "ru")`` with ``en`` as the default and no custom bodies — which is
+  exactly the same state as "nothing was ever saved". The fallback is a normal
+  state, not an error: it is logged at DEBUG.
 * **one fetch per minute, not one per message.** Every message would otherwise
   cost a round trip before the bot could answer. The answer is cached for
   ``TTL_SECONDS``; a settings change in the panel reaches the bot within that
   window, which is what the owner expects from a preference.
 * **only the languages the code can render.** ``i18n`` knows ``en`` and ``ru``;
   an unknown code in the setting is dropped instead of producing a bot that
-  answers in a catalogue that does not exist. The same rule applies to the
-  progress switches: an unknown or unreadable one is its default (see
-  ``progress_fields``), never an error.
+  answers in a catalogue that does not exist. The same rule applies to a custom
+  body: a template for a kind this build does not send is dropped (see
+  :func:`normalise_templates`), never an error.
 """
 from __future__ import annotations
 
@@ -38,7 +39,6 @@ from dataclasses import dataclass, field
 import httpx
 
 import i18n
-import progress_fields
 
 logger = logging.getLogger(__name__)
 
@@ -61,14 +61,11 @@ DEFAULT_LANGUAGE: str = i18n.DEFAULT_LANGUAGE
 
 @dataclass(frozen=True)
 class Settings:
-    """Enabled languages, their default, the progress lines and the templates."""
+    """Enabled languages, their default, and the custom message bodies."""
 
     languages: tuple[str, ...]
     default_language: str
     source: str = "fallback"
-    progress: progress_fields.Fields = field(
-        default_factory=progress_fields.defaults
-    )
     # ``{kind: {lang: body}}``: the custom message bodies the panel activated.
     # Empty means "every message is the built-in default", which is also what a
     # panel we cannot reach gives us.
@@ -103,7 +100,6 @@ def defaults() -> Settings:
     return Settings(
         languages=DEFAULT_LANGUAGES,
         default_language=DEFAULT_LANGUAGE,
-        progress=progress_fields.defaults(),
         templates={},
     )
 
@@ -150,10 +146,10 @@ def normalise_templates(raw: object) -> dict[str, dict[str, str]]:
 def normalise_payload(payload: object) -> Settings:
     """Turn an API body into ``Settings``, dropping what cannot be rendered.
 
-    ``{"languages": ["en", "ru"], "default_language": "ru", "progress": {...}}``
+    ``{"languages": ["en", "ru"], "default_language": "ru", "templates": {...}}``
     is the contract; an unknown code is skipped, an empty result is the default
     set, and a default that is not enabled becomes the first enabled language.
-    A body without ``progress`` (an older panel) gets the built-in fields.
+    A body without ``templates`` (an older panel) keeps every built-in default.
     """
     if not isinstance(payload, dict):
         return defaults()
@@ -177,7 +173,6 @@ def normalise_payload(payload: object) -> Settings:
         languages=tuple(enabled),
         default_language=default,
         source="panel",
-        progress=progress_fields.normalise(payload),
         templates=normalise_templates(payload.get("templates")),
     )
 
@@ -199,10 +194,10 @@ async def fetch() -> Settings:
         return defaults()
     settings = normalise_payload(payload)
     logger.debug(
-        "Bot settings from the panel: %s (default %s), progress: %s",
+        "Bot settings from the panel: %s (default %s), %d custom template(s)",
         ",".join(settings.languages),
         settings.default_language,
-        settings.progress.describe(),
+        sum(len(bodies) for bodies in settings.templates.values()),
     )
     return settings
 

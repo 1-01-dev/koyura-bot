@@ -1,15 +1,19 @@
 """Tests for the progress/error captions and the edit throttle.
 
 Everything here is pure: no Telegram, no engine, no event loop. The captions are
-what the user reads, so the format is asserted literally.
+what the user reads, so the format is asserted literally. The *body* comes from
+the ``progress`` message template (Admin → Message templates); ``test_progress_template``
+pins the template plumbing, this module pins the values it is given.
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import progress_card as pc
-import progress_fields
+import pytest  # noqa: E402
+
+import bot_settings  # noqa: E402
+import progress_card as pc  # noqa: E402
 
 INFO = {
     "title": "Artemis II to the Moon",
@@ -18,11 +22,29 @@ INFO = {
     "extractor": "youtube",
 }
 
-# Every switch on: the shape these tests were written against, before the panel
-# could turn lines off (default is title + bar; see ``test_progress_fields.py``).
-ALL_FIELDS = progress_fields.Fields(
-    values=dict.fromkeys(progress_fields.FIELD_NAMES, True)
-)
+#: The built-in ``progress`` body: title, stage, bar. What a deployment that
+#: never edited the template sends, and the shape these tests read.
+DEFAULT_BODY = "*@title*\n@stage\n@bar"
+#: ...and the body an operator writes when they want the number next to it, with
+#: the facts line the panel's reference table describes.
+PERCENT_BODY = "*@title*\n@stage\n@bar @percent"
+FULL_BODY = "*@title*\n@stage\n@bar @percent\n@facts"
+
+
+def _prime(body: str = "", lang: str = "en") -> None:
+    """Install a panel answer with (or without) one custom progress body."""
+    base = bot_settings.defaults()
+    templates: dict[str, dict[str, str]] = (
+        {"progress": {lang: body}} if body else {}
+    )
+    bot_settings.prime(
+        bot_settings.Settings(
+            languages=base.languages,
+            default_language=base.default_language,
+            source="panel",
+            templates=templates,
+        )
+    )
 
 
 def _plain(text: str) -> str:
@@ -155,12 +177,21 @@ class TestDerived:
 # ---------------------------------------------------------------------------
 
 class TestProgressCaption:
-    def test_downloading_caption_has_bar_percent_speed_size_eta(self):
+    """The values the caption is built from, read through the built-in body."""
+
+    def test_the_built_in_body_is_title_stage_and_bar(self):
+        assert _plain(pc.build_progress_caption(INFO, _progress())) == (
+            "*Artemis II to the Moon*\nDownloading…\n▓▓▓▓▓▓▓░░░░░"
+        )
+
+    def test_a_template_with_every_placeholder_has_all_the_facts(self):
+        _prime(FULL_BODY)
         caption = _plain(pc.build_progress_caption(
-            INFO, _progress(), elapsed=3, fields=ALL_FIELDS))
+            INFO, _progress(), quality="1080p", elapsed=3))
         assert "Artemis II to the Moon" in caption
         assert "▓" in caption and "░" in caption
         assert "62%" in caption
+        assert "1080p" in caption
         assert "3.2 MB/s" in caption
         assert "20.0 MB / 32.1 MB" in caption
         assert "ETA 0:42" in caption
@@ -169,7 +200,7 @@ class TestProgressCaption:
     def test_bar_is_always_the_same_length(self):
         for percent in (0, 3, 25, 50, 71, 99, 100):
             caption = _plain(pc.build_progress_caption(
-                INFO, _progress(percent=percent, eta=1), fields=ALL_FIELDS))
+                INFO, _progress(percent=percent, eta=1)))
             bar_line = next(
                 line for line in caption.splitlines()
                 if pc.BAR_FULL in line or pc.BAR_EMPTY in line
@@ -177,22 +208,29 @@ class TestProgressCaption:
             cells = bar_line.split(" ")[0]
             assert len(cells) == pc.BAR_WIDTH, (percent, bar_line)
 
+    def test_the_bar_is_bare_unless_the_body_asks_for_the_number(self):
+        caption = _plain(pc.build_progress_caption(INFO, _progress()))
+        assert "%" not in caption
+        _prime(PERCENT_BODY)
+        assert "62%" in _plain(pc.build_progress_caption(INFO, _progress()))
+
     def test_no_total_size_means_no_invented_percent(self):
+        _prime("*@title*\n@stage\n@bar @percent\n@facts")
         caption = _plain(pc.build_progress_caption(
             INFO,
             {"percent": None, "downloaded_bytes": 13_002_342,
              "total_bytes": None, "speed": 1_000_000, "eta": None},
-            fields=ALL_FIELDS,
         ))
-        assert "%" not in caption.replace("100%", "")
+        assert "%" not in caption
         assert "12.4 MB" in caption
         assert "977 KB/s" in caption
         assert "░" not in caption  # no bar without a percentage
 
     def test_downloaded_only_caption_still_shows_progress_data(self):
+        _prime("*@title*\n@stage\n@facts")
         caption = _plain(pc.build_progress_caption(
             INFO, {"percent": None, "downloaded_bytes": 5_242_880,
-                   "speed": None, "eta": None}, fields=ALL_FIELDS,
+                   "speed": None, "eta": None},
         ))
         assert "5.0 MB" in caption
         assert "Downloading" in caption
@@ -201,18 +239,23 @@ class TestProgressCaption:
         caption = _plain(pc.build_progress_caption(INFO, {}))
         assert "Downloading…" in caption
         assert "%" not in caption
+        # No percentage means no bar: the stage line is what is left.
+        assert "░" not in caption
 
     def test_processing_stage_has_no_eta(self):
+        _prime("*@title*\n@stage\n@percent\n@facts")
         caption = _plain(pc.build_progress_caption(
-            INFO, _progress(percent=100, eta=0), stage="processing",
-            fields=ALL_FIELDS))
+            INFO, _progress(percent=100, eta=0), stage="processing"))
         assert "Processing…" in caption
         assert "ETA" not in caption
+        # A finished stage has no bar: the number is the whole measurement.
         assert "100%" in caption
+        assert "░" not in caption
 
     def test_quality_is_shown_when_known(self):
+        _prime("*@title*\n@stage\n@quality")
         caption = _plain(pc.build_progress_caption(
-            INFO, _progress(), quality="1080p", fields=ALL_FIELDS))
+            INFO, _progress(), quality="1080p"))
         assert "1080p" in caption
 
     def test_caption_fits_the_telegram_limit(self):
@@ -221,8 +264,8 @@ class TestProgressCaption:
             "channel": "C" * 500,
             "duration": 10,
         }
-        caption = pc.build_progress_caption(
-            info, _progress(), elapsed=1, fields=ALL_FIELDS)
+        _prime("@title\n@stage\n@bar\n@facts")
+        caption = pc.build_progress_caption(info, _progress(), elapsed=1)
         assert len(caption) <= 1024
 
     def test_caption_is_markdown_escaped(self):
@@ -232,11 +275,11 @@ class TestProgressCaption:
 
     def test_na_values_from_the_engine_are_ignored(self):
         # yt-dlp used to emit the literal string "NA" for absent fields.
+        _prime(FULL_BODY)
         caption = _plain(pc.build_progress_caption(
             INFO,
             {"percent": None, "downloaded_bytes": 1_000,
              "total_bytes": "NA", "speed": "NA", "eta": "NA"},
-            fields=ALL_FIELDS,
         ))
         assert "NA" not in caption
         assert "%" not in caption
@@ -328,7 +371,15 @@ class TestThrottle:
 # ---------------------------------------------------------------------------
 
 class TestRealEngineShapes:
-    """Shapes observed from the engine on real downloads."""
+    """Shapes observed from the engine on real downloads.
+
+    The facts line is the operator's choice, so this class primes the body that
+    asks for all of it — the values are what these tests are about.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _facts_body(self):
+        _prime(FULL_BODY)
 
     def test_hls_job_shows_percent_without_a_drifting_denominator(self):
         # YouTube HLS: no total_bytes, only an estimate that drifts 340MB->504MB.
@@ -342,7 +393,7 @@ class TestRealEngineShapes:
             "speed": 1_048_576,
             "eta": None,
             "elapsed": 61.0,
-        }, elapsed=61.0, fields=ALL_FIELDS))
+        }, elapsed=61.0))
 
         assert "37%" in caption
         assert "▓" in caption
@@ -358,7 +409,7 @@ class TestRealEngineShapes:
             "total_bytes": 10_202_210,
             "speed": 512_000,
             "eta": 10,
-        }, elapsed=4.0, fields=ALL_FIELDS))
+        }, elapsed=4.0))
         assert "49%" in caption
         assert "4.9 MB / 9.7 MB" in caption
 
@@ -371,7 +422,7 @@ class TestRealEngineShapes:
             "total_bytes_estimate": None,
             "speed": 1_258_291,
             "eta": None,
-        }, elapsed=9.0, fields=ALL_FIELDS))
+        }, elapsed=9.0))
         assert "%" not in caption
         assert "░" not in caption
         assert "12.4 MB" in caption
@@ -381,5 +432,5 @@ class TestRealEngineShapes:
     def test_koyura_elapsed_is_used_when_present(self):
         caption = _plain(pc.build_progress_caption(INFO, {
             "percent": 50.0, "downloaded_bytes": 500, "total_bytes": 1000,
-        }, elapsed=125.0, fields=ALL_FIELDS))
+        }, elapsed=125.0))
         assert "2:05 elapsed" in caption

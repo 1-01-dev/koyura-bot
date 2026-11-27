@@ -346,7 +346,7 @@ def test_admin_groups_its_blocks_into_separate_panels():
     assert 'id="file-table"' in system
     assert _page("/admin/limits").count('class="card panel" id="limits-card"') == 1
     assert _page("/admin/bot").count('class="card panel" id="languages-card"') == 1
-    assert 'id="progress-card"' in _page("/admin/bot")
+    assert 'id="progress-card"' not in _page("/admin/bot")
     assert 'id="templates-card"' in _page("/admin/bot")
     # The disk panels and the limits form are not on the same page any more.
     assert "Download limits" not in system

@@ -10,20 +10,30 @@ Everything here is pure: given the ``/api/info`` payload and the engine's
 ``progress`` dict it returns a MarkdownV2 caption. No Telegram, no clock, no
 network, so the formatting and throttling rules are unit-testable.
 
-*Which* lines a caption carries is the operator's choice — eight checkboxes in
-Admin → **Progress fields**, read by the bot through ``progress_fields`` and
-handed in as ``fields=``. The default is the title and the bar; a caption whose
-switches are all off still says the stage, so it can never be empty.
+*What* the live message says is the operator's ``progress`` template (Admin →
+**Message templates**), rendered by ``message_templates`` with the values this
+module derives: ``@title``, ``@stage``, ``@bar``, ``@percent``, ``@size``,
+``@speed``, ``@eta``, ``@elapsed``, ``@quality`` and the pre-joined ``@facts``
+line. There is no second set of switches: the template *is* the choice, so the
+panel preview and the chat agree.
+
+Two rules survive any template: the stage line is always a value (so
+"Downloading…" is never missing from the words on offer) and a body that is
+empty, broken or unavailable falls back to the built-in caption, never to an
+empty message.
 """
 from __future__ import annotations
 
+import logging
 import math
 import time
 
 import download_card
+import message_kinds
 import message_templates
-import progress_fields as fields_module
 from i18n import escape_md, t
+
+logger = logging.getLogger(__name__)
 
 CAPTION_MAX = download_card.CAPTION_MAX
 CAPTION_BUDGET = download_card.CAPTION_BUDGET
@@ -201,15 +211,12 @@ def _normalised_stage(stage: str, percent: float | None) -> str:
     return stage
 
 
-def _bar_text(percent: float | None, shown: fields_module.Fields) -> str | None:
-    """The bar, the bare percentage, or nothing — whichever is switched on."""
-    if percent is None:
-        return None
-    if shown["show_bar"]:
-        return progress_bar(percent, show_percent=shown["show_percent"]) or None
-    if shown["show_percent"]:
-        return f"{percent:.0f}%"
-    return None
+def _title_text(info: dict, lang: object = None) -> str:
+    """The video's own name, unescaped: the template escapes what it inserts."""
+    title = str(info.get("title") or "").strip() or t("card.download", lang)
+    if len(title) > 300:
+        title = title[:299] + "…"
+    return title
 
 
 def _size_fact(progress: dict) -> str | None:
@@ -228,13 +235,20 @@ def _speed_fact(progress: dict) -> str | None:
     return format_speed(progress.get("speed"))
 
 
+def _eta_value(progress: dict, percent: float | None) -> str | None:
+    """``0:42`` — the engine's estimate, else remaining bytes over speed.
+
+    Nothing is left to report at 100%: yt-dlp reports ``eta 0`` there, and a
+    "0:00 left" line would sit in the caption after the work is done.
+    """
+    if percent is not None and percent >= 100:
+        return None
+    return format_eta(derive_eta(progress))
+
+
 def _eta_fact(progress: dict, percent: float | None, lang: object) -> str | None:
-    if percent is None or percent >= 100:
-        return None
-    eta = derive_eta(progress)
-    if eta is None:
-        return None
-    return t("progress.eta", lang, eta=format_eta(eta))
+    eta = _eta_value(progress, percent)
+    return t("progress.eta", lang, eta=eta) if eta else None
 
 
 def _elapsed_fact(elapsed: float | None, lang: object) -> str | None:
@@ -244,28 +258,86 @@ def _elapsed_fact(elapsed: float | None, lang: object) -> str | None:
 
 def _facts_line(
     progress: dict,
-    shown: fields_module.Fields,
     *,
     percent: float | None,
     quality: str | None,
     elapsed: float | None,
     lang: object,
-    percent_text: str | None = None,
 ) -> str:
-    """The ``a · b · c`` line: every switched-on fact the engine actually knows.
+    """The ``a · b · c`` line: every fact the engine actually knows.
 
-    ``percent_text`` carries the number here when there is no bar for it to sit
-    next to, so ``show_percent`` alone still says something.
+    This is ``@facts``, for an operator who wants the old one-line summary. The
+    percentage comes first and is the same number ``@bar`` prints, so a body
+    that uses both shows it twice — write one or the other.
     """
     candidates = (
-        ("show_percent", percent_text),
-        ("show_quality", str(quality) if quality else None),
-        ("show_size", _size_fact(progress)),
-        ("show_speed", _speed_fact(progress)),
-        ("show_eta", _eta_fact(progress, percent, lang)),
-        ("show_elapsed", _elapsed_fact(elapsed, lang)),
+        f"{percent:.0f}%" if percent is not None else None,
+        str(quality) if quality else None,
+        _size_fact(progress),
+        _speed_fact(progress),
+        _eta_fact(progress, percent, lang),
+        _elapsed_fact(elapsed, lang),
     )
-    return " · ".join(text for name, text in candidates if shown[name] and text)
+    return " · ".join(text for text in candidates if text)
+
+
+def progress_values(
+    info: dict,
+    progress: dict | None = None,
+    *,
+    stage: str = "downloading",
+    quality: str | None = None,
+    elapsed: float | None = None,
+    lang: object = None,
+) -> dict[str, str]:
+    """Every value the ``progress`` template can use, already formatted.
+
+    Unescaped on purpose: ``message_templates`` escapes a value when it inserts
+    it and leaves the operator's prose alone. An unknown number is the empty
+    string, which makes its line disappear instead of printing a zero.
+
+    ``@bar`` is the 12 cells alone and ``@percent`` the number: the operator
+    writes ``@bar @percent`` for the old "bar with a percentage after it", and
+    the bar stays exactly 12 cells wide either way so the caption cannot
+    re-wrap between edits.
+    """
+    payload = progress if isinstance(progress, dict) else {}
+    percent = derive_percent(payload)
+    label = stage_label(_normalised_stage(stage, percent), lang)
+    return {
+        "title": _title_text(info, lang),
+        "stage": label,
+        "quality": str(quality or ""),
+        "bar": (
+            progress_bar(percent, show_percent=False)
+            if percent is not None
+            else ""
+        ),
+        "percent": f"{percent:.0f}%" if percent is not None else "",
+        "size": _size_fact(payload) or "",
+        "speed": _speed_fact(payload) or "",
+        "eta": _eta_value(payload, percent) or "",
+        "elapsed": format_eta(elapsed) or "" if elapsed is not None else "",
+        "facts": _facts_line(
+            payload, percent=percent, quality=quality, elapsed=elapsed, lang=lang
+        ),
+    }
+
+
+def _progress_body(lang: object) -> str | None:
+    """The active body: the operator's, else the catalogue's built-in one."""
+    trial = message_templates.custom_body("progress", lang)
+    return trial or message_kinds.template("progress", lang)
+
+
+def _built_in_caption(values: dict[str, str], lang: object) -> str:
+    """The floor: the stage line, so a broken template never sends nothing."""
+    lines = [f"*{escape_md(values['title'])}*"] if values["title"] else []
+    lines.append(escape_md(values["stage"] or stage_label(DEFAULT_STAGE, lang)))
+    for key in ("bar", "facts"):
+        if values[key]:
+            lines.append(escape_md(values[key]))
+    return _bounded(lines)
 
 
 def build_progress_caption(
@@ -276,71 +348,34 @@ def build_progress_caption(
     quality: str | None = None,
     elapsed: float | None = None,
     lang: object = None,
-    fields: fields_module.Fields | None = None,
 ) -> str:
-    """The card caption while a job runs.
+    """The card caption while a job runs, rendered from the ``progress`` template.
 
-    Which lines appear is the operator's choice (``progress_fields``, Admin →
-    Progress fields, default title + bar); only real data is drawn: when the
-    engine reports no total size the caption shows the downloaded amount and
-    the speed, never an invented percentage.
+    The default body is ``*@title*`` / ``@stage`` / ``@bar`` — the title, what is
+    happening, and the 12-cell bar — which is the caption this bot has always
+    sent plus the stage line the panel's Default entry shows. Only real data is
+    drawn: with no exact total size the caption shows the downloaded amount and
+    the speed, never an invented percentage, and ``@bar`` is dropped for a stage
+    that reports nothing (starting / processing / uploading).
 
-    The stage line is the floor: it is drawn when there is nothing to measure
-    *and* when neither the bar nor the percentage is on, so the message can
-    never be empty — a caption with no words looks like a broken bot.
+    A custom body that cannot be rendered (unknown placeholder, unpaired marker,
+    blank) is logged at DEBUG and the built-in text is sent instead, exactly like
+    every other message kind.
     """
-    progress = progress if isinstance(progress, dict) else {}
-    shown = fields if fields is not None else fields_module.defaults()
-    percent = derive_percent(progress)
-    stage = _normalised_stage(stage, percent)
-    label = stage_label(stage, lang)
-
-    lines: list[str] = []
-    if shown["show_title"]:
-        lines.append(_caption_title(info, lang))
-
-    measurable = percent is not None and stage == "downloading"
-    measure_on = shown["show_bar"] or shown["show_percent"]
-    if not measurable or not measure_on:
-        # Nothing is happening to measure, or both ways of showing it are off.
-        lines.append(download_card.escape_md(label))
-
-    bar = _bar_text(percent, shown)
-    if bar and shown["show_bar"]:
-        lines.append(download_card.escape_md(bar))
-
-    facts = _facts_line(
-        progress,
-        shown,
-        percent=percent,
-        quality=quality,
-        elapsed=elapsed,
-        lang=lang,
-        percent_text=None if shown["show_bar"] else bar,
+    values = progress_values(
+        info, progress, stage=stage, quality=quality, elapsed=elapsed, lang=lang
     )
-    if facts:
-        lines.append(download_card.escape_md(facts))
-
-    if not lines:
-        # Every switch is off (title and bar included): say what is happening.
-        lines.append(download_card.escape_md(label))
-    return message_templates.render(
-        "progress",
-        lang,
-        {
-            "title": str(info.get("title") or "").strip() or t("card.download", lang),
-            "stage": label,
-            "quality": quality or "",
-            "bar": progress_bar(percent) if percent is not None else "",
-            "percent": f"{percent:.0f}%" if percent is not None else "",
-            "size": _size_fact(progress) or "",
-            "speed": _speed_fact(progress) or "",
-            "eta": format_eta(derive_eta(progress)) or "",
-            "elapsed": format_eta(elapsed) or "",
-        },
-        _bounded(lines),
-        media="caption",
-    )
+    body = _progress_body(lang)
+    if body:
+        try:
+            return message_templates.render_body(body, values, media="caption")
+        except message_templates.TemplateError as error:
+            logger.debug(
+                "Template progress/%s is unusable (%s); sending the default",
+                lang,
+                error,
+            )
+    return _built_in_caption(values, lang)
 
 
 # ---------------------------------------------------------------------------

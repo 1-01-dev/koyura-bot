@@ -19,7 +19,6 @@ import pytest  # noqa: E402
 
 import bot_settings  # noqa: E402
 import progress_card  # noqa: E402
-import progress_fields  # noqa: E402
 from handlers import config, download_flow  # noqa: E402
 from koyura_client import KoyuraBusy  # noqa: E402
 
@@ -36,17 +35,18 @@ def _no_poll_delay(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _show_the_percentage():
-    """These tests read the percentage off the card; the default has it off."""
+    """These tests read the percentage off the card.
+
+    The built-in body draws the bar alone; a deployment that wants the number
+    writes it into the ``progress`` template, which is what this fixture primes.
+    """
     base = bot_settings.defaults()
-    fields = progress_fields.Fields(
-        values=dict.fromkeys(progress_fields.FIELD_NAMES, True)
-    )
     bot_settings.prime(
         bot_settings.Settings(
             languages=base.languages,
             default_language=base.default_language,
             source="panel",
-            progress=fields,
+            templates={"progress": {"en": "*@title*\n@stage\n@bar @percent"}},
         )
     )
     yield

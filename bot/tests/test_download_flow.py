@@ -19,14 +19,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest  # noqa: E402
 
 import bot_settings  # noqa: E402
-import progress_fields  # noqa: E402
 from handlers import config, download_flow, sessions, stages  # noqa: E402
 
-# The caption shape here is "everything the engine knows", which is what these
-# tests were written against; the default is now title + bar only.
-ALL_FIELDS = progress_fields.Fields(
-    values=dict.fromkeys(progress_fields.FIELD_NAMES, True)
-)
+# The tests below read a percentage off the card. ``conftest`` primes the panel
+# defaults, whose built-in ``progress`` body draws the bar alone; a deployment
+# that wants the number writes it into its own template instead.
+SHOW_PERCENT_BODY = "*@title*\n@stage\n@bar @percent"
 
 
 @pytest.fixture(autouse=True)
@@ -39,25 +37,28 @@ def _no_poll_delay(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _show_every_progress_field(monkeypatch):
-    """Keep the pre-panel caption shape for this module.
+def _show_the_percentage(monkeypatch):
+    """Prime a panel answer whose ``progress`` template prints the number.
 
-    ``conftest`` primes the panel defaults (title + bar). The tests that assert
-    on a percentage, a speed or an ETA need those lines on, so the panel answer
-    for this module turns every switch on; ``test_progress_fields.py`` covers
-    the default and the per-flag combinations.
+    ``test_progress_card.py`` owns the built-in default (title, stage, bar);
+    this module only needs the percentage to be on the caption it reads.
     """
     base = bot_settings.defaults()
     shown = bot_settings.Settings(
         languages=base.languages,
         default_language=base.default_language,
         source="panel",
-        progress=ALL_FIELDS,
+        templates={"progress": {"en": SHOW_PERCENT_BODY}},
     )
     # Patch ``get`` itself, not just the cache: a test that fakes the clock
     # (``time.monotonic``) would otherwise make the cached answer look stale and
     # reach for the dashboard. ``monkeypatch`` undoes this after the test.
     monkeypatch.setattr(bot_settings, "get", AsyncMock(return_value=shown))
+    # Rendering is synchronous and reads the cached snapshot (``cached()``), so
+    # the answer has to be in the cache as well as behind ``get``.
+    bot_settings.prime(shown)
+    yield
+    bot_settings.reset_cache()
 
 
 def _plain(text: str) -> str:
