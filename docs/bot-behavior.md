@@ -153,6 +153,27 @@ plain text (text edits). The card is the first stage of the one-message chain:
 replaced by has arrived, so a refused upload never leaves the chat without a
 card.
 
+#### The send limit
+
+Telegram refuses a file above its own ceiling (`MAX_SEND_MB`, 2000 MB on the
+self-hosted Bot API, 20 on the public one), so the keyboard is built from
+`download_card.format_offer(info)` instead of the raw format list:
+
+* a format whose **known** size is above the limit gets no button at all, and the
+  filter runs before the ten-button cap, so a hidden format never takes a slot
+  from a sendable one;
+* a format with an **unknown** size stays — the engine still refuses it with its
+  own `--max-filesize`, and removing it would take the choice away;
+* the MP3 button is hidden when the expected audio size is above the limit. The
+  estimate is the engine's `audio.size_bytes`, or bitrate × duration
+  (`abr`/`tbr` × `duration` / 8) when the engine did not report one;
+* nothing fits at all → no keyboard. The status line becomes the title plus
+  **"All available formats are over the send limit (2000 MB). Try another link
+  or MP3."** (the MP3 is still possible). When the MP3 is too large as well the
+  line is **"This video is too large to send (limit 2000 MB)."** — or **"This
+  audio is too large…"** for a link that never had video. Both are in the
+  catalogue (`limit.*`), so a Russian chat reads “2000 МБ”.
+
 ### 4.3 Button press
 
 `download_callback` (`:507`):
@@ -223,7 +244,9 @@ undeletable is a DEBUG line, never a failure).
    → **"File not found after download."** + `download_error` event.
 9. Caption under the file: `download_card.build_file_caption(info,
    quality=…, size_bytes=…, duration=…)` → `*Title*`, `size · duration ·
-   quality`, `via Koyura`.
+   quality`, `via Koyura`. When the format was lowered to fit the send limit
+   (§4.5) one more line says so: **"Selected 1440p: 2160p does not fit the send
+   limit"**.
 10. Delivery: the file is uploaded as its **own** message (`sendVideo` /
     `sendAudio` / `sendDocument`, one retry after 1 s on any exception) and the
     progress message is deleted **after** the upload succeeded. A failed upload
@@ -234,6 +257,12 @@ undeletable is a DEBUG line, never a failure).
     `_stats["downloads"] += 1`; the local file is deleted (best effort).
 12. `entry["job_active"] = False` in a `finally` — the card is reusable after a
     failure, which is what makes "tap a format to try again" work.
+10. Delivery: the file is uploaded as its **own** message (`sendVideo` /
+    `sendAudio` / `sendDocument`, one retry after 1 s on any exception) and the
+    progress message is deleted **after** the upload succeeded. A failed upload
+    keeps the progress message and turns it into the error card
+    (**"Failed to upload file to Telegram."** + `download_error` event), and the
+    local file is deleted. The file itself is never deleted.
 
 ### 4.5 Direct commands (`/mp3`, `/mp4`, `/best`)
 
@@ -250,6 +279,21 @@ undeletable is a DEBUG line, never a failure).
   keyboard, and `started_at = now`;
 * `get_info` failing → **"Download service temporarily unavailable."** or
   **"Error: <message>"** written onto that status message, `_stats["errors"] += 1`.
+
+The requested format is resolved before the job starts
+(`download_flow.plan_choice`):
+
+* `/mp3` → refused on the status line when the MP3 estimate itself is over
+  `MAX_SEND_MB` (the same line the hidden button would have explained);
+* `/mp4` and `/best` → **the highest format that fits is pinned** by id instead
+  of letting the engine pick its own best, because the engine's best may be a
+  file Telegram refuses. When that is not the top format, the caption under the
+  file says which one was skipped: **"Selected 1440p: 2160p does not fit the
+  send limit"**;
+* nothing fits at all → the job never starts and the status line becomes
+  **"This video is too large to send (limit 2000 MB)."** (or "All available
+  formats are over the send limit … try another link or MP3" when the audio
+  still fits).
 
 ---
 
