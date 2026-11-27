@@ -85,6 +85,70 @@ def resolve_choice(info: dict, action: str) -> tuple[str, str | None, int | None
     return "video", action, int(height) if height else None
 
 
+@dataclass(frozen=True)
+class Choice:
+    """What a tap (or ``/mp4``) will actually ask the engine for.
+
+    ``refusal`` is the catalogue key of the "nothing can be sent" line: the
+    caller renders it in the user's language instead of starting a job.
+    ``skipped`` is ``(chosen, skipped)`` quality labels when the best quality was
+    over the send limit and a smaller one was pinned, so the caption can say so.
+    """
+
+    fmt: str
+    format_id: str | None = None
+    height: int | None = None
+    skipped: tuple[str, str] | None = None
+    refusal: str | None = None
+
+
+def plan_choice(
+    info: dict, action: str, *, limit_bytes: int | None = None
+) -> Choice:
+    """The choice that can actually be delivered, not just the one asked for.
+
+    ``best`` no longer leaves the decision to the engine: the engine's best may
+    be a file Telegram refuses, and the user would only learn that after a
+    download. The highest format whose **known** size fits the ceiling is pinned
+    instead, and when that is not the top one the caller is told which was
+    skipped. ``mp3`` is treated the same way: an MP3 predicted to be too large
+    is refused before the job starts rather than after it fails.
+
+    An explicit format id (a button) is forwarded untouched — the keyboard only
+    offers formats that fit — while a format that the limit removed is caught
+    above by the offer.
+    """
+    if action == "mp3":
+        offer = download_card.format_offer(info, limit_bytes=limit_bytes)
+        if offer.mp3 is None:
+            return Choice("audio", refusal=download_card.limit_notice_key(info))
+        return Choice("audio")
+
+    if action != "best":
+        fmt, format_id, height = resolve_choice(info, action)
+        return Choice(fmt, format_id, height)
+
+    offer = download_card.format_offer(info, limit_bytes=limit_bytes)
+    if not offer.formats:
+        return Choice("video", refusal=download_card.limit_notice_key(info))
+
+    chosen = offer.formats[0]
+    top = video_formats(info)[0]
+    skipped = None
+    if str(chosen.get("id")) != str(top.get("id")):
+        skipped = (
+            download_card.format_quality(chosen.get("height"), chosen.get("label")),
+            download_card.format_quality(top.get("height"), top.get("label")),
+        )
+    height = chosen.get("height")
+    return Choice(
+        "video",
+        str(chosen.get("id")) if chosen.get("id") is not None else None,
+        int(height) if height else None,
+        skipped=skipped,
+    )
+
+
 def quality_label(fmt: str, format_id: str | None, height: int | None, info: dict) -> str:
     """The quality tag for the dashboard event and the caption under the file."""
     if fmt == "audio":
@@ -108,7 +172,7 @@ def size_hint(info: dict, fmt: str, format_id: str | None, height: int | None) -
     """
     audio = audio_track(info)
     if fmt == "audio":
-        for field_name in ("filesize", "filesize_approx"):
+        for field_name in ("size_bytes", "filesize", "filesize_approx"):
             value = progress_card.as_number(audio.get(field_name))
             if value and value > 0:
                 return int(value)
@@ -127,13 +191,15 @@ def size_hint(info: dict, fmt: str, format_id: str | None, height: int | None) -
     if not chosen:
         return None
 
-    size = progress_card.as_number(chosen.get("filesize"))
-    if not size or size <= 0:
-        size = progress_card.as_number(chosen.get("filesize_approx"))
+    size = None
+    for field_name in ("size_bytes", "filesize", "filesize_approx"):
+        size = progress_card.as_number(chosen.get(field_name))
+        if size and size > 0:
+            break
     if not size or size <= 0:
         return None
     total = float(size)
-    audio_size = progress_card.as_number(audio.get("filesize"))
+    audio_size = download_card.format_size_bytes(audio)
     if audio_size and audio_size > 0:
         total += audio_size
     return int(total)
@@ -159,6 +225,7 @@ class Job:
     started_at: float
     url_hash: str | None = None
     lang: str = "en"
+    skipped: tuple[str, str] | None = None
 
     @property
     def title(self) -> str:
@@ -167,6 +234,13 @@ class Job:
     @property
     def quality(self) -> str:
         return quality_label(self.fmt, self.format_id, self.height, self.info)
+
+    @property
+    def limit_note(self) -> str | None:
+        """The caption line explaining a quality that was lowered to fit."""
+        if not self.skipped:
+            return None
+        return texts.limit_note(self.skipped[0], self.skipped[1], self.lang)
 
 
 def fallback_sender(bot, chat_id: int):
@@ -209,6 +283,7 @@ async def run_download(
     tracker=None,
     entry: dict | None = None,
     lang: str | None = None,
+    skipped: tuple[str, str] | None = None,
 ) -> None:
     """Start a job, move it through its stages and finish it with the file.
 
@@ -232,6 +307,7 @@ async def run_download(
         started_at=started_at,
         url_hash=url_hash,
         lang=lang,
+        skipped=skipped,
     )
     if tracker is None:
         tracker = stages.StageTracker(
@@ -531,6 +607,7 @@ async def _deliver(
         size_bytes=size_bytes,
         duration=status.get("duration"),
         lang=job.lang,
+        note=job.limit_note,
     )
 
     # Stage 3: the file replaces the progress message. It is uploaded first and
@@ -688,6 +765,12 @@ async def run_direct(
 
     The command's own status message is the first stage. It has no media and no
     buttons, so every replacement is a text message until the file arrives.
+
+    The requested format is resolved **before** the job starts: ``/mp4`` and
+    ``/best`` ask for "the best quality", and the best quality may be a file
+    Telegram refuses. In that case the highest sendable format is pinned and the
+    caption says which one was skipped; when nothing fits at all, the status line
+    becomes the explanation instead of a download that cannot succeed.
     """
     user = update.effective_user
     if user is None:
@@ -708,10 +791,11 @@ async def run_direct(
         stats.record_error()
         return
 
-    height = None
-    if format_id:
-        found = find_format(info, format_id)
-        height = found.get("height") if found else None
+    action = "mp3" if fmt == "audio" else (str(format_id) if format_id else "best")
+    choice = plan_choice(info, action)
+    if choice.refusal:
+        await stage.edit(texts.limit_message(choice.refusal, lang))
+        return
 
     await run_download(
         context=context,
@@ -719,12 +803,14 @@ async def run_direct(
         status_message_id=status_message.message_id,
         url=url,
         info=info,
-        fmt=fmt,
-        format_id=format_id,
-        height=height,
+        fmt=choice.fmt,
+        format_id=choice.format_id,
+        height=choice.height,
         user_id=user.id,
         username=user.username or str(user.id),
         started_at=time.time(),
         direct=True,
         tracker=stage,
+        lang=lang,
+        skipped=choice.skipped,
     )

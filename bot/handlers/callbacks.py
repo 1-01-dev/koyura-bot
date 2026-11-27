@@ -107,15 +107,33 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     info = entry["info"]
     if action in PICKER_ACTIONS:
         # Legacy MP4 button: show the per-format keyboard instead of guessing.
-        await query.answer()
-        await query.edit_message_reply_markup(
-            reply_markup=download_card.build_format_keyboard(
-                info, message_id, url_hash, lang=lang
-            )
+        markup = download_card.build_format_keyboard(
+            info, message_id, url_hash, lang=lang
         )
+        if markup is None:
+            # Nothing fits the send limit: the tap gets the reason, not a card
+            # with a "best quality" button that cannot be delivered.
+            await query.answer(
+                texts.t(download_card.limit_notice_key(info), lang,
+                        limit=texts.send_limit_label(lang)),
+                show_alert=True,
+            )
+            return
+        await query.answer()
+        await query.edit_message_reply_markup(reply_markup=markup)
         return
 
     action = ACTION_ALIASES.get(action, action)
+
+    # The format that will actually be sent, decided before the answer so a
+    # "nothing fits" refusal can still use the only ``answer()`` this query gets.
+    choice = download_flow.plan_choice(info, action)
+    if choice.refusal:
+        await query.answer(
+            texts.t(choice.refusal, lang, limit=texts.send_limit_label(lang)),
+            show_alert=True,
+        )
+        return
 
     # The card locks itself while a job runs: a second format on the same
     # message would race for the same output and upload the wrong file.
@@ -125,7 +143,6 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     entry["job_active"] = True
     await query.answer()
 
-    fmt, format_id, height = download_flow.resolve_choice(info, action)
     tracker = stages.StageTracker(
         context.bot,
         entry["chat_id"],
@@ -139,9 +156,9 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             status_message_id=message_id,
             url=entry["url"],
             info=info,
-            fmt=fmt,
-            format_id=format_id,
-            height=height,
+            fmt=choice.fmt,
+            format_id=choice.format_id,
+            height=choice.height,
             user_id=entry["user_id"],
             username=entry.get("username", ""),
             started_at=entry["created"],
@@ -149,6 +166,7 @@ async def on_format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             tracker=tracker,
             entry=entry,
             lang=lang,
+            skipped=choice.skipped,
         ),
         entry,
     )

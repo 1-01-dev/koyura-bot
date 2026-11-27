@@ -12,8 +12,11 @@ package on its import path.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+import send_limit
 
 # The one MarkdownV2 escaper of the bot lives in ``i18n``; it is re-exported here
 # because the captions in this module and in ``progress_card`` are built from it.
@@ -124,13 +127,94 @@ def video_formats(info: dict) -> list[dict]:
     )
 
 
-def _video_formats(info: dict) -> list[dict]:
-    formats = [f for f in (info.get("formats") or []) if isinstance(f, dict)]
-    return sorted(
-        formats,
-        key=lambda f: (f.get("height") or 0, f.get("fps") or 0),
-        reverse=True,
+# ``video_formats`` used to exist twice, under this private alias as well; keep
+# the alias so older importers (and the tests that patch it) keep working.
+_video_formats = video_formats
+
+
+def format_size_bytes(fmt: object) -> int | None:
+    """A format's reported size in bytes; ``None`` when the engine had none."""
+    return send_limit.known_size(fmt)
+
+
+def audio_size_bytes(info: dict) -> int | None:
+    """The MP3 the bot would send: reported size, else bitrate × duration."""
+    return send_limit.audio_size(info)
+
+
+def fits_send_limit(fmt: object, limit_bytes: int | None = None) -> bool:
+    """Whether a format's **known** size is inside the Telegram ceiling.
+
+    An unknown size returns ``True``: the engine refuses an oversized file with
+    its own ``--max-filesize``, and hiding it here would take away a choice the
+    user may well still have (a format's size is often reported only after the
+    download starts).
+    """
+    return send_limit.fits(format_size_bytes(fmt), limit_bytes)
+
+
+@dataclass(frozen=True)
+class FormatOffer:
+    """What the keyboard may offer for one ``/api/info`` payload.
+
+    ``formats`` are the sendable video formats, highest quality first;
+    ``mp3`` is the audio entry (``None`` when its size is known to be over the
+    limit) and ``hidden_videos`` counts what the limit removed, so a caller can
+    tell "nothing was offered because everything is too big" apart from "this
+    link never had video" without re-doing the filtering.
+    """
+
+    formats: list[dict]
+    mp3: dict | None
+    hidden_videos: int = 0
+
+    @property
+    def empty(self) -> bool:
+        """Nothing at all can be sent: no video format and no MP3."""
+        return not self.formats and self.mp3 is None
+
+    @property
+    def all_videos_hidden(self) -> bool:
+        """There were video formats, and the limit removed every one of them."""
+        return not self.formats and self.hidden_videos > 0
+
+    @property
+    def truncated(self) -> bool:
+        return len(self.formats) > MAX_FORMAT_BUTTONS
+
+
+def format_offer(info: dict, *, limit_bytes: int | None = None) -> FormatOffer:
+    """Split the engine's formats into what may be offered and what may not.
+
+    The filter runs **before** the ``MAX_FORMAT_BUTTONS`` truncation, so a
+    format the bot cannot send never takes a slot away from one it can.
+    """
+    formats = video_formats(info)
+    visible = [fmt for fmt in formats if fits_send_limit(fmt, limit_bytes)]
+    audio: dict | None = {"size_bytes": audio_size_bytes(info)}
+    if not send_limit.fits(audio["size_bytes"], limit_bytes):
+        audio = None
+    return FormatOffer(
+        formats=visible,
+        mp3=audio,
+        hidden_videos=len(formats) - len(visible),
     )
+
+
+def limit_notice_key(info: dict, *, limit_bytes: int | None = None) -> str:
+    """Which "this cannot be sent" line explains an empty offer.
+
+    * nothing fits and the MP3 is still available → *try another link or MP3*;
+    * no video fits and the MP3 does not either → *this video is too large*;
+    * the link had no video at all and the audio is too large → *this audio is
+      too large*.
+    """
+    offer = format_offer(info, limit_bytes=limit_bytes)
+    if offer.mp3 is not None:
+        return "limit.all_too_big"
+    if offer.hidden_videos:
+        return "limit.video_too_big"
+    return "limit.audio_too_big"
 
 
 def card_headline(info: dict, lang: object = None) -> str:
@@ -243,14 +327,23 @@ def callback_data_fits(data: str) -> bool:
 
 
 def build_format_keyboard(
-    info: dict, msg_id: int, url_hash: str, *, lang: object = None
-) -> InlineKeyboardMarkup:
-    """One button per video format plus MP3, two per row, sizes in the labels."""
-    formats = _video_formats(info)
-    shown = formats[:MAX_FORMAT_BUTTONS]
+    info: dict,
+    msg_id: int,
+    url_hash: str,
+    *,
+    lang: object = None,
+    limit_bytes: int | None = None,
+) -> InlineKeyboardMarkup | None:
+    """One button per **sendable** video format plus MP3, two per row.
+
+    ``None`` means "nothing can be offered": the caller then explains why with
+    ``limit_notice_key`` instead of drawing an empty keyboard, which Telegram
+    would reject.
+    """
+    offer = format_offer(info, limit_bytes=limit_bytes)
 
     buttons = []
-    for fmt in shown:
+    for fmt in offer.formats[:MAX_FORMAT_BUTTONS]:
         label = str(fmt.get("button_label") or fmt.get("label") or "video")
         action = str(fmt.get("id") or "best")
         if not callback_data_fits(build_callback_data(msg_id, url_hash, action)):
@@ -262,22 +355,25 @@ def build_format_keyboard(
             )
         )
 
-    audio = info.get("audio") or {}
-    audio_size = format_filesize(audio.get("size_bytes")) if audio else None
-    buttons.append(
-        InlineKeyboardButton(
-            f"MP3 · {audio_size}" if audio_size else "MP3",
-            callback_data=build_callback_data(msg_id, url_hash, "mp3"),
+    if offer.mp3 is not None:
+        audio_size = format_filesize(offer.mp3.get("size_bytes"))
+        buttons.append(
+            InlineKeyboardButton(
+                f"MP3 · {audio_size}" if audio_size else "MP3",
+                callback_data=build_callback_data(msg_id, url_hash, "mp3"),
+            )
         )
-    )
 
-    if len(formats) > MAX_FORMAT_BUTTONS:
+    if offer.truncated:
         buttons.append(
             InlineKeyboardButton(
                 t("card.best_quality", lang),
                 callback_data=build_callback_data(msg_id, url_hash, "best"),
             )
         )
+
+    if not buttons:
+        return None
 
     rows = [buttons[i : i + BUTTONS_PER_ROW] for i in range(0, len(buttons), BUTTONS_PER_ROW)]
     return InlineKeyboardMarkup(rows)
@@ -328,8 +424,13 @@ def build_file_caption(
     duration: object = None,
     *,
     lang: object = None,
+    note: str | None = None,
 ) -> str:
-    """Title, size, duration and quality — replaces the old ``Sent: <title>``."""
+    """Title, size, duration and quality — replaces the old ``Sent: <title>``.
+
+    ``note`` is an extra line the flow has to explain: today only "the best
+    quality did not fit the send limit, so a smaller one was chosen".
+    """
     title = str(info.get("title") or "").strip() or t("card.download", lang)
     if len(title) > 300:
         title = title[:299] + "…"
@@ -342,5 +443,7 @@ def build_file_caption(
     caption = f"*{escape_md(title)}*"
     if detail:
         caption += f"\n{escape_md(detail)}"
+    if note:
+        caption += f"\n{escape_md(note)}"
     caption += f"\n{escape_md(t('card.via', lang))}"
     return caption[:CAPTION_BUDGET]

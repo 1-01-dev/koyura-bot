@@ -11,6 +11,11 @@ from __future__ import annotations
 import os
 import re
 
+# The Telegram upload ceiling (``MAX_SEND_MB``, default 2000) lives in
+# ``send_limit.py``: ``download_card`` filters the keyboard with it and
+# ``download_card`` sits outside this package, so the knob travels with it rather
+# than here. It is an environment variable all the same.
+
 # The shared downloads volume: the engine writes, the bot uploads.
 DOWNLOADS_PATH = os.environ.get("DOWNLOADS_PATH", "/downloads")
 

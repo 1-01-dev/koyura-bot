@@ -161,6 +161,21 @@ async def send_preview(update: Update, url: str, lang: str | None = None) -> Non
         await tracker.edit(texts.md("engine.error", lang, error=error))
         return
 
+    offer = download_card.format_offer(info)
+    if offer.all_videos_hidden or offer.empty:
+        # Nothing sendable is left to put on a keyboard: the status line becomes
+        # the explanation (with the title, so several links in a row stay
+        # distinguishable) instead of a card whose only button would fail.
+        await tracker.edit(
+            "\n\n".join(
+                (
+                    download_card.card_headline(info, lang),
+                    texts.limit_message(download_card.limit_notice_key(info), lang),
+                )
+            )
+        )
+        return
+
     caption = download_card.build_card(info, lang=lang)
 
     def keyboard(message_id: int):
