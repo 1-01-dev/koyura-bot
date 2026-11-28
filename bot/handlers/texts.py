@@ -108,6 +108,19 @@ def button(key: str, lang: object = None) -> str:
     return message_templates.render_line(key, lang, _t(key, lang))
 
 
+def render_template(
+    kind: str, lang: object, values: dict, default: str
+) -> str:
+    """A whole message of ``kind`` from the panel's template, else ``default``.
+
+    For the screens the bot assembles itself (the subscription gate builds its
+    channel list before the text exists), where ``md`` — one catalogued line —
+    is not the right shape: the custom body may use ``@channels`` and the
+    default is already escaped MarkdownV2.
+    """
+    return message_templates.render(kind, lang, values, default)
+
+
 # ---------------------------------------------------------------------------
 # Names of things
 # ---------------------------------------------------------------------------

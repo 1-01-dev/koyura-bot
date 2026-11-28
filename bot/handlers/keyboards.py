@@ -28,6 +28,8 @@ BUTTONS_PER_ROW = 2
 LANGUAGE_PREFIX = "lang"
 WELCOME_PREFIX = "welcome"
 NAV_PREFIX = "nav"
+#: The subscription gate's own buttons: ``sub:check`` and ``sub:open:<id>``.
+SUBSCRIPTION_PREFIX = "sub"
 
 # The one navigation target so far: the welcome screen. A button carries a
 # ``callback_data`` and nothing else, so an old message stays valid.
@@ -54,6 +56,24 @@ def welcome_data(action: str) -> str:
 def nav_data(action: str = HOME_ACTION) -> str:
     """``nav:home`` — the Back button on every sub-screen."""
     return f"{NAV_PREFIX}:{action}"
+
+
+def subscription_data(action: str = "check") -> str:
+    """``sub:check`` — the gate's one actionable button."""
+    return f"{SUBSCRIPTION_PREFIX}:{action}"
+
+
+def parse_subscription(data: object) -> str | None:
+    """``"sub:check"`` -> ``"check"``, ``"sub:open:3"`` -> ``"open"``.
+
+    A channel button needs no channel id in the callback: its URL is on the
+    button and Telegram opens it without asking the bot. The id is only kept in
+    the payload so a tap can be logged, so the parser reduces it to the action.
+    """
+    parts = str(data or "").split(":")
+    if len(parts) < 2 or parts[0] != SUBSCRIPTION_PREFIX:
+        return None
+    return parts[1].strip() or None
 
 
 def parse_language(data: object) -> tuple[str, bool] | None:
@@ -166,11 +186,67 @@ def with_back(markup, lang: object = None):
     return InlineKeyboardMarkup(rows)
 
 
+def subscription(gate, lang: object = None, *, missing_only=None):
+    """The gate's keyboard: one link button per channel, then the check.
+
+    A channel button is a **URL** button, not a callback: tapping it opens the
+    channel, which is the whole point, and the bot never has to know about it.
+    The check button is a callback (``sub:check``) because only the bot can ask
+    Telegram whether the user is in.
+
+    ``missing_only`` narrows the list to the channels the user still has to
+    join; the check button is always there, because that is what makes the
+    screen retryable without another link.
+    """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    channels = list(getattr(gate, "channels", ()) or ())
+    if missing_only is not None:
+        wanted = {channel.id for channel in missing_only}
+        narrowed = [channel for channel in channels if channel.id in wanted]
+        channels = narrowed or channels
+
+    rows = []
+    for channel in channels:
+        url = channel.link or (
+            f"https://t.me/{channel.username}" if channel.username else ""
+        )
+        if not url:
+            continue
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    _channel_label(channel, lang),
+                    url=url,
+                )
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                texts.button("button.subscription_check", lang),
+                callback_data=subscription_data("check"),
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def _channel_label(channel, lang: object = None) -> str:
+    """``Open <title>``, falling back to the handle when there is no title."""
+    name = str(getattr(channel, "title", "") or "").strip()
+    if not name:
+        name = str(getattr(channel, "handle", "") or "")
+    open_label = texts.button("button.subscription_open", lang)
+    return f"{open_label}: {name}" if name else open_label
+
+
 __all__ = [
     "BUTTONS_PER_ROW",
     "HOME_ACTION",
     "LANGUAGE_PREFIX",
     "NAV_PREFIX",
+    "SUBSCRIPTION_PREFIX",
     "WELCOME_PREFIX",
     "back",
     "language_data",
@@ -178,7 +254,10 @@ __all__ = [
     "nav_data",
     "parse_language",
     "parse_nav",
+    "parse_subscription",
     "parse_welcome",
+    "subscription",
+    "subscription_data",
     "welcome",
     "welcome_data",
     "with_back",

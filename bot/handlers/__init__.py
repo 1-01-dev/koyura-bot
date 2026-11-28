@@ -45,6 +45,7 @@ from . import (
     sessions,
     stages,
     stats,
+    subscription,
     texts,
     url_flow,
 )
@@ -74,6 +75,9 @@ CALLBACK_PATTERN = r"^(dl|fmt|qty):"
 LANGUAGE_PATTERN = r"^lang:"
 WELCOME_PATTERN = r"^welcome:"
 NAV_PATTERN = r"^nav:"
+#: The subscription gate's buttons (``sub:check``, ``sub:open:<id>``). Its own
+#: scheme, so a gate button never looks like a language or a download.
+SUBSCRIPTION_PATTERN = r"^sub:"
 
 
 def register_handlers(application) -> None:
@@ -92,6 +96,11 @@ def register_handlers(application) -> None:
     application.add_handler(
         CallbackQueryHandler(onboarding.on_nav_button, pattern=NAV_PATTERN)
     )
+    application.add_handler(
+        CallbackQueryHandler(
+            subscription.on_subscription_button, pattern=SUBSCRIPTION_PATTERN
+        )
+    )
     # Free text only: commands are handled above and must never reach the link
     # handler, which would fetch info for a "/help" the user just typed.
     application.add_handler(
@@ -104,6 +113,7 @@ __all__ = [
     "COMMAND_HANDLERS",
     "LANGUAGE_PATTERN",
     "NAV_PATTERN",
+    "SUBSCRIPTION_PATTERN",
     "WELCOME_PATTERN",
     "callbacks",
     "commands",
@@ -116,6 +126,7 @@ __all__ = [
     "sessions",
     "stages",
     "stats",
+    "subscription",
     "texts",
     "url_flow",
 ]
