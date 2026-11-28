@@ -166,6 +166,10 @@ services:
       # writes back. The panel is the only writer; the watcher (root) reads it
       # through this volume's host path.
       - egress:/var/lib/koyura2/egress
+      # The preset message styles, read-only: they are committed next to
+      # the bot (bot/template_styles) and the panel only ever applies them,
+      # so an edit in the checkout shows up without a rebuild.
+      - ./bot/template_styles:/app/template_styles:ro
     # Loopback only: the admin panel must never be reachable from the LAN.
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-8080}:8080"

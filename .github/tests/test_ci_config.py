@@ -261,6 +261,22 @@ def test_the_panel_and_the_bot_share_one_database_volume(compose):
     assert any(mount.endswith(":/data") for mount in bot)
 
 
+def test_the_panel_reads_the_template_styles_from_the_bot_directory(compose):
+    """The preset styles live next to the bot; the panel only reads them.
+
+    They are one source of truth in the checkout (``bot/template_styles``), so a
+    style is a code review, not a file someone copies into a container. Applying
+    one is a database write, which is why the mount is read-only.
+    """
+    mounts = compose["services"]["dashboard"]["volumes"]
+    styles = [mount for mount in mounts if "template_styles" in mount]
+
+    assert len(styles) == 1, f"expected one style mount, got {styles}"
+    assert styles[0].startswith("./bot/template_styles:"), styles[0]
+    assert styles[0].endswith(":ro"), "the panel never writes a style file"
+    assert (REPO_ROOT / "bot" / "template_styles").is_dir()
+
+
 # ---------------------------------------------------------------------------
 # Images never run as root and never ship secrets
 # ---------------------------------------------------------------------------
