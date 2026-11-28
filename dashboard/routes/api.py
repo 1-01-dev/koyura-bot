@@ -14,9 +14,9 @@ from pydantic import BaseModel
 import auth
 import bot_languages
 import db
-import egress
 import message_catalog
 import message_templates
+import proxy_connections
 
 logger = logging.getLogger(__name__)
 
@@ -337,26 +337,60 @@ async def active_subscribers(request: Request) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Egress rule (internal, read-only)
+# Egress: the proxy connections the engine walks (internal)
 # ---------------------------------------------------------------------------
 
 @router.get("/api/egress")
-async def egress_rule(request: Request) -> dict[str, Any]:
-    """The outbound proxy rule the engine applies to the next job.
+async def egress_connections(request: Request) -> dict[str, Any]:
+    """The outbound connections, in the order the engine tries them.
 
-    ``{mode, proxy_url, wg_socks, assignment: {mode, services[]}}``. This is the
-    only endpoint that carries the proxy URL itself — a password lives in it —
-    so it is behind the shared internal token and never logged. A WireGuard mode
-    sends the SOCKS address the watcher reported and ``""`` when the tunnel is
-    not up, so a dead tunnel degrades to a direct connection instead of a broken
-    proxy.
+    ``{connections: [{id, name, kind, url, assignment: {mode, services[]},
+    enabled, status}], test_interval}``. This endpoint is internal and behind
+    the shared token, and it still carries **no secret**: the URL is stored
+    without a login, the password lives in ``EGRESS_PATH/secrets/<id>.txt``
+    (0600) which the engine mounts read-only, and ``username``, ``password_ref``
+    and ``config_path`` are never part of the answer. ``test_interval`` is the
+    panel's re-test period in minutes (0 = never).
     """
     if not _internal_token_ok(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
+    return await proxy_connections.engine_payload()
 
-    stored = await db.get_settings(prefix=egress.SETTING_PREFIX)
-    settings = egress.Egress.from_row(stored)
-    return settings.as_engine_payload(egress.read_status())
+
+@router.post("/api/egress/test/{connection_id}")
+async def test_egress_connection(
+    request: Request, connection_id: int
+) -> dict[str, Any]:
+    """Check one connection through ``https://api.ipify.org`` and store it.
+
+    The probe dials the same URL the engine would (the stored one plus the
+    credential from the secrets tree, or the tunnel's SOCKS address) and
+    records ``ok``/``fail`` with the external IP or a redacted error text. The
+    answer is the public view plus the test fields — a password never appears,
+    not even when curl echoes the proxy it could not use.
+    """
+    if not _internal_token_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        row = await proxy_connections.test_connection(connection_id)
+    except proxy_connections.ProxyConnectionError as error:
+        if error.code == "NotFound":
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    result = proxy_connections.public_view(row)
+    result.update(
+        {
+            "last_test_at": row.get("last_test_at"),
+            "last_test_result": row.get("last_test_result"),
+        }
+    )
+    logger.info(
+        "Egress check on connection %s (%s): %s",
+        row.get("id"),
+        row.get("name"),
+        row.get("status"),
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------

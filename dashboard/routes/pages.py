@@ -22,6 +22,7 @@ import egress
 import message_catalog
 import message_styles
 import message_templates
+import proxy_connections
 import service_catalog
 import service_cookies
 import subscriptions
@@ -1609,6 +1610,11 @@ async def save_proxy(request: Request) -> Response:
         return _render_admin(request, "proxy", {"user": user, **context}, 400)
 
     await db.save_settings(settings.as_stored())
+    # The connection list is what the engine reads now; this form predates it,
+    # so mirror the saved rule onto the one connection it owns until the UI task
+    # replaces the form. A failure here is logged, not rendered: the settings
+    # above are already stored and the next save retries.
+    await proxy_connections.sync_legacy_connection(settings)
     # One line per save: the mode, the scope and the *masked* target.
     logging.getLogger("koyura.dashboard").info(
         "egress rule updated by %s: %s -> %s",
@@ -1659,6 +1665,9 @@ async def remove_wireguard(request: Request) -> Response:
     user, _form = prologue
 
     removed = egress.remove_wireguard()
+    if removed:
+        # The tunnel row would point at a file nobody wrote any more.
+        await proxy_connections.drop_legacy_wireguard()
     logging.getLogger("koyura.dashboard").info(
         "WireGuard config %s by %s", "removed" if removed else "was already absent", user
     )

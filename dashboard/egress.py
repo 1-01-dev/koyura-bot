@@ -530,7 +530,12 @@ class Egress:
         return not (name and name in self.services)
 
     def proxy_for(self, service: object, status: Status | None = None) -> str:
-        """The ``--proxy`` value for one service, or ``""`` for a direct call."""
+        """The legacy form's answer for one service (kept for the old page).
+
+        The engine no longer asks the panel for a single rule: it reads the
+        connection list and chooses per service (``koyura/egress.py``). This
+        stays because the page still renders the one rule it stores.
+        """
         if not self.applies_to(service):
             return ""
         if self.mode == "manual":
@@ -549,19 +554,17 @@ class Egress:
             f"{SETTING_PREFIX}services": ",".join(self.services),
         }
 
-    def as_engine_payload(self, status: Status | None = None) -> dict[str, object]:
-        """The body of ``GET /api/egress`` — the only place the real URL travels.
+    def as_engine_payload(self) -> dict[str, object]:
+        """This rule in the shape ``GET /api/egress`` answered before the list.
 
-        Internal, over the shared token, to the engine in the same deployment;
-        the panel's own pages never render this value. A WireGuard mode sends the
-        SOCKS address the watcher reported and the manual URL as an empty string,
-        so a dead tunnel cannot leave a stale proxy behind.
+        Nothing serves this any more — the endpoint publishes
+        ``proxy_connections.engine_payload()`` — but the migration reads the
+        stored rule through the same model, so the two descriptions stay in one
+        place and cannot drift.
         """
-        report = status if status is not None else read_status()
         return {
             "mode": self.mode,
             "proxy_url": self.proxy_url if self.mode == "manual" else "",
-            "wg_socks": report.socks if (self.mode == "wireguard" and report.is_up) else "",
             "assignment": {
                 "mode": self.assignment_mode,
                 "services": list(self.services),
@@ -745,30 +748,12 @@ def _last_line(text: object) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Startup
+# Startup: moved
 # ---------------------------------------------------------------------------
-
-async def apply_saved_egress() -> None:
-    """Log what is stored, so a restart shows which egress is in force.
-
-    Nothing is pushed: the engine polls ``GET /api/egress`` and applies the
-    answer to the next job, so there is no state to re-apply — only a line for
-    the operator who reads the journal after a reboot.
-    """
-    try:
-        import db  # imported here: this module is also used without a database
-
-        stored = await db.get_settings(prefix=SETTING_PREFIX)
-        settings = Egress.from_row(stored)
-        status = read_status()
-        logger.info(
-            "Egress: %s (tunnel %s, config %s)",
-            settings.describe(),
-            status.label(),
-            "present" if wireguard_present() else "absent",
-        )
-    except Exception:  # pragma: no cover - a log line must never stop startup
-        logger.exception("Could not read the stored egress settings")
+#
+# The one-line "which egress is in force" report now lives with the connection
+# list (``proxy_connections.apply_saved_connections``), because that list — not
+# these settings — is what the engine reads.
 
 
 __all__ = [
@@ -786,7 +771,6 @@ __all__ = [
     "SETTING_PREFIX",
     "STATUS_STATES",
     "Status",
-    "apply_saved_egress",
     "curl_command",
     "egress_root",
     "has_credentials",
