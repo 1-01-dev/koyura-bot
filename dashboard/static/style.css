@@ -733,6 +733,55 @@
   font-size: clamp(26px, 4vw, 44px);
 }
 
+/* The subscription count leads its row without a second red fill: the page
+   already has one filled cell (the error rate) and two would cancel each
+   other out. A sumi wash and a 2px accent rule say "read this one first" in
+   the same vocabulary as the rest of the panel. */
+.kpi-card.kpi-card--lead {
+  background: var(--wash);
+  box-shadow: inset 0 2px 0 var(--red);
+}
+
+/* The accent rule is inside the cell, so the hairline above it stays. */
+.kpi-card.kpi-card--lead:hover {
+  background: var(--wash);
+}
+
+.kpi-card.kpi-card--lead .kpi-label {
+  color: var(--ink);
+}
+
+/* Two classes deep on purpose: the phone breakpoint gives every table a
+   560px floor so ten-column history stays readable, and this one is the
+   exception — four narrow columns fit as they are. */
+.subs-card .subs-table {
+  min-width: 0;
+}
+
+.subs-table th,
+.subs-table td {
+  padding: 10px;
+}
+
+.subs-short {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .subs-long {
+    display: none;
+  }
+
+  .subs-short {
+    display: inline;
+  }
+
+  .subs-table th,
+  .subs-table td {
+    padding: 10px 8px;
+  }
+}
+
 /* The two cards under the cells are one column of the same ruled page. */
 .subs-card {
   border-left: 1px solid var(--line);
@@ -744,6 +793,7 @@
   color: var(--ink);
   text-decoration: none;
   border-bottom: 1px solid transparent;
+  overflow-wrap: anywhere;
 }
 
 .subs-card .data-table td a:hover {
@@ -1516,6 +1566,12 @@
   .kpi-grid {
     grid-template-columns: repeat(2, 1fr);
   }
+
+  /* Three cells here, not four: two columns would leave the third alone on a
+     half-width row, so the subscription strip keeps its own three. */
+  .kpi-grid--three {
+    grid-template-columns: repeat(3, 1fr);
+  }
 }
 
 /* 768–1023px, the icon rail: there is no room for a sub-label, so the group
@@ -1607,6 +1663,12 @@
   }
 
   .bottom-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* A phone cell is ~120px wide: three of those cannot hold "Unsubscriptions ·
+     1M" without breaking mid-word, so the strip becomes three rows. */
+  .kpi-grid--three {
     grid-template-columns: 1fr;
   }
 
