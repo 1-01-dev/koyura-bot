@@ -1753,6 +1753,20 @@ async def _transition_counts(start: str | None) -> tuple[dict[int, int], dict[in
     return subscribed, left
 
 
+async def has_subscription_history() -> bool:
+    """Whether the table holds at least one transition, ever.
+
+    The dashboard's gate-up-or-history-up rule needs this question without a
+    window: a window with no rows is "nothing happened these days", while an
+    empty table is "nothing happened at all".
+    """
+    async with _conn() as conn:
+        cursor = await conn.execute("SELECT 1 FROM subscriptions LIMIT 1")
+        row = await cursor.fetchone()
+        await cursor.close()
+    return row is not None
+
+
 async def _period_history(start: str | None) -> list[Any]:
     """Every transition inside the period, oldest first (for the chart)."""
     async with _conn() as conn:
@@ -1803,10 +1817,13 @@ async def get_subscription_stats(
     line next to it. ``all`` is also accepted (no lower bound at all) for an
     older link; its chart keeps the twelve-month axis.
 
-    ``has_history`` and ``enabled`` are what the dashboard renders from: a
-    panel with no transitions in the window, or with the gate switched off, is
-    not drawn at all rather than drawn empty. ``enabled`` is passed in by a
-    caller that has already read the switch, so a page can answer the same
+    ``has_history`` and ``enabled`` are what the dashboard renders from: the
+    panel is drawn when the gate is on (zeros are a real answer — the module is
+    working) or when the table holds at least one transition, whatever the
+    window. Only a gate that is off *and* a table with nothing in it is left
+    out. ``has_history`` is over all time on purpose, so an old unsubscribe is
+    still visible in a window that happens to be empty. ``enabled`` is passed in
+    by a caller that has already read the switch, so a page can answer the same
     question once.
     """
     key = normalise_subscription_period(period)
@@ -1844,10 +1861,9 @@ async def get_subscription_stats(
         "subscribed": subscribed_total,
         "left": left_total,
         "active": _active_everywhere(latest, channel_ids),
-        # Nothing has ever been recorded: the panel has no number to show, and
-        # a row of zeros would read as "nobody subscribes" instead of "the
-        # history is empty".
-        "has_history": subscribed_total + left_total > 0,
+        # Over all time, not the window: the panel keeps drawing an old
+        # history even in a window that happens to hold no transition.
+        "has_history": await has_subscription_history(),
         "channels": [
             {
                 "id": int(channel["id"]),

@@ -7,7 +7,7 @@
 {% block content %}
 <div class="page-head">
   <h1 class="page-title">Channels</h1>
-  <p class="page-meta mono">Subscription gate · channels · statistics</p>
+  <p class="page-meta mono">Subscription gate · channels</p>
 </div>
 
 {% include "_admin_tabs.html" %}
@@ -213,26 +213,6 @@
     switch is on.
   </div>
   {% endif %}
-</section>
-
-<!-- Statistics live on the Dashboard -----------------------------------
-     The numbers moved to `/`, next to the download KPIs: one page owns them,
-     and this page keeps only what it is for — the switch, the channel list and
-     the checks. The link carries no period, because the period belongs to the
-     dashboard's own range switch. -->
-<section class="card panel" id="channel-stats-link-card">
-  <div class="card-header panel-head">
-    <h2 class="card-title">Statistics</h2>
-  </div>
-  <p class="limits-note panel-body" id="channel-stats-link-note">
-    Subscriptions, unsubscriptions and the number of active subscribers are on
-    the dashboard, with the same period switch as the download charts. The
-    three cells and the chart used to be repeated here; they are not any more,
-    so there is one place to read them and one number to trust.
-  </p>
-  <p class="limits-actions">
-    <a class="btn btn-secondary" href="/" id="channel-stats-link">Statistics — on Dashboard</a>
-  </p>
 </section>
 
 </div>

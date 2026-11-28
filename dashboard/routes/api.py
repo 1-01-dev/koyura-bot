@@ -503,9 +503,9 @@ async def chart_data(
 
     One request feeds the whole dashboard: the range switch above the chart is
     the same switch the subscription KPI cells and their series read, so a page
-    never has two periods on screen at once. The subscription part is an empty
-    block — not a block of zeros — when the gate is off or the window has no
-    transitions, which is how the template knows not to draw it.
+    never has two periods on screen at once. The subscription part carries
+    ``visible`` — the gate is on, or there is history to show — which is how the
+    template knows not to draw it.
     """
     valid_ranges = {"1D", "7D", "1M", "1Y"}
     if range not in valid_ranges:
@@ -519,15 +519,22 @@ async def _subscription_block(period: str) -> dict[str, Any]:
     """The dashboard's subscription panel: three cells, two series, a breakdown.
 
     ``visible`` is the single decision the template and the script branch on:
-    the gate is on **and** the window holds at least one transition. Everything
-    else in the block is still present (an empty series, an empty list) so a
-    caller reading the JSON never has to test for a missing key.
+    the gate is on **or** the history holds at least one transition, ever. A
+    gate that is on draws the panel even with zeros — that is the module
+    telling the operator it works and nobody has joined yet; a gate that is off
+    draws it only while there is history worth reading. Only off-and-empty
+    stays out of the page. Everything else in the block is still present (an
+    empty series, an empty list) so a caller reading the JSON never has to test
+    for a missing key.
     """
     stats = await db.get_subscription_stats(period)
     channels = stats["channels"]
     return {
-        "visible": bool(stats["enabled"] and stats["has_history"]),
+        "visible": bool(stats["enabled"] or stats["has_history"]),
         "period": stats["period"],
+        # Over all time: the breakdown says "No subscriptions yet" only for a
+        # table that has never held a row, never for a quiet week.
+        "has_history": stats["has_history"],
         "subscribed": stats["subscribed"],
         "left": stats["left"],
         "active": stats["active"],

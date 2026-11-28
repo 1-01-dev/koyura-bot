@@ -86,11 +86,13 @@
 
 {#- Subscriptions: three cells, one two-series line and a per-channel table.
 
-    The whole block is written by report.js from /api/chart-data, and it is
-    removed from the page entirely when the gate is off or the selected window
-    holds no transition — an empty row of zeros would read as "nobody
-    subscribes" instead of "nothing to count yet". The markup is the skeleton;
-    `hidden` keeps it out of the flow until there is something to show. -#}
+    The whole block is written by report.js from /api/chart-data. It is drawn
+    while the gate is on — three zeros are a real answer, they say the module
+    works and nobody has joined yet — or while the table still holds at least
+    one transition, whatever the selected window. Only "gate off *and* nothing
+    ever recorded" leaves it out of the page, because then there is no
+    subscription feature to report on. The markup is the skeleton; `hidden`
+    keeps it out of the flow until the first response says otherwise. -#}
 <div class="subs-block" id="subscriptions-block" hidden>
   <div class="kpi-grid kpi-grid--three" id="subscription-kpis">
     <div class="kpi-card kpi-card--lead">

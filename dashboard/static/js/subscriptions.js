@@ -4,10 +4,10 @@
    Everything arrives with the charts request (`/api/chart-data?range=…`), so
    the page never issues a second call for the same window, and the range
    buttons above the downloads chart drive both. The API decides visibility
-   (`visible`): the gate is on *and* the window holds at least one transition.
-   When it is false this module removes the block from the layout instead of
-   leaving three cells reading "0" — an empty panel claims nobody subscribes,
-   which is a different fact from "nothing recorded".
+   (`visible`): the gate is on, or there is history to read. When it is false
+   this module removes the block from the layout; when it is true and nothing
+   has happened yet, the three cells read 0 on purpose — that is the module
+   saying it works and nobody has joined.
 
    Two series, one axis: subscriptions in ink, unsubscriptions in the accent,
    no fills. The accent is already on the errors cell and on the first of these
@@ -45,19 +45,39 @@ function renderKpis(block) {
   }
 }
 
-/** One row per channel; a single channel would only repeat the KPI cells. */
+/** One row per channel while there is more than one; a single channel would
+    only repeat the KPI cells, so it gets one total line instead. When nothing
+    has ever been recorded the table says so in words rather than drawing a
+    row of zeros. */
 function renderBreakdown(block) {
-  const card = document.getElementById('subscriptions-breakdown');
   const body = document.getElementById('subscriptions-by-channel');
   if (!body) return;
 
   const channels = Array.isArray(block.channels) ? block.channels : [];
-  if (card) card.hidden = channels.length < 2;
+  /* ``has_history`` is over all time: a quiet window shows a real zero and a
+     total line, only a table that never held a row says "No subscriptions
+     yet". */
+  const empty = !block.has_history;
 
   body.replaceChildren();
-  if (channels.length < 2) return;
 
-  for (const channel of channels) {
+  if (empty) {
+    const tr = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 4;
+    cell.className = 'empty-state';
+    cell.id = 'subscriptions-empty';
+    cell.textContent = 'No subscriptions yet';
+    tr.append(cell);
+    body.append(tr);
+    return;
+  }
+
+  const rows = channels.length > 1
+    ? channels
+    : [{ title: 'Total', ...block }];
+
+  for (const channel of rows) {
     const tr = document.createElement('tr');
 
     const nameCell = document.createElement('td');

@@ -1,4 +1,4 @@
-"""The subscription statistics on the dashboard: the cells, the series, the hiding.
+"""The subscription statistics on the dashboard: the cells, the series, the gate.
 
 The owner moved these numbers from Admin → Channels to ``/`` because that is
 the page they read every day, and a second copy is a second answer. What this
@@ -12,8 +12,10 @@ module pins, in that order:
 * **the series has both datasets** and lines up with the window it is drawn in;
 * **the breakdown is per channel**, and it is the total line only when a single
   channel would just repeat the cells;
-* **the block disappears** when the gate is off or the window holds nothing —
-  an empty row of zeros would claim nobody subscribes.
+* **the block is drawn while the gate is on**, zeros included — that is the
+  module saying it works and nobody has joined — **or while the table holds any
+  history at all**, even outside the selected window. Both at once (gate off,
+  nothing ever recorded) hides it; one or the other is a panel.
 
 Environment must be set BEFORE importing auth/main/db, like the other dashboard
 test modules.
@@ -129,8 +131,8 @@ class TestOneRequestFeedsBothPanels:
         # ... and one more key carries the subscription panel.
         assert "subscriptions" in payload
         block = payload["subscriptions"]
-        for field in ("visible", "period", "subscribed", "left", "active",
-                      "chart", "channels", "single_channel"):
+        for field in ("visible", "period", "has_history", "subscribed", "left",
+                      "active", "chart", "channels", "single_channel"):
             assert field in block, field
 
     @pytest.mark.parametrize("range_key", ["1D", "7D", "1M", "1Y"])
@@ -284,39 +286,62 @@ class TestTheBreakdown:
 
 
 # ---------------------------------------------------------------------------
-# Hiding: the gate off, or nothing to count
+# Visibility: the gate on, or something to read
 # ---------------------------------------------------------------------------
 
 class TestTheBlockHides:
-    def test_the_gate_off_hides_it(self, admin: TestClient):
+    """Visible when the gate is on, or when the table has any history at all.
+
+    The gate being on is enough: three cells reading 0 are how the module says
+    "I work and nobody has joined yet". History is enough on its own: the
+    operator switched the gate off, but the numbers are real and worth reading.
+    Only both at once — gate off, nothing ever recorded — is not a panel at all.
+    """
+
+    def test_the_gate_on_draws_it_even_with_zeros(self, admin: TestClient):
+        _channel()
+        asyncio.run(db.set_subscriptions_enabled(True))
+        block = _stats(admin)
+        assert block["visible"] is True
+        assert block["subscribed"] == 0
+        assert block["left"] == 0
+        assert block["active"] == 0
+        # An empty window still carries the axis, so the chart can draw "0".
+        assert block["chart"]["labels"]
+        assert not any(block["chart"]["subscribed"])
+
+    def test_the_gate_on_without_a_channel_draws_it_too(self, admin: TestClient):
+        asyncio.run(db.set_subscriptions_enabled(True))
+        assert _stats(admin)["visible"] is True
+
+    def test_history_keeps_it_while_the_gate_is_off(self, admin: TestClient):
         channel = _channel()
 
         async def run() -> None:
-            # History exists, but the operator switched the gate off: the
-            # numbers describe a feature that is not in force.
             await db.record_subscription(51, channel, "subscribed")
             await db.set_subscriptions_enabled(False)
 
         asyncio.run(run())
         block = _stats(admin)
-        assert block["visible"] is False
+        assert block["visible"] is True
+        assert block["subscribed"] == 1
 
-    def test_an_empty_history_hides_it(self, admin: TestClient):
+    def test_an_off_gate_and_an_empty_table_hide_it(self, admin: TestClient):
         _channel()
-
-        async def run() -> None:
-            await db.set_subscriptions_enabled(True)
-
-        asyncio.run(run())
-        block = _stats(admin)
-        assert block["visible"] is False
-
-    def test_no_channel_at_all_hides_it(self, admin: TestClient):
-        asyncio.run(db.set_subscriptions_enabled(True))
         assert _stats(admin)["visible"] is False
 
-    def test_a_window_without_transitions_hides_it(self, admin: TestClient):
-        """The gate is on and history exists — but not inside this window."""
+    def test_no_channel_and_no_history_hides_it(self, admin: TestClient):
+        assert _stats(admin)["visible"] is False
+
+    def test_a_window_without_transitions_still_shows_the_block(
+        self, admin: TestClient
+    ):
+        """The gate is on, and the history is older than the window: 0 and 0.
+
+        That is a real answer for this week, not a missing panel — the numbers
+        are still there when the range button moves to 1Y (which also holds
+        nothing) or to a window that does.
+        """
         channel = _channel()
 
         async def run() -> None:
@@ -326,15 +351,51 @@ class TestTheBlockHides:
             await db.set_subscriptions_enabled(True)
 
         asyncio.run(run())
-        assert _stats(admin, "7D")["visible"] is False
-        assert _stats(admin, "1Y")["visible"] is False
+        block = _stats(admin, "7D")
+        assert block["visible"] is True
+        assert block["subscribed"] == 0
+        assert block["period"] == "7d"
+
+    def test_an_old_history_shows_up_outside_the_gate(self, admin: TestClient):
+        """Gate off, one 2020 transition: the block is drawn, the period is 0."""
+        channel = _channel()
+
+        async def run() -> None:
+            await db.record_subscription(
+                62, channel, "subscribed", changed_at="2020-01-01 10:00:00"
+            )
+            await db.set_subscriptions_enabled(False)
+
+        asyncio.run(run())
+        assert _stats(admin, "7D")["visible"] is True
 
     def test_the_hidden_block_still_carries_its_shape(self, admin: TestClient):
         """A caller reading the JSON never has to test for a missing key."""
         block = _stats(admin)
         assert block["visible"] is False
+        assert block["has_history"] is False
         assert block["chart"]["labels"] and block["chart"]["subscribed"]
         assert block["channels"] == []
+
+    def test_a_quiet_window_still_has_history(self, admin: TestClient):
+        """Old rows keep ``has_history`` true: the table is not empty, the week is.
+
+        The breakdown's "No subscriptions yet" row is for a table that never
+        held a row; this window gets a real 0 and the total line.
+        """
+        channel = _channel()
+
+        async def run() -> None:
+            await db.record_subscription(
+                63, channel, "subscribed", changed_at="2020-01-01 10:00:00"
+            )
+            await db.set_subscriptions_enabled(True)
+
+        asyncio.run(run())
+        block = _stats(admin, "1D")
+        assert block["visible"] is True
+        assert block["has_history"] is True
+        assert block["subscribed"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -350,8 +411,8 @@ class TestTheDashboardPage:
             assert f'id="{element}"' in body, element
 
     def test_the_block_starts_hidden(self, admin: TestClient):
-        """Rendered hidden: a flash of three zeros before the first fetch is
-        exactly the empty panel this change removes."""
+        """Rendered hidden: a flash of three dash placeholders before the first
+        fetch is exactly the empty panel this change removes."""
         body = admin.get("/").text
         start = body.index('id="subscriptions-block"')
         assert "hidden" in body[start - 40:start + 40]
@@ -381,3 +442,6 @@ class TestTheDashboardPage:
         assert "kpi-active-subscribers" in source
         # Visibility is the API's decision, not a client-side guess.
         assert "visible" in source
+        # An empty history says so in words; one channel is the total line.
+        assert "No subscriptions yet" in source
+        assert "'Total'" in source
