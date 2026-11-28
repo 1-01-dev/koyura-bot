@@ -131,8 +131,8 @@ class TestOneRequestFeedsBothPanels:
         # ... and one more key carries the subscription panel.
         assert "subscriptions" in payload
         block = payload["subscriptions"]
-        for field in ("visible", "period", "subscribed", "left", "active",
-                      "chart", "channels", "single_channel"):
+        for field in ("visible", "period", "has_history", "subscribed", "left",
+                      "active", "chart", "channels", "single_channel"):
             assert field in block, field
 
     @pytest.mark.parametrize("range_key", ["1D", "7D", "1M", "1Y"])
@@ -373,8 +373,29 @@ class TestTheBlockHides:
         """A caller reading the JSON never has to test for a missing key."""
         block = _stats(admin)
         assert block["visible"] is False
+        assert block["has_history"] is False
         assert block["chart"]["labels"] and block["chart"]["subscribed"]
         assert block["channels"] == []
+
+    def test_a_quiet_window_still_has_history(self, admin: TestClient):
+        """Old rows keep ``has_history`` true: the table is not empty, the week is.
+
+        The breakdown's "No subscriptions yet" row is for a table that never
+        held a row; this window gets a real 0 and the total line.
+        """
+        channel = _channel()
+
+        async def run() -> None:
+            await db.record_subscription(
+                63, channel, "subscribed", changed_at="2020-01-01 10:00:00"
+            )
+            await db.set_subscriptions_enabled(True)
+
+        asyncio.run(run())
+        block = _stats(admin, "1D")
+        assert block["visible"] is True
+        assert block["has_history"] is True
+        assert block["subscribed"] == 0
 
 
 # ---------------------------------------------------------------------------

@@ -532,6 +532,9 @@ async def _subscription_block(period: str) -> dict[str, Any]:
     return {
         "visible": bool(stats["enabled"] or stats["has_history"]),
         "period": stats["period"],
+        # Over all time: the breakdown says "No subscriptions yet" only for a
+        # table that has never held a row, never for a quiet week.
+        "has_history": stats["has_history"],
         "subscribed": stats["subscribed"],
         "left": stats["left"],
         "active": stats["active"],

@@ -54,7 +54,10 @@ function renderBreakdown(block) {
   if (!body) return;
 
   const channels = Array.isArray(block.channels) ? block.channels : [];
-  const empty = !block.subscribed && !block.left && !block.active;
+  /* ``has_history`` is over all time: a quiet window shows a real zero and a
+     total line, only a table that never held a row says "No subscriptions
+     yet". */
+  const empty = !block.has_history;
 
   body.replaceChildren();
 
