@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 import auth
 import db
 import download_limits as limits_settings
+from logging_setup import configure_logging
 from routes.api import router as api_router
 from routes.pages import router as pages_router
 
@@ -143,6 +144,10 @@ def create_app() -> FastAPI:
     """Application factory."""
     # Refuse to start with missing/placeholder secrets.
     auth.validate_config()
+    # The Channels page builds Bot API URLs, so the token must never reach a log
+    # line: pin httpx/httpcore and redact the configured secrets. This has to
+    # run before the app is built, because the routers import their loggers.
+    configure_logging()
 
     app = FastAPI(title="Koyura Admin", lifespan=_lifespan)
 

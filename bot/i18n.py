@@ -60,6 +60,9 @@ EN: dict[str, str] = {
     "button.stats": "Stats",
     "button.mp3": "MP3",
     "button.mp4": "MP4",
+    # -- the subscription gate ---------------------------------------------
+    "button.subscription_check": "Check subscription",
+    "button.subscription_open": "Open channel",
     # -- navigation --------------------------------------------------------
     "nav.back": "Back",
     # -- /help -------------------------------------------------------------
@@ -119,6 +122,19 @@ EN: dict[str, str] = {
     "mp4.usage": "Usage: /mp4 <link>\nOr reply to a message containing a link.",
     "mp3.started": "Downloading MP3...",
     "mp4.started": "Downloading MP4 (best quality)...",
+    # -- the MP3/MP4 mode armed from the welcome keyboard ------------------
+    # -- the subscription gate (asked once after the language screen) -------
+    "subscription.title": "One more step:",
+    "subscription.body": (
+        "To use the bot, subscribe to these channels:\n\n{channels}"
+    ),
+    "subscription.hint": (
+        "Tap a channel to open it, then tap “Check subscription”."
+    ),
+    "subscription.missing": "You are not subscribed yet: {missing}.",
+    "subscription.error": (
+        "Could not check the subscription. Please try again later."
+    ),
     # -- the MP3/MP4 mode armed from the welcome keyboard ------------------
     "mode.armed": "Mode: {mode}\nSend the link — it downloads as {mode}.",
     "mode.mp3": "MP3",
@@ -287,6 +303,9 @@ RU: dict[str, str] = {
     "button.stats": "Статистика",
     "button.mp3": "MP3",
     "button.mp4": "MP4",
+    # -- the subscription gate ---------------------------------------------
+    "button.subscription_check": "Проверить подписку",
+    "button.subscription_open": "Открыть канал",
     # -- navigation --------------------------------------------------------
     "nav.back": "Назад",
     # -- /help -------------------------------------------------------------
@@ -346,6 +365,19 @@ RU: dict[str, str] = {
     "mp4.usage": "Использование: /mp4 <ссылка>\nИли ответьте на сообщение со ссылкой.",
     "mp3.started": "Скачиваю MP3...",
     "mp4.started": "Скачиваю MP4 (лучшее качество)...",
+    # -- the MP3/MP4 mode armed from the welcome keyboard ------------------
+    # -- the subscription gate (asked once after the language screen) -------
+    "subscription.title": "Ещё один шаг:",
+    "subscription.body": (
+        "Чтобы пользоваться ботом, подпишитесь на каналы:\n\n{channels}"
+    ),
+    "subscription.hint": (
+        "Нажмите на канал, чтобы открыть его, затем нажмите «Проверить подписку»."
+    ),
+    "subscription.missing": "Вы ещё не подписаны на {missing}.",
+    "subscription.error": (
+        "Не удалось проверить подписку. Попробуйте позже."
+    ),
     # -- the MP3/MP4 mode armed from the welcome keyboard ------------------
     "mode.armed": "Режим: {mode}\nПришлите ссылку — файл скачается как {mode}.",
     "mode.mp3": "MP3",

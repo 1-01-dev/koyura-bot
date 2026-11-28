@@ -198,7 +198,142 @@ async def bot_settings(request: Request) -> dict[str, Any]:
         # at all. The bot renders the built-in default for every kind it does
         # not find here, so an empty object is a valid answer.
         "templates": message_templates.active_bodies(rows),
+        # The subscription gate's master switch. Off by default, and the bot
+        # needs it even when it never asks /api/subscriptions (a channel list
+        # without the switch is not a gate).
+        "subscriptions_enabled": await db.subscriptions_enabled(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Subscription gate (internal, read-only)
+# ---------------------------------------------------------------------------
+
+@router.get("/api/subscriptions")
+async def subscription_gate(request: Request) -> dict[str, Any]:
+    """The channels the bot asks a new user to join, and whether the gate is on.
+
+    Internal, like every ``/api/*`` call the bot makes. Only channels that
+    **can** be verified travel in ``channels``: an enabled channel has to be one
+    where the bot is an administrator of the channel, otherwise
+    ``getChatMember`` answers "not a member" for every user and the gate would
+    lock the bot instead of opening it. The rows where that check failed are
+    reported in ``unusable`` so the panel's page and the API cannot disagree
+    about what is in force.
+
+    An empty ``channels`` means "no gate", even with ``enabled: true``: the bot
+    reads :meth:`bot.subscriptions.Gate.active` and needs both halves.
+    """
+    if not _internal_token_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    enabled = await db.subscriptions_enabled()
+    rows = await db.list_required_channels(enabled_only=True)
+    usable = [row for row in rows if row["bot_is_admin"]]
+    return {
+        "enabled": enabled,
+        "channels": [
+            {
+                "id": int(row["id"]),
+                "title": row["title"],
+                "username": row["username"],
+                "link": row["link"],
+                "position": int(row["position"]),
+            }
+            for row in usable
+        ],
+        "unusable": [
+            {
+                "id": int(row["id"]),
+                "username": row["username"],
+                "check_error": row["check_error"],
+            }
+            for row in rows
+            if not row["bot_is_admin"]
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Subscription history (internal, write)
+# ---------------------------------------------------------------------------
+
+class SubscriptionEventBody(BaseModel):
+    """One membership verdict the bot recorded."""
+
+    user_id: int
+    channel_id: int
+    state: str
+
+
+@router.post("/api/subscriptions/events")
+async def ingest_subscription_event(request: Request) -> dict[str, Any]:
+    """Record one ``subscribed``/``left`` transition reported by the bot.
+
+    The bot is the only thing that can call ``getChatMember``, so it is also the
+    only thing that knows a user joined or left. It posts the verdict here and
+    the panel writes it — but only when it is a *change*, which is what makes
+    the unsubscribe count meaningful and lets the daily check re-post the same
+    verdict without inflating anything.
+
+    ``written: false`` therefore means "already the stored state", not an
+    error; the bot does not retry it.
+    """
+    if not _internal_token_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid event body")
+
+    state = str(payload.get("state") or "").strip().lower()
+    if state not in (db.SUBSCRIBED, db.LEFT):
+        raise HTTPException(status_code=400, detail="Invalid state")
+    raw_user = payload.get("user_id")
+    raw_channel = payload.get("channel_id")
+    if raw_user in (None, "") or raw_channel in (None, ""):
+        raise HTTPException(
+            status_code=400, detail="user_id and channel_id are required"
+        )
+    try:
+        user_id = int(str(raw_user))
+        channel_id = int(str(raw_channel))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="user_id and channel_id must be numbers"
+        ) from exc
+
+    written = await db.record_subscription(user_id, channel_id, state)
+    return {"written": written, "state": state}
+
+
+@router.get("/api/subscriptions/active-users")
+async def active_subscribers(request: Request) -> dict[str, Any]:
+    """The ids of users the bot should re-check tonight.
+
+    Internal and ids-only: the nightly sweep in the bot asks ``getChatMember``
+    about each one, so nothing else is needed and nothing else is sent. "Active"
+    is the same definition the page's KPI uses — last state ``subscribed`` on
+    **every** enabled channel — so the number on the page and the length of this
+    list cannot disagree.
+
+    A bot that asks while the gate is off gets ``[]``: there is nothing to
+    re-check, and the sweep must not spend Telegram's rate limit on a feature
+    the owner turned off.
+    """
+    if not _internal_token_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    if not await db.subscriptions_enabled():
+        return {"user_ids": []}
+    channels = await db.list_required_channels(enabled_only=True)
+    usable = [int(row["id"]) for row in channels if row["bot_is_admin"]]
+    if not usable:
+        return {"user_ids": []}
+    return {"user_ids": await db.subscribed_user_ids(usable)}
 
 
 # ---------------------------------------------------------------------------

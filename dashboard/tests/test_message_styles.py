@@ -49,9 +49,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 STYLES_DIR = REPO_ROOT / "bot" / "template_styles"
 ADMIN_TEMPLATE = REPO_ROOT / "dashboard" / "templates" / "_admin_templates.html"
 
-#: The catalogue minus the eight ``track.*`` kinds the owner's styles predate.
-#: Those fall back to their built-in text; see ``test_the_style_covers...``.
+#: The kinds the four preset style files cover. They were written before the
+#: ``track.*`` messages and before the subscription gate, so those kinds are not
+#: in them; see ``test_the_only_kinds_left_out_are_the_newer_ones``.
 STYLE_KINDS = 56
+
+#: The kind prefixes added after the style files were authored. A kind in this
+#: list falls back to its built-in text under every preset, which is expected;
+#: a kind *outside* it going missing from the files is a real regression.
+STYLE_PREDATES = ("track.", "subscription.", "button.subscription_")
 CATALOGUE_KINDS = len(message_catalog.KINDS)
 
 
@@ -211,16 +217,17 @@ class TestTheStyleFiles:
         assert plan.unknown == []
         assert plan.applied == STYLE_KINDS
 
-    def test_the_only_kinds_left_out_are_the_newer_track_ones(self):
+    def test_the_only_kinds_left_out_are_the_newer_ones(self):
         """A style predating a kind leaves that one message on the default.
 
-        Pinned rather than tolerated: if a *later* kind goes missing from all
-        four files the test above (56 kinds) fails first, and this list tells the
-        next person which eight the files do not cover.
+        Pinned rather than tolerated: if a kind the files *should* cover goes
+        missing from all four, this list names it and the test above fails too.
         """
         covered = set(message_styles.read("04-friendly"))
         missing = set(message_catalog.BY_ID) - covered
-        assert all(kind.startswith("track.") for kind in missing), sorted(missing)
+        assert all(
+            kind.startswith(STYLE_PREDATES) for kind in missing
+        ), sorted(missing)
         assert len(missing) == CATALOGUE_KINDS - STYLE_KINDS
 
     def test_a_missing_setting_means_default_not_custom(self):

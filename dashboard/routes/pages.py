@@ -7,6 +7,7 @@ import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from starlette.datastructures import FormData
@@ -23,6 +24,7 @@ import message_styles
 import message_templates
 import service_catalog
 import service_cookies
+import subscriptions
 
 router = APIRouter()
 
@@ -516,6 +518,7 @@ async def _templates_error(
 #: template — the navigation cannot drift from the routes.
 ADMIN_SECTIONS: tuple[dict[str, str], ...] = (
     {"key": "cookies", "label": "Cookies", "href": "/admin/cookies"},
+    {"key": "channels", "label": "Channels", "href": "/admin/channels"},
     {"key": "proxy", "label": "Proxy", "href": "/admin/proxy"},
     {"key": "limits", "label": "Limits", "href": "/admin/limits"},
     {"key": "bot", "label": "Bot settings", "href": "/admin/bot"},
@@ -524,6 +527,7 @@ ADMIN_SECTIONS: tuple[dict[str, str], ...] = (
 
 ADMIN_SECTION_TEMPLATES = {
     "cookies": "admin_cookies.html",
+    "channels": "admin_channels.html",
     "proxy": "admin_proxy.html",
     "limits": "admin_limits.html",
     "bot": "admin_bot.html",
@@ -567,6 +571,19 @@ ADMIN_SECTION_PARAMS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "lang",
             "template",
             "templates_notice",
+        ),
+    ),
+    (
+        "channels",
+        (
+            "channel_added",
+            "channel_deleted",
+            "channel_checked",
+            "channel_moved",
+            "channel_toggled",
+            "channels_saved",
+            "channel_error",
+            "channel_notice",
         ),
     ),
 )
@@ -812,6 +829,151 @@ async def _bot_page(
     return _render_admin(request, "bot", context, status_code=status_code)
 
 
+# ---------------------------------------------------------------------------
+# Admin: Channels (the subscription gate)
+# ---------------------------------------------------------------------------
+
+#: The period selector of the Channels page, in the order it is offered.
+CHANNEL_PERIODS: tuple[dict[str, str], ...] = (
+    {"key": "7d", "label": "7 days"},
+    {"key": "30d", "label": "30 days"},
+    {"key": "all", "label": "All time"},
+)
+
+
+def normalise_period(value: object) -> str:
+    """One of ``7d``/``30d``/``all``; anything else is the default (30 days)."""
+    key = str(value or "").strip().lower()
+    return key if key in {entry["key"] for entry in CHANNEL_PERIODS} else "30d"
+
+
+def _channels_notice(
+    *,
+    added: int = 0,
+    deleted: int = 0,
+    moved: int = 0,
+    toggled: int = 0,
+    checked: int = 0,
+    saved: int = 0,
+) -> str | None:
+    """The one-line notice above the Channels table."""
+    if added:
+        return (
+            "Channel added. Check it, and remember the bot has to be an "
+            "administrator there for the subscription check to work."
+        )
+    if saved:
+        return "Channel updated."
+    if deleted:
+        return "Channel removed."
+    if moved:
+        return "Order saved."
+    if toggled:
+        return "Channel switched."
+    if checked:
+        return "Check finished — see the verdict in the table."
+    return None
+
+
+def _channel_rows(rows: list[dict], gate_enabled: bool) -> list[dict]:
+    """The table rows: what each channel *is*, and whether it can work.
+
+    ``state`` is the one thing the template branches on, and it is derived here
+    rather than in Jinja so the page and the API agree about what "working"
+    means:
+
+    * ``off`` — the operator turned this channel off;
+    * ``gate_off`` — the channel is fine but the master switch is off, so it is
+      not in force (shown as "inactive, gate off");
+    * ``no_bot`` — the bot is not an administrator, so it cannot verify anyone:
+      this channel must say so in words instead of counting as working;
+    * ``ready`` — enabled, switch on, bot is an administrator.
+    """
+    table = []
+    for row in rows:
+        if not row["enabled"]:
+            state = "off"
+        elif not gate_enabled:
+            state = "gate_off"
+        elif not row["bot_is_admin"]:
+            state = "no_bot"
+        else:
+            state = "ready"
+        table.append(
+            {
+                **row,
+                "state": state,
+                "state_label": {
+                    "off": "off",
+                    "gate_off": "inactive — gate off",
+                    "no_bot": "bot is not an administrator",
+                    "ready": "working",
+                }[state],
+                "state_class": {
+                    "off": "badge",
+                    "gate_off": "badge",
+                    "no_bot": "badge badge-danger",
+                    "ready": "badge badge-success",
+                }[state],
+                "check_label": subscriptions.check_error_label(row["check_error"]),
+                "check_class": (
+                    "badge badge-success"
+                    if row["bot_is_admin"]
+                    else "badge badge-danger"
+                ),
+                "open_link": row["link"]
+                or subscriptions.channel_link(row["username"]),
+            }
+        )
+    return table
+
+
+async def _channels_context(
+    *,
+    period: object = None,
+    error: str | None = None,
+    notice: str | None = None,
+) -> dict:
+    """Everything the Channels page renders: the switch, the table and the KPIs."""
+    current_period = normalise_period(period)
+    gate_enabled = await db.subscriptions_enabled()
+    rows = await db.list_required_channels()
+    stats = await db.get_subscription_stats(current_period)
+    working = [row for row in rows if row["enabled"] and row["bot_is_admin"]]
+    return {
+        "channels_enabled": gate_enabled,
+        "channels": _channel_rows(rows, gate_enabled),
+        "channels_working": len(working),
+        "channels_total": len(rows),
+        "gate_live": bool(gate_enabled and working),
+        "channel_period": current_period,
+        "channel_periods": [
+            {**entry, "active": entry["key"] == current_period}
+            for entry in CHANNEL_PERIODS
+        ],
+        "channel_stats": stats,
+        "channel_error": error,
+        "channel_notice": notice,
+    }
+
+
+async def _channels_page(
+    request: Request,
+    user: str,
+    *,
+    error: str | None = None,
+    notice: str | None = None,
+    period: object = None,
+    status_code: int = 200,
+) -> Response:
+    """Render /admin/channels with an optional error and notice."""
+    context: dict = {"user": user}
+    context.update(
+        await _channels_context(period=period, error=error, notice=notice)
+    )
+    return _render_admin(request, "channels", context, status_code=status_code)
+
+
 @router.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request) -> Response:
     """Send ``/admin`` to a sub-page, keeping an old link's query string.
@@ -853,6 +1015,15 @@ async def admin_section_page(
     wg_saved: int = 0,
     wg_removed: int = 0,
     status_refreshed: int = 0,
+    channel_period: str | None = None,
+    channel_error: str | None = None,
+    channel_notice: str | None = None,
+    channel_added: int = 0,
+    channel_deleted: int = 0,
+    channel_moved: int = 0,
+    channel_toggled: int = 0,
+    channel_checked: int = 0,
+    channels_saved: int = 0,
 ) -> Response:
     """One page per section; the query string only carries a notice.
 
@@ -886,6 +1057,23 @@ async def admin_section_page(
             moved=moved, checked=checked, service=service,
         )
         context["cookies_error"] = cookies_error
+        return _render_admin(request, section, context)
+
+    if section == "channels":
+        context.update(
+            await _channels_context(
+                period=channel_period,
+                error=channel_error,
+                notice=channel_notice or _channels_notice(
+                    added=channel_added,
+                    deleted=channel_deleted,
+                    moved=channel_moved,
+                    toggled=channel_toggled,
+                    checked=channel_checked,
+                    saved=channels_saved,
+                ),
+            )
+        )
         return _render_admin(request, section, context)
 
     if section == "proxy":
@@ -1780,3 +1968,248 @@ async def delete_cookie_service(request: Request) -> Response:
         "cookie service deleted: %s (%d file(s))", service, len(removed)
     )
     return _cookies_redirect(deleted=max(1, len(removed)), service=service)
+
+
+# ---------------------------------------------------------------------------
+# Admin: Channels — the master switch, the list, and the checks
+# ---------------------------------------------------------------------------
+
+def _channels_redirect(
+    *,
+    period: str | None = None,
+    notice: str | None = None,
+    error: str | None = None,
+    **flags: object,
+) -> RedirectResponse:
+    """Back to /admin/channels with a notice, an error or a saved flag.
+
+    A notice and an error never travel together: the page shows the first
+    sentence that explains what happened, and two would contradict each other.
+    """
+    params: dict[str, object] = {"channel_period": normalise_period(period)}
+    if error:
+        params["channel_error"] = error
+    elif notice:
+        params["channel_notice"] = notice
+    params.update(flags)
+    query = "&".join(
+        f"{key}={quote(str(value))}" for key, value in params.items() if value
+    )
+    return RedirectResponse(url=f"/admin/channels?{query}", status_code=303)
+
+
+async def _channels_request(
+    request: Request, *, period: str | None = None
+) -> tuple[str, FormData] | RedirectResponse:
+    """Session + CSRF for every channel POST; a refusal is already a response."""
+    user = _require_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    form = await request.form()
+    submitted = str(form.get(auth.CSRF_FORM_FIELD, ""))
+    if not auth.verify_csrf(request, submitted):
+        return _channels_redirect(
+            period=period,
+            error="Your session expired. Reload the page and try again.",
+        )
+    return user, form
+
+
+@router.post("/admin/channels/toggle")
+async def toggle_subscription_gate(request: Request) -> Response:
+    """The master switch: the one setting that turns the whole gate on or off.
+
+    Off is the default and off means "the bot behaves exactly like it did before
+    this feature existed": no screen, no check, no delay. The channels stay
+    stored so an operator can prepare the configuration before flipping it.
+    """
+    prologue = await _channels_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    _user, form = prologue
+
+    enabled = str(form.get("enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
+    await db.set_subscriptions_enabled(enabled)
+    logging.getLogger("koyura.dashboard").info(
+        "subscription gate %s", "enabled" if enabled else "disabled"
+    )
+    if not enabled:
+        return _channels_redirect(
+            notice="Subscription gate off. The bot behaves as if it did not exist."
+        )
+
+    rows = await db.list_required_channels(enabled_only=True)
+    working = [row for row in rows if row["bot_is_admin"]]
+    if not rows or not working:
+        # Honest about what "on" means right now: with no channel the bot can
+        # verify, the gate is not in force even though the switch is on.
+        return _channels_redirect(
+            period=None,
+            notice=(
+                "Subscription gate on, but no channel is working yet — add one and "
+                "check it, otherwise the bot does not ask anyone to subscribe."
+            ),
+        )
+    return _channels_redirect(
+        notice="Subscription gate on. The bot asks within a minute, no restart."
+    )
+
+
+@router.post("/admin/channels/add")
+async def add_channel(request: Request) -> Response:
+    """Add a channel from ``https://t.me/<name>`` or ``@<name>``.
+
+    Parsing, the duplicate check and the ``getChat``/``getChatMember`` probe all
+    run here, so a channel the bot cannot verify is added **with its verdict**
+    rather than silently counted as working: the page then says "bot is not an
+    administrator" and the gate ignores it until that changes.
+    """
+    prologue = await _channels_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    _user, form = prologue
+
+    reference = str(form.get("reference") or "").strip()
+    username = subscriptions.parse_reference(reference)
+    if username is None:
+        return _channels_redirect(
+            error=(
+                "That is not a public channel link. Use https://t.me/<name> or "
+                "@<name> — a private invite link cannot be checked."
+            )
+        )
+
+    existing = await db.find_required_channel(username)
+    if existing is not None:
+        return _channels_redirect(
+            error=f"@{username} is already in the list."
+        )
+
+    verdict = await subscriptions.check_channel(username)
+    row = await db.add_required_channel(
+        title=verdict.get("title") or "",
+        username=str(verdict.get("username") or username),
+        link=subscriptions.channel_link(str(verdict.get("username") or username)),
+        bot_is_admin=bool(verdict.get("ok")),
+        check_error=str(verdict.get("error") or ""),
+    )
+    logging.getLogger("koyura.dashboard").info(
+        "channel added: @%s (%s)", row.get("username", username),
+        row.get("check_error") or "ok",
+    )
+    if not verdict.get("ok"):
+        return _channels_redirect(
+            period=None,
+            error=(
+                f"@{username} added, but it does not work yet: "
+                f"{subscriptions.check_error_label(verdict.get('error'))}. "
+                "The bot must be an administrator of the channel, otherwise the "
+                "subscription check is impossible."
+            ),
+        )
+    return _channels_redirect(channel_added=1)
+
+
+@router.post("/admin/channels/check")
+async def check_channel_again(request: Request) -> Response:
+    """Re-run the probe for one stored channel (``getChat`` + ``getChatMember``)."""
+    prologue = await _channels_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    _user, form = prologue
+
+    try:
+        channel_id = int(str(form.get("channel_id") or "0"))
+    except ValueError:
+        return _channels_redirect(error="Unknown channel.")
+
+    row = await db.get_required_channel(channel_id)
+    if row is None:
+        return _channels_redirect(error="That channel no longer exists.")
+
+    verdict = await subscriptions.check_channel(str(row["username"]))
+    await db.record_channel_check(
+        channel_id,
+        title=verdict.get("title") or None,
+        username=str(verdict.get("username") or "") or None,
+        bot_is_admin=bool(verdict.get("ok")),
+        check_error=str(verdict.get("error") or ""),
+    )
+    if not verdict.get("ok"):
+        return _channels_redirect(
+            error=(
+                f"@{row['username']}: "
+                f"{subscriptions.check_error_label(verdict.get('error'))}. "
+                "The bot must be an administrator of the channel, otherwise the "
+                "subscription check is impossible."
+            )
+        )
+    return _channels_redirect(channel_checked=1)
+
+
+@router.post("/admin/channels/toggle-channel")
+async def toggle_channel(request: Request) -> Response:
+    """Switch one channel on or off (the row stays, the gate stops using it)."""
+    prologue = await _channels_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    _user, form = prologue
+
+    try:
+        channel_id = int(str(form.get("channel_id") or "0"))
+    except ValueError:
+        return _channels_redirect(error="Unknown channel.")
+    enabled = str(form.get("enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    row = await db.get_required_channel(channel_id)
+    if row is None:
+        return _channels_redirect(error="That channel no longer exists.")
+    if enabled and not row["bot_is_admin"]:
+        # Enabling a channel the bot cannot verify would make the gate
+        # impossible to pass; refuse it and say why.
+        return _channels_redirect(
+            error=(
+                f"@{row['username']} cannot be enabled: "
+                f"{subscriptions.check_error_label(row['check_error'])}. "
+                "The bot must be an administrator of the channel."
+            )
+        )
+    await db.set_required_channel_enabled(channel_id, enabled)
+    return _channels_redirect(channel_toggled=1)
+
+
+@router.post("/admin/channels/move")
+async def move_channel(request: Request) -> Response:
+    """Move one channel up or down in the list the bot shows."""
+    prologue = await _channels_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    _user, form = prologue
+
+    try:
+        channel_id = int(str(form.get("channel_id") or "0"))
+    except ValueError:
+        return _channels_redirect(error="Unknown channel.")
+    direction = str(form.get("direction") or "").strip().lower()
+    delta = -1 if direction == "up" else 1
+    if not await db.move_required_channel(channel_id, delta):
+        return _channels_redirect(error="That channel no longer exists.")
+    return _channels_redirect(channel_moved=1)
+
+
+@router.post("/admin/channels/delete")
+async def delete_channel(request: Request) -> Response:
+    """Delete one channel (its history rows stay: they are a record)."""
+    prologue = await _channels_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    _user, form = prologue
+
+    try:
+        channel_id = int(str(form.get("channel_id") or "0"))
+    except ValueError:
+        return _channels_redirect(error="Unknown channel.")
+    row = await db.delete_required_channel(channel_id)
+    if row is None:
+        return _channels_redirect(error="That channel no longer exists.")
+    return _channels_redirect(channel_deleted=1)

@@ -149,3 +149,61 @@ async def send_download_error(
         "download_error",
         {"job_id": job_id, "error_message": error_message},
     )
+
+
+async def send_subscription_event(
+    user_id: int,
+    channel_id: int,
+    state: str,
+) -> None:
+    """Report one membership verdict so the panel can keep the history.
+
+    ``state`` is ``subscribed`` or ``left``. The panel writes it only when it is
+    a **change** for that ``(user, channel)`` pair, so the daily re-check can
+    post the same verdict every day without inflating the unsubscribe count —
+    which is exactly why this is an event rather than an upsert.
+    """
+    await _emit(
+        "subscription",
+        {
+            "user_id": int(user_id),
+            "channel_id": int(channel_id),
+            "state": str(state),
+        },
+    )
+
+
+async def fetch_active_subscribers() -> list[int]:
+    """The user ids the panel says are subscribed on every enabled channel.
+
+    The nightly sweep needs this list and nothing else: the ids are all it asks
+    Telegram about, and no name, URL or message ever travels. A panel that
+    cannot answer (down, restarting, a wrong token) answers ``[]`` — the sweep
+    then does nothing, which is the safe failure: no verdict, no recorded
+    ``left``, nothing invented.
+    """
+    url = f"{DASHBOARD_URL}/api/subscriptions/active-users"
+    try:
+        async with httpx.AsyncClient(
+            timeout=_TIMEOUT_SECONDS, headers=_headers()
+        ) as client:
+            response = await client.get(url)
+        if response.status_code != 200:
+            logger.debug("Active subscribers unavailable (HTTP %s)", response.status_code)
+            return []
+        payload = response.json()
+    except Exception as exc:  # noqa: BLE001 - the sweep must never crash the bot
+        logger.debug("Active subscribers unavailable (%s)", exc)
+        return []
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.get("user_ids")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    ids: list[int] = []
+    for entry in raw:
+        try:
+            ids.append(int(entry))
+        except (TypeError, ValueError):
+            continue
+    return ids

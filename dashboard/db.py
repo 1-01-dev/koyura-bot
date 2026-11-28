@@ -122,6 +122,49 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_service_cookies_file
     ON service_cookies(service, stored_name);
 CREATE INDEX IF NOT EXISTS idx_service_cookies_order
     ON service_cookies(service, position);
+
+-- The channels the bot asks a new user to subscribe to before it does anything.
+-- ``position`` is 0-based and renumbered on every move, like the cookie jars;
+-- ``bot_is_admin`` is the verdict of the last "Check" (``getChatMember`` for
+-- the bot itself): a channel where the bot is not an administrator cannot be
+-- verified, so it is stored but never counted as a working one.
+-- ``checked_at``/``check_error`` say when and why the last check failed.
+CREATE TABLE IF NOT EXISTS required_channels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    link TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    position INTEGER NOT NULL DEFAULT 0,
+    bot_is_admin INTEGER NOT NULL DEFAULT 0,
+    checked_at TEXT,
+    check_error TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_required_channels_username
+    ON required_channels(username);
+CREATE INDEX IF NOT EXISTS idx_required_channels_order
+    ON required_channels(position);
+
+-- One row per *state transition*, never per observation: a user who is
+-- subscribed for a month and then leaves produces exactly one ``left`` row.
+-- That is what makes "unsubscribes in the last 7 days" a count and not a
+-- guess, and re-running the daily check cannot inflate it.
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    changed_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_pair
+    ON subscriptions(user_id, channel_id, changed_at);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_channel
+    ON subscriptions(channel_id, changed_at);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_state
+    ON subscriptions(state, changed_at);
 """
 
 
@@ -763,35 +806,6 @@ async def delete_settings(prefix: str) -> int:
 # Message templates (admin-editable bodies, one active per kind + language)
 # ---------------------------------------------------------------------------
 
-_TEMPLATES_ALL = (
-    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
-    "FROM message_templates ORDER BY is_active DESC, updated_at DESC, id DESC"
-)
-_TEMPLATES_BY_KIND = (
-    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
-    "FROM message_templates WHERE kind = ? "
-    "ORDER BY is_active DESC, updated_at DESC, id DESC"
-)
-_TEMPLATES_BY_LANG = (
-    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
-    "FROM message_templates WHERE lang = ? "
-    "ORDER BY is_active DESC, updated_at DESC, id DESC"
-)
-_TEMPLATES_BY_PAIR = (
-    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
-    "FROM message_templates WHERE kind = ? AND lang = ? "
-    "ORDER BY is_active DESC, updated_at DESC, id DESC"
-)
-_TEMPLATE_BY_ID = (
-    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
-    "FROM message_templates WHERE id = ?"
-)
-_TEMPLATES_ACTIVE = (
-    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
-    "FROM message_templates WHERE is_active = 1 ORDER BY kind, lang"
-)
-
-
 def _template_row(row) -> dict[str, Any]:
     return dict(row)
 
@@ -807,13 +821,32 @@ async def list_message_templates(
     """
     async with _conn() as conn:
         if kind is not None and lang is not None:
-            cursor = await conn.execute(_TEMPLATES_BY_PAIR, (str(kind), str(lang)))
+            cursor = await conn.execute(
+                "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+                "FROM message_templates WHERE kind = ? AND lang = ? "
+                "ORDER BY is_active DESC, updated_at DESC, id DESC",
+                (str(kind), str(lang)),
+            )
         elif kind is not None:
-            cursor = await conn.execute(_TEMPLATES_BY_KIND, (str(kind),))
+            cursor = await conn.execute(
+                "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+                "FROM message_templates WHERE kind = ? "
+                "ORDER BY is_active DESC, updated_at DESC, id DESC",
+                (str(kind),),
+            )
         elif lang is not None:
-            cursor = await conn.execute(_TEMPLATES_BY_LANG, (str(lang),))
+            cursor = await conn.execute(
+                "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+                "FROM message_templates WHERE lang = ? "
+                "ORDER BY is_active DESC, updated_at DESC, id DESC",
+                (str(lang),),
+            )
         else:
-            cursor = await conn.execute(_TEMPLATES_ALL)
+            cursor = await conn.execute(
+                "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+                "FROM message_templates "
+                "ORDER BY is_active DESC, updated_at DESC, id DESC"
+            )
         rows = await cursor.fetchall()
         await cursor.close()
     return [_template_row(row) for row in rows]
@@ -823,7 +856,8 @@ async def get_message_template(template_id: int) -> dict[str, Any] | None:
     """One stored body, or ``None``."""
     async with _conn() as conn:
         cursor = await conn.execute(
-            _TEMPLATE_BY_ID,
+            "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+            "FROM message_templates WHERE id = ?",
             (int(template_id),),
         )
         row = await cursor.fetchone()
@@ -835,7 +869,8 @@ async def active_message_templates() -> list[dict[str, Any]]:
     """Only the rows the bot should render (``is_active = 1``)."""
     async with _conn() as conn:
         cursor = await conn.execute(
-            _TEMPLATES_ACTIVE
+            "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+            "FROM message_templates WHERE is_active = 1 ORDER BY kind, lang"
         )
         rows = await cursor.fetchall()
         await cursor.close()
@@ -1212,3 +1247,541 @@ async def record_cookie_check(cookie_id: int, status: str) -> None:
         )
         await cursor.close()
         await conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Required channels (the subscription gate)
+# ---------------------------------------------------------------------------
+
+#: The settings row that turns the gate on. Off is the default, so an upgraded
+#: panel keeps the bot behaving exactly like it did before the feature existed.
+SUBSCRIPTIONS_ENABLED_KEY = "subscriptions.enabled"
+
+#: The three verdicts of a channel check, as stored in ``check_error``.
+CHECK_OK = ""
+CHECK_NOT_ADMIN = "not_admin"
+CHECK_NOT_FOUND = "not_found"
+
+
+def _channel_row(row) -> dict[str, Any]:
+    """One ``required_channels`` row as the routes and the API read it."""
+    entry = dict(row)
+    entry["enabled"] = bool(entry.get("enabled"))
+    entry["bot_is_admin"] = bool(entry.get("bot_is_admin"))
+    return entry
+
+
+async def list_required_channels(
+    *, enabled_only: bool = False
+) -> list[dict[str, Any]]:
+    """Every channel in the order the bot lists them (``enabled_only`` filters)."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            """
+            SELECT * FROM required_channels
+            WHERE (:enabled_only = 0 OR enabled = 1)
+            ORDER BY position ASC, id ASC
+            """,
+            {"enabled_only": 1 if enabled_only else 0},
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+    return [_channel_row(row) for row in rows]
+
+
+async def get_required_channel(channel_id: int) -> dict[str, Any] | None:
+    """One channel by id, or ``None`` when it was deleted meanwhile."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM required_channels WHERE id = ?", (int(channel_id),)
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+    return _channel_row(row) if row else None
+
+
+async def find_required_channel(username: str) -> dict[str, Any] | None:
+    """The channel with this username (without the ``@``), case-insensitively."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM required_channels WHERE lower(username) = lower(?)",
+            (str(username or "").lstrip("@"),),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+    return _channel_row(row) if row else None
+
+
+async def _next_channel_position(conn: aiosqlite.Connection) -> int:
+    """One past the last position (0 for the first channel)."""
+    cursor = await conn.execute("SELECT MAX(position) FROM required_channels")
+    row = await cursor.fetchone()
+    await cursor.close()
+    highest = row[0] if row and row[0] is not None else -1
+    return int(highest) + 1
+
+
+async def _renumber_channels(conn: aiosqlite.Connection) -> None:
+    """Rewrite the positions as 0..n-1 in their current order."""
+    cursor = await conn.execute(
+        "SELECT id FROM required_channels ORDER BY position ASC, id ASC"
+    )
+    ids = [int(row["id"]) for row in await cursor.fetchall()]
+    await cursor.close()
+    for position, channel_id in enumerate(ids):
+        cursor = await conn.execute(
+            "UPDATE required_channels SET position = ? WHERE id = ?",
+            (position, channel_id),
+        )
+        await cursor.close()
+
+
+async def add_required_channel(
+    *,
+    title: str = "",
+    username: str = "",
+    link: str = "",
+    bot_is_admin: bool = False,
+    check_error: str = "",
+) -> dict[str, Any]:
+    """Append one channel (last in the list) and return the stored row."""
+    async with _conn() as conn:
+        position = await _next_channel_position(conn)
+        cursor = await conn.execute(
+            "INSERT INTO required_channels "
+            "(title, username, link, enabled, position, bot_is_admin, "
+            " checked_at, check_error, created_at) "
+            "VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)",
+            (
+                str(title or ""),
+                str(username or "").lstrip("@"),
+                str(link or ""),
+                position,
+                1 if bot_is_admin else 0,
+                _utc_now() if bot_is_admin or check_error else None,
+                str(check_error or ""),
+                _utc_now(),
+            ),
+        )
+        channel_id = cursor.lastrowid
+        await cursor.close()
+        await conn.commit()
+    return dict(await get_required_channel(int(channel_id or 0)) or {})
+
+
+async def record_channel_check(
+    channel_id: int,
+    *,
+    title: str | None = None,
+    username: str | None = None,
+    link: str | None = None,
+    bot_is_admin: bool,
+    check_error: str = "",
+) -> bool:
+    """Store the verdict of a check (metadata refreshed when Telegram gave it)."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "UPDATE required_channels SET "
+            "title = COALESCE(?, title), "
+            "username = COALESCE(?, username), "
+            "link = COALESCE(?, link), "
+            "bot_is_admin = ?, checked_at = ?, check_error = ? "
+            "WHERE id = ?",
+            (
+                None if title is None else str(title),
+                None if username is None else str(username).lstrip("@"),
+                None if link is None else str(link),
+                1 if bot_is_admin else 0,
+                _utc_now(),
+                str(check_error or ""),
+                int(channel_id),
+            ),
+        )
+        changed = cursor.rowcount
+        await cursor.close()
+        await conn.commit()
+    return bool(changed)
+
+
+async def set_required_channel_enabled(channel_id: int, enabled: bool) -> bool:
+    """Turn one channel on or off (the list keeps it either way)."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "UPDATE required_channels SET enabled = ? WHERE id = ?",
+            (1 if enabled else 0, int(channel_id)),
+        )
+        changed = cursor.rowcount
+        await cursor.close()
+        await conn.commit()
+    return bool(changed)
+
+
+async def move_required_channel(channel_id: int, delta: int) -> bool:
+    """Move one channel up (``-1``) or down (``+1``) and renumber the list."""
+    row = await get_required_channel(channel_id)
+    if row is None:
+        return False
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT id FROM required_channels ORDER BY position ASC, id ASC"
+        )
+        order = [int(entry["id"]) for entry in await cursor.fetchall()]
+        await cursor.close()
+        if int(channel_id) not in order:
+            return False
+        index = order.index(int(channel_id))
+        target = index + int(delta)
+        if target < 0 or target >= len(order):
+            return True
+        order.insert(target, order.pop(index))
+        for position, entry_id in enumerate(order):
+            cursor = await conn.execute(
+                "UPDATE required_channels SET position = ? WHERE id = ?",
+                (position, entry_id),
+            )
+            await cursor.close()
+        await conn.commit()
+    return True
+
+
+async def delete_required_channel(channel_id: int) -> dict[str, Any] | None:
+    """Delete one channel and renumber the list; returns the deleted row."""
+    row = await get_required_channel(channel_id)
+    if row is None:
+        return None
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM required_channels WHERE id = ?", (int(channel_id),)
+        )
+        await cursor.close()
+        await _renumber_channels(conn)
+        await conn.commit()
+    return row
+
+
+async def subscriptions_enabled() -> bool:
+    """Whether the owner turned the mandatory-subscription gate on.
+
+    Off when the row is missing, empty or not a truthy spelling: the default of
+    a fresh install is "no gate", and a malformed value must not switch it on.
+    """
+    value = await get_setting(SUBSCRIPTIONS_ENABLED_KEY, "false")
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+async def set_subscriptions_enabled(enabled: bool) -> None:
+    """Store the master switch as ``true``/``false``."""
+    await save_settings(
+        {SUBSCRIPTIONS_ENABLED_KEY: "true" if enabled else "false"}
+    )
+
+
+# ---------------------------------------------------------------------------
+# The subscription history
+# ---------------------------------------------------------------------------
+
+SUBSCRIBED = "subscribed"
+LEFT = "left"
+
+
+async def record_subscription(
+    user_id: int, channel_id: int, state: str, *, changed_at: str | None = None
+) -> bool:
+    """Append one transition, unless it is already the last recorded state.
+
+    Returns ``True`` when a row was written. Two properties matter:
+
+    * **idempotent** — the daily check runs every day and would otherwise write
+      a ``subscribed`` row per user per channel per day. Only a *change* is a
+      transition, so the last row for ``(user, channel)`` is compared first.
+    * **a ``left`` needs a subscription before it** — a user who was never seen
+      cannot "unsubscribe", so a lone ``left`` is not recorded. That keeps the
+      unsubscribe count equal to the number of users who actually left.
+    """
+    wanted = str(state)
+    if wanted not in (SUBSCRIBED, LEFT):
+        raise ValueError(f"Unknown subscription state: {wanted}")
+    stamp = changed_at or _utc_now()
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT state FROM subscriptions "
+            "WHERE user_id = ? AND channel_id = ? "
+            "ORDER BY changed_at DESC, id DESC LIMIT 1",
+            (int(user_id), int(channel_id)),
+        )
+        last = await cursor.fetchone()
+        await cursor.close()
+        previous = str(last["state"]) if last else None
+        if previous == wanted:
+            return False
+        if previous is None and wanted == LEFT:
+            return False
+        cursor = await conn.execute(
+            "INSERT INTO subscriptions (user_id, channel_id, state, changed_at) "
+            "VALUES (?, ?, ?, ?)",
+            (int(user_id), int(channel_id), wanted, stamp),
+        )
+        await cursor.close()
+        await conn.commit()
+    return True
+
+
+async def subscription_state(user_id: int, channel_id: int) -> str | None:
+    """The last recorded state for one pair, or ``None`` when unknown."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT state FROM subscriptions "
+            "WHERE user_id = ? AND channel_id = ? "
+            "ORDER BY changed_at DESC, id DESC LIMIT 1",
+            (int(user_id), int(channel_id)),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+    return str(row["state"]) if row else None
+
+
+async def subscribed_user_ids(channel_ids: list[int] | None = None) -> list[int]:
+    """Users whose last state is ``subscribed`` on every one of the channels.
+
+    This is the "active" set the daily check re-verifies, and it is deliberately
+    a list of ids only: the background task needs nothing else, and a full row
+    per user per channel would be a lot of memory for a nightly sweep.
+    """
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT user_id, channel_id, state FROM subscriptions "
+            "ORDER BY changed_at ASC, id ASC"
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+    wanted = {int(value) for value in (channel_ids or [])}
+    latest: dict[tuple[int, int], str] = {}
+    for row in rows:
+        latest[(int(row["user_id"]), int(row["channel_id"]))] = str(row["state"])
+    by_user: dict[int, list[tuple[int, str]]] = {}
+    for (user_id, channel_id), state in latest.items():
+        by_user.setdefault(user_id, []).append((channel_id, state))
+    active: list[int] = []
+    for user_id, states in sorted(by_user.items()):
+        if wanted:
+            states = [entry for entry in states if entry[0] in wanted]
+            if {entry[0] for entry in states} != wanted:
+                continue
+        if states and all(state == SUBSCRIBED for _, state in states):
+            active.append(user_id)
+    return active
+
+
+async def mark_left(user_id: int, channel_ids: list[int]) -> int:
+    """Record a ``left`` for each channel the user is no longer in.
+
+    The caller (the bot's daily check) already knows the verdict; this only
+    writes the transitions the history does not have yet. Answers how many rows
+    were added, which is also what the bot logs.
+    """
+    written = 0
+    for channel_id in channel_ids:
+        if await record_subscription(user_id, channel_id, LEFT):
+            written += 1
+    return written
+
+
+#: The three windows the Channels page offers, as (key, label, days).
+_SUBSCRIPTION_PERIODS: tuple[tuple[str, int | None], ...] = (
+    ("7d", 7),
+    ("30d", 30),
+    ("all", None),
+)
+
+
+def subscription_periods() -> tuple[tuple[str, int | None], ...]:
+    """``(key, days)`` for the period selector; ``None`` means "all time"."""
+    return _SUBSCRIPTION_PERIODS
+
+
+def _period_start(period: str) -> str | None:
+    """The first timestamp inside a period, or ``None`` for "all time"."""
+    days = dict(_SUBSCRIPTION_PERIODS).get(str(period or ""), 30)
+    if days is None:
+        return None
+    now = datetime.now(timezone.utc)
+    return (now - timedelta(days=int(days))).strftime(_TIME_FORMAT)
+
+
+def subscription_chart_buckets(period: str) -> tuple[list[str], list[str], str]:
+    """Labels, bucket keys and the ``strftime`` format for the period."""
+    days = dict(_SUBSCRIPTION_PERIODS).get(str(period or ""), 30)
+    now = datetime.now(timezone.utc)
+    if days is None:
+        # "All time": show whole months (the plan's own window only decides
+        # which months are labelled, the counts below use no start at all).
+        labels, keys, bucket_format, _start = _monthly_plan(now)
+        return labels, keys, bucket_format
+    labels, keys, bucket_format, _start = _daily_plan(now, int(days), "%b %d")
+    return labels, keys, bucket_format
+
+
+def _latest_states(rows) -> dict[tuple[int, int], str]:
+    """``(user_id, channel_id) -> last recorded state`` from an ordered history."""
+    latest: dict[tuple[int, int], str] = {}
+    for row in rows:
+        latest[(int(row["user_id"]), int(row["channel_id"]))] = str(row["state"])
+    return latest
+
+
+def _active_everywhere(latest: dict[tuple[int, int], str], channel_ids: list[int]) -> int:
+    """Users whose last state is ``subscribed`` on **every** enabled channel."""
+    if not channel_ids:
+        return 0
+    users: dict[int, dict[int, str]] = {}
+    for (user_id, channel_id), state in latest.items():
+        users.setdefault(user_id, {})[channel_id] = state
+    return sum(
+        1
+        for states in users.values()
+        if all(states.get(channel_id) == SUBSCRIBED for channel_id in channel_ids)
+    )
+
+
+def _chart_series(
+    history, labels: list[str], bucket_keys: list[str], bucket_format: str
+) -> dict[str, Any]:
+    """Two series — subscriptions and unsubscriptions — bucketed by the period."""
+    buckets: dict[str, dict[str, int]] = {}
+    for row in history:
+        try:
+            moment = datetime.strptime(str(row["changed_at"] or ""), _TIME_FORMAT)
+        except ValueError:
+            # A hand-edited timestamp must not break the chart.
+            continue
+        bucket = buckets.setdefault(
+            moment.strftime(bucket_format), {SUBSCRIBED: 0, LEFT: 0}
+        )
+        state = str(row["state"])
+        if state in bucket:
+            bucket[state] += 1
+    return {
+        "labels": labels,
+        SUBSCRIBED: [buckets.get(key, {}).get(SUBSCRIBED, 0) for key in bucket_keys],
+        LEFT: [buckets.get(key, {}).get(LEFT, 0) for key in bucket_keys],
+    }
+
+
+async def _transition_counts(start: str | None) -> tuple[dict[int, int], dict[int, int]]:
+    """``(subscribed, left)`` per channel, counting only the period's rows."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            """
+            SELECT channel_id, state, COUNT(*) FROM subscriptions
+            WHERE (:start IS NULL OR changed_at >= :start)
+            GROUP BY channel_id, state
+            """,
+            {"start": start},
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+    subscribed: dict[int, int] = {}
+    left: dict[int, int] = {}
+    for row in rows:
+        channel_id = int(row["channel_id"])
+        state = str(row["state"])
+        if state == SUBSCRIBED:
+            subscribed[channel_id] = int(row[2])
+        elif state == LEFT:
+            left[channel_id] = int(row[2])
+    return subscribed, left
+
+
+async def _period_history(start: str | None) -> list[Any]:
+    """Every transition inside the period, oldest first (for the chart)."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT changed_at, state FROM subscriptions "
+            "WHERE (:start IS NULL OR changed_at >= :start) "
+            "ORDER BY changed_at ASC, id ASC",
+            {"start": start},
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+    return list(rows)
+
+
+async def _latest_history() -> list[Any]:
+    """The whole history oldest first: the last row per pair is the live state."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT user_id, channel_id, state FROM subscriptions "
+            "ORDER BY changed_at ASC, id ASC"
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+    return list(rows)
+
+
+async def get_subscription_stats(period: str = "30d") -> dict[str, Any]:
+    """The Channels page's KPI cells, per-channel table and chart series.
+
+    Definition of each number, because the words on the page are not enough:
+
+    * **subscribed / left in the period** — transitions with a ``changed_at``
+      inside the window. Because a row is written only on a change, these are
+      real transitions and not observations;
+    * **active now** — users whose *last* row is ``subscribed`` on **every**
+      enabled channel. A user who left one channel is not active, even if the
+      other channels are fine: the gate requires all of them;
+    * the per-channel row uses the same period for its two counts and reports
+      that channel's own active users (last row ``subscribed``).
+
+    All-time counts use no lower bound at all, so "all time" is literally
+    everything ever recorded — not the chart's one-year window.
+    """
+    start = _period_start(period)
+    labels, bucket_keys, bucket_format = subscription_chart_buckets(period)
+    channels = await list_required_channels(enabled_only=True)
+    # "Active" means subscribed to every channel the gate actually asks for,
+    # which is the same set the API hands the bot: enabled *and* one where the
+    # bot is an administrator. A channel it cannot verify is listed in the
+    # breakdown (the operator should see it) but must not make the "active"
+    # number impossible to reach.
+    channel_ids = [
+        int(channel["id"]) for channel in channels if channel["bot_is_admin"]
+    ]
+
+    subscribed_by_channel, left_by_channel = await _transition_counts(start)
+    history = await _period_history(start)
+    latest = _latest_states(await _latest_history())
+
+    active_by_channel: dict[int, int] = {}
+    for (_user_id, channel_id), state in latest.items():
+        if state == SUBSCRIBED:
+            active_by_channel[channel_id] = active_by_channel.get(channel_id, 0) + 1
+
+    return {
+        "period": str(period or "30d"),
+        "subscribed": sum(subscribed_by_channel.values()),
+        "left": sum(left_by_channel.values()),
+        "active": _active_everywhere(latest, channel_ids),
+        "channels": [
+            {
+                "id": int(channel["id"]),
+                "title": channel["title"],
+                "username": channel["username"],
+                # A row stored before the link column was filled still opens:
+                # the username is enough to build the t.me address.
+                "link": channel["link"]
+                or (
+                    f"https://t.me/{channel['username']}"
+                    if channel["username"]
+                    else ""
+                ),
+                "enabled": channel["enabled"],
+                "bot_is_admin": channel["bot_is_admin"],
+                "checked_at": channel["checked_at"],
+                "subscribed": subscribed_by_channel.get(int(channel["id"]), 0),
+                "left": left_by_channel.get(int(channel["id"]), 0),
+                "active": active_by_channel.get(int(channel["id"]), 0),
+            }
+            for channel in channels
+        ],
+        "chart": _chart_series(history, labels, bucket_keys, bucket_format),
+    }

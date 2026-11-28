@@ -28,7 +28,7 @@ from telegram.ext import ContextTypes
 
 import state_store
 
-from . import commands, keyboards, language, stages, texts, url_flow
+from . import commands, keyboards, language, stages, subscription, texts, url_flow
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +63,27 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    await show_welcome(message, config.resolve(language.chosen(user.id)))
+    await show_welcome(message, config.resolve(language.chosen(user.id)), user.id)
 
 
-async def show_welcome(message: Message, lang: str) -> None:
-    """The welcome text plus its keyboard, in one message."""
+async def show_welcome(
+    message: Message, lang: str, user_id: int | None = None
+) -> None:
+    """The welcome text plus its keyboard, in one message.
+
+    When the subscription gate is in force the welcome is not shown yet: the
+    gate screen comes first, and the user reaches this screen by passing it.
+    ``user_id`` is who the "passed the gate" flag belongs to — never the chat
+    id, which is only the same number in a private chat by coincidence.
+    """
+    gate = await subscription.active()
+    if gate is not None and not state_store.get_subscription_passed(user_id):
+        await message.reply_text(
+            subscription.gate_text(gate, lang),
+            parse_mode=PARSE_MODE,
+            reply_markup=keyboards.subscription(gate, lang),
+        )
+        return
     await message.reply_text(
         texts.welcome_text(lang),
         parse_mode=PARSE_MODE,
@@ -117,6 +133,14 @@ async def on_language_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     tracker = _tracker(update, context, query)
     if tracker is None:
         return
+
+    # The gate comes right after the language choice: a new user has just picked
+    # their language, so it is the first screen they can read.
+    if not from_settings:
+        gate = await subscription.active()
+        if gate is not None and not state_store.get_subscription_passed(user.id):
+            await subscription.show(tracker, gate, code)
+            return
 
     if from_settings:
         text, markup = await commands.settings_payload(user)

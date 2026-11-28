@@ -11,6 +11,7 @@ from handlers import register_handlers
 from i18n import t
 from logging_setup import configure_logging
 from koyura_client import validate_startup_config
+from subscription_sweep import subscription_sweep_loop
 
 # Keeps httpx request lines (which contain the bot token) and any other
 # accidental secret out of the logs; see bot/logging_setup.py.
@@ -87,6 +88,11 @@ def main():
 
     async def post_init(application):
         asyncio.create_task(cleanup_loop())
+        # The nightly subscription sweep: re-checks the users the panel reports
+        # as active, so a lapsed subscription stops being trusted after a day.
+        # It is a no-op when the gate is off, and it starts ten minutes late so
+        # the panel is up before the first check.
+        asyncio.create_task(subscription_sweep_loop(application.bot))
         from telegram import BotCommand
         await application.bot.set_my_commands(
             [BotCommand(name, description) for name, description in menu_commands()]

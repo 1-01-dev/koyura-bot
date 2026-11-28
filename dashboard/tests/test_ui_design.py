@@ -195,7 +195,8 @@ def test_favicon_exists_and_is_served():
 @pytest.mark.parametrize(
     "page",
     ["/login", "/", "/history", "/errors", "/admin",
-     "/admin/cookies", "/admin/limits", "/admin/bot", "/admin/system"],
+     "/admin/cookies", "/admin/channels", "/admin/limits", "/admin/bot",
+     "/admin/system"],
 )
 def test_every_page_links_a_working_favicon(page: str):
     html = _client().get("/login").text if page == "/login" else _page(page)
@@ -363,7 +364,10 @@ def test_dashboard_keeps_the_ids_its_javascript_uses(element_id: str):
 
 #: The four admin sub-pages, in sidebar order. Every one of them is a page of
 #: its own now, so the tests below name the page that owns the markup.
-ADMIN_PAGES = ("/admin/cookies", "/admin/limits", "/admin/bot", "/admin/system")
+ADMIN_PAGES = (
+    "/admin/cookies", "/admin/channels", "/admin/limits", "/admin/bot",
+    "/admin/system",
+)
 
 
 def test_admin_uses_data_action_hooks_and_no_inline_handlers():

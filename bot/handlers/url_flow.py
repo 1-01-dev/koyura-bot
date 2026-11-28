@@ -28,7 +28,7 @@ import track_card
 from koyura_client import KoyuraError, KoyuraInfoError, KoyuraServiceDown, get_info
 from url_safety import UnsafeURLError, validate_url
 
-from . import config, download_flow, language, sessions, stages, texts
+from . import config, download_flow, language, sessions, stages, subscription, texts
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,13 @@ async def url_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     user = update.effective_user
     lang = await language.current(getattr(user, "id", None))
+
+    # The gate comes before anything else the bot would do with a link: an
+    # unsubscribed user is asked politely once per message instead of getting a
+    # preview card, so the rule "no ordinary action before subscribing" holds on
+    # every entry point and not only on /start.
+    if user is not None and await subscription.remind(message, user.id, lang):
+        return
 
     urls, notice = await safe_links(found, lang=lang)
     if notice:

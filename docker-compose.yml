@@ -151,6 +151,13 @@ services:
       EGRESS_PATH: /var/lib/koyura2/egress
       KOYURA_ENGINE_URL: http://koyura-engine:8899
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN is required}
+      # The Channels page validates a channel by calling getChat/getChatMember,
+      # which needs the bot's own token. It is read, never logged: the panel
+      # builds no URL or message from it that could reach a log line.
+      BOT_TOKEN: ${BOT_TOKEN:?BOT_TOKEN is required}
+      # The Bot API the bot itself talks to; the same self-hosted server, so a
+      # channel added in the panel is checked exactly where the bot checks it.
+      TELEGRAM_BOT_API_URL: http://telegram-bot-api:8081
       CLEANUP_MAX_DISK_MB: ${CLEANUP_MAX_DISK_MB:-5000}
       MARK_STALE_ON_STARTUP: ${MARK_STALE_ON_STARTUP:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -176,6 +183,11 @@ services:
     depends_on:
       koyura-engine:
         condition: service_healthy
+      # Only needed when an operator presses "Check" on the Channels page, so
+      # started (not healthy) is enough: a probe that cannot reach Telegram
+      # answers "not found" and changes nothing.
+      telegram-bot-api:
+        condition: service_started
     networks:
       - internal
     cap_drop:

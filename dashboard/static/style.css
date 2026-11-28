@@ -1263,6 +1263,168 @@
 }
 
 /* ---------------------------------------------------------
+   13b. Channels — the subscription gate
+   ---------------------------------------------------------
+   Three components: the master switch (a real button, so Space/Enter work and
+   the CSP needs no script), the honest "why this channel does not work" line,
+   and the per-channel action row. */
+
+/* The switch: a track and a thumb, with the label outside the skin so a long
+   Russian label cannot stretch the control. */
+.gate-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  font-weight: 400;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.switch:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.switch-track {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  border: 1px solid var(--line);
+  background: var(--wash);
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: var(--dim);
+  transition: transform 0.1s ease, background 0.1s ease;
+}
+
+.switch--on .switch-track {
+  border-color: var(--ink);
+  background: var(--ink);
+}
+
+.switch--on .switch-thumb {
+  transform: translateX(18px);
+  background: var(--bg);
+}
+
+.switch-label {
+  color: inherit;
+}
+
+.switch--on .switch-label {
+  color: var(--ink);
+}
+
+/* The "?" is the shared help component (js/help.js + _help.html), not a
+   second skin: only its placement in the switch row is page-specific. */
+#gate-card > .help-panel {
+  margin: 0 16px 14px;
+}
+
+.gate-state {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+}
+
+/* Add a channel: one field and one button, like the cookie form. */
+.channel-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  padding: 0 14px 12px;
+}
+
+.channel-add-cell {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.channel-input {
+  width: 100%;
+}
+
+.channel-add-btn {
+  flex: 0 0 auto;
+}
+
+#channel-admin-rule {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+/* The table's channel cell: the title on one line, the link under it. */
+.channel-title {
+  display: block;
+  font-size: 13px;
+}
+
+.channel-link,
+.channel-checked {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.channel-link {
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+
+.channel-link:hover {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+
+/* One row of small buttons; they wrap rather than overflow on a phone. */
+.channel-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.channel-inline-form {
+  display: inline;
+  margin: 0;
+}
+
+.channel-icon-btn {
+  min-height: 32px;
+  padding: 4px 10px;
+}
+
+.col-actions {
+  text-align: right !important;
+  white-space: nowrap;
+}
+
+/* The statistics strip has three cells, not four. */
+.kpi-grid--three {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+/* ---------------------------------------------------------
    14. Breakpoints
    --------------------------------------------------------- */
 

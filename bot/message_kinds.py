@@ -187,6 +187,33 @@ def _transcode_ask(lang: str) -> str:
     return "*@title*\n@question\n@note"
 
 
+def _subscription_gate(lang: str) -> str:
+    """The screen shown after the language picker, before anything else.
+
+    Three catalogued lines, in the order the user reads them: the heading, the
+    list of channels that has to be subscribed to, and the one instruction that
+    tells them what to do next (open a channel, then tap the check button).
+    """
+    return "\n\n".join(
+        (
+            _heading("subscription.title", lang),
+            t("subscription.body", lang),
+            t("subscription.hint", lang),
+        )
+    )
+
+
+def _subscription_missing(lang: str) -> str:
+    """The polite refusal: still not subscribed, and to what."""
+    return "\n\n".join(
+        (
+            _heading("subscription.title", lang),
+            t("subscription.missing", lang),
+            t("subscription.hint", lang),
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # The registry
 # ---------------------------------------------------------------------------
@@ -237,6 +264,35 @@ KINDS: tuple[Kind, ...] = (
         placeholders=(),
         i18n_keys=("language.unknown",),
         templates=_one_line("language.unknown"),
+    ),
+    # -- the subscription gate ---------------------------------------------
+    # Shown once after the language screen (and again before any ordinary
+    # action) while the operator has the gate on and at least one channel is
+    # enabled. The texts live in the catalogue so the owner can reword them
+    # without touching the handler.
+    Kind(
+        id="subscription.gate",
+        category="onboarding",
+        media="text",
+        placeholders=("channels",),
+        i18n_keys=("subscription.title", "subscription.body", "subscription.hint"),
+        templates=_templates(_subscription_gate),
+    ),
+    Kind(
+        id="subscription.missing",
+        category="onboarding",
+        media="text",
+        placeholders=("missing",),
+        i18n_keys=("subscription.title", "subscription.missing", "subscription.hint"),
+        templates=_templates(_subscription_missing),
+    ),
+    Kind(
+        id="subscription.error",
+        category="onboarding",
+        media="text",
+        placeholders=(),
+        i18n_keys=("subscription.error",),
+        templates=_one_line("subscription.error"),
     ),
     Kind(
         id="mode.armed",
@@ -583,6 +639,18 @@ KINDS: tuple[Kind, ...] = (
         id="button.mp4",
         category="buttons", media="text", placeholders=(),
         i18n_keys=("button.mp4",), templates=_one_line("button.mp4"),
+    ),
+    Kind(
+        id="button.subscription_check",
+        category="buttons", media="text", placeholders=(),
+        i18n_keys=("button.subscription_check",),
+        templates=_one_line("button.subscription_check"),
+    ),
+    Kind(
+        id="button.subscription_open",
+        category="buttons", media="text", placeholders=(),
+        i18n_keys=("button.subscription_open",),
+        templates=_one_line("button.subscription_open"),
     ),
     Kind(
         id="card.best_quality",
