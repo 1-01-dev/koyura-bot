@@ -26,6 +26,7 @@ testable without a network.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
@@ -34,6 +35,8 @@ import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlsplit
+
+logger = logging.getLogger("koyura.streaming")
 
 #: How many search hits one provider may return before filtering.
 SEARCH_COUNT = 10
@@ -823,19 +826,48 @@ def search_entries(provider: str, query: str, runner: SearchRunner) -> list[dict
     return [entry for entry in (entries or []) if isinstance(entry, dict)]
 
 
+#: How many times one provider's search is repeated while it answers with a
+#: full list whose entries carry no duration. The answer is intermittent —
+#: measured once in about six runs — and a second request almost always returns
+#: the durations, which turn ``2 · ?`` back into ``2 · 3:48``.
+SEARCH_DURATION_RETRIES = 1
+
+
+def _all_durationless(entries: Iterable[object]) -> bool:
+    """True when a non-empty answer mentions no duration at all."""
+    usable = [e for e in entries if isinstance(e, dict)]
+    if not usable:
+        return False
+    return all(duration_seconds(e.get("duration")) is None for e in usable)
+
+
 def find_candidates(
     meta: TrackMeta,
     runner: SearchRunner,
     *,
     providers: Iterable[str] = ("youtube", "soundcloud"),
+    retries: int = SEARCH_DURATION_RETRIES,
 ) -> tuple[list[Candidate], int]:
-    """The alternatives for ``meta``: YouTube first, SoundCloud when it fails."""
+    """The alternatives for ``meta``: YouTube first, SoundCloud when it fails.
+
+    A provider whose answer carries no durations at all is asked once more
+    before its hits are used. The retry only exists to improve the button
+    labels — every hit would be offered either way, ranked last — so it is
+    bounded and never turns a working search into a slow one.
+    """
     query = meta.query
     if not query:
         return [], 0
     drm_skipped = 0
     for provider in providers:
         entries = search_entries(provider, query, runner)
+        attempts = 0
+        while entries and _all_durationless(entries) and attempts < retries:
+            attempts += 1
+            logger.info(
+                "Search on %s answered without durations; asking once more", provider
+            )
+            entries = search_entries(provider, query, runner)
         if not entries:
             continue
         candidates, skipped = select_candidates(entries, meta, provider)

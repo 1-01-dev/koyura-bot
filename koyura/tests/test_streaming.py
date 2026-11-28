@@ -712,8 +712,40 @@ class TestTheDurationlessSearchAnswer:
             ]},
         })
         found, _ = streaming.find_candidates(self.meta, runner)
-        assert [provider for provider, _ in runner.calls] == ["youtube"]
+        providers = [provider for provider, _ in runner.calls]
+        # YouTube is asked, then asked once more for the durations, and never
+        # replaced by SoundCloud: the cover is not the track that was asked for.
+        assert providers == ["youtube", "youtube"]
         assert all(candidate.provider == "youtube" for candidate in found)
+
+    def test_one_retry_is_enough_to_recover_the_durations(self):
+        calls = []
+
+        def runner(provider, query):
+            calls.append(provider)
+            if len(calls) == 1:
+                return self._durationless_youtube()
+            return {"entries": [
+                {"title": "Rick Astley - Never Gonna Give You Up", "duration": 214,
+                 "webpage_url": "https://www.youtube.com/watch?v=ok"},
+            ]}
+
+        found, _ = streaming.find_candidates(self.meta, runner)
+        assert calls == ["youtube", "youtube"]
+        assert found[0].label(1) == "1 · 3:34"
+
+    def test_no_retry_when_the_durations_are_there(self):
+        calls = []
+
+        def runner(provider, query):
+            calls.append(provider)
+            return {"entries": [
+                {"title": "Rick Astley - Never Gonna Give You Up", "duration": 214,
+                 "webpage_url": "https://www.youtube.com/watch?v=ok"},
+            ]}
+
+        streaming.find_candidates(self.meta, runner)
+        assert calls == ["youtube"], "a usable answer must not be asked twice"
 
     def test_a_complete_youtube_answer_is_still_preferred(self):
         runner = fake_runner({"youtube": {"entries": [
