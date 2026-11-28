@@ -32,7 +32,7 @@ DEFAULT_DB_PATH = "/data/koyura_bot_state.db"
 DEFAULTS = {"quality": "best", "format": "video"}
 
 #: Preferences that are *not* part of ``DEFAULTS``; ``None`` means "not set".
-EXTRA_COLUMNS = ("language", "pending_format")
+EXTRA_COLUMNS = ("language", "pending_format", "subscription_passed_at")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS user_prefs (
@@ -81,6 +81,8 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE user_prefs ADD COLUMN language TEXT")
     if "pending_format" not in present:
         conn.execute("ALTER TABLE user_prefs ADD COLUMN pending_format TEXT")
+    if "subscription_passed_at" not in present:
+        conn.execute("ALTER TABLE user_prefs ADD COLUMN subscription_passed_at TEXT")
 
 
 def init() -> None:
@@ -213,6 +215,15 @@ def set_extra(user_id: int, name: str, value: str | None) -> None:
                     "language=excluded.language, updated_at=excluded.updated_at",
                     (user_id, value, stamp),
                 )
+            elif name == "subscription_passed_at":
+                conn.execute(
+                    "INSERT INTO user_prefs (user_id, subscription_passed_at, updated_at) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET "
+                    "subscription_passed_at=excluded.subscription_passed_at, "
+                    "updated_at=excluded.updated_at",
+                    (user_id, value, stamp),
+                )
             else:
                 conn.execute(
                     "INSERT INTO user_prefs (user_id, pending_format, updated_at) "
@@ -245,6 +256,44 @@ def get_pending_format(user_id: int) -> str | None:
 def set_pending_format(user_id: int, fmt: str | None) -> None:
     """Arm (``audio``/``video``) or clear (``None``) the format of the next link."""
     set_extra(user_id, "pending_format", fmt)
+
+
+#: How long a passed subscription gate is trusted before the next link asks
+#: again. A day matches the background re-check, so a user who left a channel
+#: stops being treated as subscribed when the sweep notices, not never.
+SUBSCRIPTION_PASS_TTL_SECONDS = 24 * 60 * 60
+
+
+def get_subscription_passed(user_id: int | None) -> bool:
+    """Whether this user passed the gate within the last day.
+
+    The gate is checked when the user *passes it*, not before every link: asking
+    Telegram on each message would be slow and rate-limited. A timestamp older
+    than a day (or one we cannot read) answers ``False``, so the gate is asked
+    again — a lapsed subscription must not last forever on the strength of one
+    check.
+    """
+    if user_id is None:
+        return False
+    stamp = get_extras(int(user_id))["subscription_passed_at"]
+    if not stamp:
+        return False
+    try:
+        passed_at = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return False
+    elapsed = (datetime.now(timezone.utc).replace(tzinfo=None) - passed_at).total_seconds()
+    return 0 <= elapsed < SUBSCRIPTION_PASS_TTL_SECONDS
+
+
+def set_subscription_passed(user_id: int | None, passed: bool) -> None:
+    """Remember (or forget) that this user passed the subscription gate."""
+    if user_id is None:
+        return
+    if passed:
+        set_extra(int(user_id), "subscription_passed_at", _stamp())
+    else:
+        set_extra(int(user_id), "subscription_passed_at", None)
 
 
 def reset_cache() -> None:
