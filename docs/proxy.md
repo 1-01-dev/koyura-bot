@@ -123,9 +123,18 @@ every form action inside it — only exists after the insert.
 The dialog renders the password field **empty, always**. A row carries
 `has_password` (true/false) and the hint under the field says "set — blank keeps
 it" or "never shown back"; the value itself stays in
-`EGRESS_PATH/secrets/<id>.txt`. A refusal (`OnlyOneWireGuard` for a second
-tunnel, a URL the engine cannot dial) is shown inside the dialog and nothing
-typed is lost.
+`EGRESS_PATH/secrets/<id>.txt`. The **username** is not a secret, so the dialog
+fills it back in: reopening a saved connection shows its login. A refusal
+(`OnlyOneWireGuard` for a second tunnel, a bad host, a port out of range) is
+shown inside the dialog and nothing typed is lost.
+
+The address is two fields, **Host** and **Port**, because the protocol is
+already a select: the scheme is the protocol and is never typed into a box. A row
+still stores one canonical `url` (`scheme://host:port`), which is what the engine
+and `GET /api/egress` read. `4200` in Host (`host:port`) is accepted as well;
+the Port field wins when both are given. An IPv6 literal goes in brackets. A
+**Quick test** after changing the host or the port saves the edit first, so the
+verdict is about the proxy on the page, not the one it replaced.
 
 ### Automatic tests
 
@@ -173,7 +182,8 @@ column.
 
 ## WireGuard
 
-Upload a `.conf` (≤ 64 KB) and press **Apply**. The file must carry:
+Choose **Protocol = WireGuard** in the dialog, attach a `.conf` (≤ 64 KB) and
+press **Save** — the row and the file are one action. The file must carry:
 
 * an `[Interface]` section with `PrivateKey` and `Address`;
 * a `[Peer]` section with `Endpoint`.
@@ -194,9 +204,11 @@ tunnel as soon as the file changes, and writes the result to
 }
 ```
 
-`state` is `up`, `down` or `error`. The page shows the state, the external IP,
-the SOCKS address, the timestamp and, for `error`, the watcher's message.
-**Refresh status** re-reads the file; the page never caches it.
+`state` is `up`, `down` or `error`. The tunnel's row reads it on every page load:
+its Status badge is the watcher's state (`no report yet` before the first one),
+and the dialog shows the state, the external IP and the SOCKS address, plus the
+watcher's own message when it reports an error. Nothing on the page caches the
+file.
 
 A config with fake keys reaches the watcher and comes back as `error` — that is
 the expected result of testing with dummy values, and it is a report, not a
@@ -208,8 +220,10 @@ tunnel's SOCKS address from `status.json`, so a dead tunnel means **direct**
 single file, so a second `kind=wireguard` connection is refused with
 `OnlyOneWireGuard`.
 
-**Disconnect** deletes the config; the watcher tears the tunnel down and the
-engine returns to a direct connection.
+**Disconnect** (`POST /admin/proxy/wireguard/remove`) deletes the config and the
+row that dials it; the watcher tears the tunnel down and the engine returns to a
+direct connection. Leaving the file field empty while editing an existing tunnel
+keeps the config on disk — the key does not have to be uploaded again.
 
 ## Apply it to: all, some, or all but some
 

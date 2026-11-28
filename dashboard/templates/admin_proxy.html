@@ -193,17 +193,33 @@
         </select>
       </div>
 
-      {# Proxy fields: URL, username, password. Hidden for WireGuard. #}
+      {# Proxy fields: host, port, username, password. Hidden for WireGuard.
+
+         The protocol is already a select, so the scheme never belongs in a text
+         field: an operator typing `http://host:port` into one box is a field
+         that has to be validated twice. Two inputs make the shared part (the
+         address) and the numeric part (the port) impossible to confuse, and the
+         module assembles the URL the server stores. #}
       <div id="proxy-fields">
-        <div class="proxy-field">
-          <label class="limits-label mono" for="proxy-url">Proxy URL</label>
-          <input id="proxy-url" name="url" type="text" class="limits-input"
-                 autocomplete="off" autocapitalize="off" spellcheck="false"
-                 placeholder="socks5h://host:port"
-                 aria-describedby="proxy-url-hint" />
-          <span class="limits-hint" id="proxy-url-hint">
-            socks5:// · socks5h:// · http:// · https:// · no path, no query
-          </span>
+        <div class="proxy-address">
+          <div class="proxy-field">
+            <label class="limits-label mono" for="proxy-host">Host</label>
+            <input id="proxy-host" name="host" type="text" class="limits-input"
+                   autocomplete="off" autocapitalize="off" spellcheck="false"
+                   placeholder="138.124.89.104"
+                   aria-describedby="proxy-host-hint" />
+            <span class="limits-hint" id="proxy-host-hint">
+              hostname, IPv4, or [IPv6] · no scheme, no path
+            </span>
+          </div>
+          <div class="proxy-field proxy-port-field">
+            <label class="limits-label mono" for="proxy-port">Port</label>
+            <input id="proxy-port" name="port" type="number" class="limits-input"
+                   inputmode="numeric" min="1" max="65535" step="1"
+                   autocomplete="off" placeholder="1080"
+                   aria-describedby="proxy-port-hint" />
+            <span class="limits-hint" id="proxy-port-hint">1–65535</span>
+          </div>
         </div>
 
         <div class="proxy-credentials">

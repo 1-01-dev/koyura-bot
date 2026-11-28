@@ -620,6 +620,134 @@ class TestInterval:
 # a code the dialog can show, and the single-rule form that predated the list is
 # gone rather than silently half-working.
 
+class TestAddress:
+    """Host + port in the editor, one canonical URL in the row.
+
+    The protocol select decides the scheme, so the address is two fields. What
+    is stored must be exactly what the old single URL box stored — the engine
+    and the internal endpoint read that column — so these tests are about the
+    assembly, not about a second format.
+    """
+
+    def test_host_and_port_become_the_schemes_url(self):
+        assert proxy_connections.proxy_url_for("http", "138.124.89.104", "3128") == (
+            "http://138.124.89.104:3128"
+        )
+        assert proxy_connections.proxy_url_for("socks5h", "proxy.example.com", 1080) == (
+            "socks5h://proxy.example.com:1080"
+        )
+
+    def test_the_port_is_normalised_to_a_number(self):
+        assert proxy_connections.proxy_url_for("https", "h.example", " 0443 ") == (
+            "https://h.example:443"
+        )
+
+    def test_an_ipv6_host_keeps_its_brackets(self):
+        assert proxy_connections.proxy_url_for("socks5", "[2a01:4f8::1]", "1080") == (
+            "socks5://[2a01:4f8::1]:1080"
+        )
+
+    def test_an_ipv6_host_without_brackets_is_a_sentence(self):
+        with pytest.raises(proxy_connections.ProxyConnectionError) as raised:
+            proxy_connections.proxy_url_for("socks5", "2a01:4f8::1", "1080")
+        assert raised.value.code == "InvalidHost"
+        assert "brackets" in str(raised.value)
+
+    def test_a_host_typed_with_its_own_port_is_accepted(self):
+        """The single-bar habit: ``host:port`` in the host field still works."""
+        assert proxy_connections.proxy_url_for("http", "10.0.0.5:8080", "") == (
+            "http://10.0.0.5:8080"
+        )
+        # And a port typed in the field wins over the one in the host.
+        assert proxy_connections.proxy_url_for("http", "10.0.0.5:8080", "9090") == (
+            "http://10.0.0.5:9090"
+        )
+
+    @pytest.mark.parametrize(
+        "host, port, code",
+        (
+            ("", "1080", "MissingHost"),
+            ("10.0.0.5", "", "MissingPort"),
+            ("10.0.0.5", "0", "InvalidPort"),
+            ("10.0.0.5", "65536", "InvalidPort"),
+            ("10.0.0.5", "ten", "InvalidPort"),
+            ("http://10.0.0.5", "1080", "InvalidHost"),
+            ("10.0.0.5/path", "1080", "InvalidHost"),
+            ("10.0.0.5?x", "1080", "InvalidHost"),
+            ("user@10.0.0.5", "1080", "InvalidHost"),
+            ("10.0.0 5", "1080", "InvalidHost"),
+            ("[not-a-v6]", "1080", "InvalidHost"),
+        ),
+    )
+    def test_a_bad_address_is_a_sentence_with_a_code(self, host, port, code):
+        with pytest.raises(proxy_connections.ProxyConnectionError) as raised:
+            proxy_connections.proxy_url_for("socks5h", host, port)
+        assert raised.value.code == code
+        assert str(raised.value).strip().endswith(".")
+
+    def test_the_scheme_comes_from_the_protocol_not_the_host(self):
+        with pytest.raises(proxy_connections.ProxyConnectionError) as raised:
+            proxy_connections.proxy_url_for("" , "10.0.0.5", "1080")
+        assert raised.value.code == "InvalidKind"
+
+    def test_split_address_is_the_editor_s_two_fields(self):
+        assert proxy_connections.split_address("socks5h://10.0.0.5:1080") == (
+            "socks5h", "10.0.0.5", "1080"
+        )
+        assert proxy_connections.split_address("socks5://[2a01:4f8::1]:1080") == (
+            "socks5", "[2a01:4f8::1]", "1080"
+        )
+        assert proxy_connections.split_address("") == ("", "", "")
+        assert proxy_connections.split_address("not a url")[1] == ""
+
+    def test_a_round_trip_keeps_the_url(self):
+        for url in (
+            "socks5h://10.0.0.5:1080",
+            "http://proxy.example.com:3128",
+            "https://[2a01:4f8::1]:443",
+        ):
+            scheme, host, port = proxy_connections.split_address(url)
+            assert proxy_connections.proxy_url_for(scheme, host, port) == url
+
+    def test_the_editor_creates_the_row_from_two_fields(self, admin):
+        response = admin.post(
+            "/admin/proxy/connection",
+            data={
+                "name": "Split",
+                "kind": "http",
+                "host": "138.124.89.104",
+                "port": "3128",
+                "username": "",
+                "password": "",
+                "assignment_mode": "all",
+                "csrf_token": admin.cookies.get("koyura_csrf") or "",
+            },
+            headers={"X-Requested-With": "fetch"},
+        )
+        assert response.status_code == 201, response.text
+        # What the engine reads is the canonical URL, unchanged by the split.
+        assert _get("/api/egress")["connections"][0]["url"] == (
+            "http://138.124.89.104:3128"
+        )
+
+    def test_a_bad_port_is_refused_inside_the_dialog(self, admin):
+        response = admin.post(
+            "/admin/proxy/connection",
+            data={
+                "name": "Split",
+                "kind": "http",
+                "host": "10.0.0.5",
+                "port": "70000",
+                "assignment_mode": "all",
+                "csrf_token": admin.cookies.get("koyura_csrf") or "",
+            },
+            headers={"X-Requested-With": "fetch"},
+        )
+        assert response.status_code == 400
+        assert response.json()["code"] == "InvalidPort"
+        assert "1 and 65535" in response.json()["error"]
+
+
 class TestEditorEndpoints:
     def _post(self, client: TestClient, action: str, **overrides):
         data = {

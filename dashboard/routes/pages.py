@@ -1541,7 +1541,11 @@ def _proxy_json(payload: dict, status_code: int = 200) -> Response:
 
 
 def _proxy_form_payload(form: FormData) -> dict:
-    """The five editor fields, as `proxy_connections` expects them.
+    """The editor fields, as `proxy_connections` expects them.
+
+    The address travels as `host` + `port` from the two fields and the scheme
+    travels as `kind`, so the module assembles exactly one canonical URL; `url`
+    is still forwarded for a caller that posts one (an old form, a script).
 
     `password` stays `None` when the field is empty: that is the "keep the
     stored secret" instruction, and it is why the field is rendered blank even
@@ -1551,6 +1555,8 @@ def _proxy_form_payload(form: FormData) -> dict:
         "name": form.get("name"),
         "kind": form.get("kind"),
         "url": form.get("url"),
+        "host": form.get("host"),
+        "port": form.get("port"),
         "username": form.get("username"),
         "password": form.get("password") or None,
         "assignment_mode": form.get("assignment_mode"),
@@ -1623,7 +1629,8 @@ def _write_uploaded_wireguard(form: FormData) -> None:
     upload = form.get("wg_file")
     if not upload or isinstance(upload, str):
         return
-    if not getattr(upload, "filename", None):
+    filename = getattr(upload, "filename", None)
+    if not filename:
         return
     egress.write_wireguard(upload.file.read())
 
@@ -1796,11 +1803,11 @@ async def save_proxy_interval(request: Request) -> Response:
 
 # --- deleting a tunnel ------------------------------------------------------
 #
-# The tunnel's config is written by the editor (it travels with the `wireguard`
-# row: `_write_uploaded_wireguard`), so the only action left for the file is its
-# removal. Removing a row is not the same thing: an operator may delete the
-# tunnel to add a different one, and a `wg0.conf` left behind would be applied by
-# the watcher with nothing on the page pointing at it.
+# The tunnel's config is written by the editor (it travels with the
+# `wireguard` row: `_write_uploaded_wireguard`), so the only action left for
+# the file is its removal. Removing a row is not the same thing: an operator may
+# delete the tunnel to add a different one, and a `wg0.conf` left behind would be
+# applied by the watcher with nothing on the page pointing at it.
 
 @router.post("/admin/proxy/wireguard/remove")
 async def remove_wireguard(request: Request) -> Response:

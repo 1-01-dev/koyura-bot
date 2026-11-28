@@ -690,10 +690,14 @@ class TestPage:
         assert body.count('name="csrf_token"') >= 4
         assert 'enctype="multipart/form-data"' in body
 
-    def test_the_page_mentions_the_supported_schemes(self, admin):
+    def test_the_editor_names_every_supported_scheme_and_no_free_text_url(self, admin):
+        """The scheme is a select, not a prefix typed into a text field."""
         body = admin.get("/admin/proxy").text
-        for scheme in ("socks5://", "socks5h://", "http://", "https://"):
-            assert scheme in body, scheme
+        for scheme in ("socks5", "socks5h", "http", "https"):
+            assert f'<option value="{scheme}">' in body, scheme
+        assert 'id="proxy-host"' in body
+        assert 'id="proxy-port"' in body
+        assert 'id="proxy-url"' not in body
 
     def test_a_new_page_starts_with_the_empty_state(self, admin):
         body = admin.get("/admin/proxy").text

@@ -27,7 +27,7 @@ export function csrfToken() {
  * not from the header — so a body that carries no `csrf_token` field (the Quick
  * test posts an empty one) is refused with a redirect even though the header is
  * right. Adding it here keeps every caller on one shape and leaves a caller
- * that already rendered its own hidden field alone.
+ * that already rendered its own hidden field untouched.
  */
 export function postBody(body) {
   const payload = body instanceof FormData ? body : new FormData();
@@ -110,9 +110,10 @@ export function storePayload(payload) {
  * Apply one row payload from the server to the row already on the page.
  *
  * Everything written here is text or an attribute the row's own forms read: the
- * verdict, the status badge's class, the toggle's verb and its hidden `enabled`
- * field, and the aria-labels that name the row. The URL cell is left alone on
- * purpose — that string is the server's, and a patched row must not invent one.
+ * verdict, the status badge's class, the address line under the name, the
+ * toggle's verb and its hidden `enabled` field, and the aria-labels that name
+ * the row. The address is the server's formatted string (`address_label`), not
+ * one this module builds: a patched row must never invent a URL.
  */
 export function patchRow(payload) {
   const row = rowById(payload.id);
@@ -124,6 +125,7 @@ export function patchRow(payload) {
     if (cell && value !== undefined) cell.textContent = value;
   };
   set('name', payload.name);
+  set('target', payload.address_label);
   set('kind', payload.kind_label);
   set('assignment', payload.assignment_label);
   set('last-test', payload.last_test_at);
