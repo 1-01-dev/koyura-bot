@@ -361,6 +361,16 @@ class TestTheDashboardPage:
         # The four range buttons of the charts, and nothing else like them.
         assert body.count('class="range-btn') == 4
 
+    def test_the_error_cell_keeps_the_only_filled_accent(self, admin: TestClient):
+        """Two filled cells on one page cancel each other out.
+
+        The subscription count leads its row with a wash and a rule instead, so
+        the error rate stays the only red fill and keeps meaning "act on this".
+        """
+        body = admin.get("/").text
+        assert body.count("kpi-card--accent") == 1
+        assert "kpi-card--lead" in body
+
     def test_the_module_owns_the_block(self):
         from pathlib import Path
 
