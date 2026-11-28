@@ -690,10 +690,14 @@ class TestPage:
         assert body.count('name="csrf_token"') >= 4
         assert 'enctype="multipart/form-data"' in body
 
-    def test_the_page_mentions_the_supported_schemes(self, admin):
+    def test_the_editor_names_every_supported_scheme_and_no_free_text_url(self, admin):
+        """The scheme is a select, not a prefix typed into a text field."""
         body = admin.get("/admin/proxy").text
-        for scheme in ("socks5://", "socks5h://", "http://", "https://"):
-            assert scheme in body, scheme
+        for scheme in ("socks5", "socks5h", "http", "https"):
+            assert f'<option value="{scheme}">' in body, scheme
+        assert 'id="proxy-host"' in body
+        assert 'id="proxy-port"' in body
+        assert 'id="proxy-url"' not in body
 
     def test_a_new_page_starts_with_the_empty_state(self, admin):
         body = admin.get("/admin/proxy").text
@@ -745,9 +749,7 @@ class TestPage:
             "/admin/proxy/connection/1/delete",
             "/admin/proxy/connection/1/test",
             "/admin/proxy/interval",
-            "/admin/proxy/wireguard",
             "/admin/proxy/wireguard/remove",
-            "/admin/proxy/status",
         ):
             response = admin.post(action, data={"name": "x"}, follow_redirects=False)
             assert response.status_code == 303, action
@@ -920,81 +922,88 @@ class TestIntervalForm:
 
 
 class TestWireguardUpload:
-    def _upload(self, client: TestClient, data: bytes, name: str = "wg0.conf"):
+    """The tunnel's config is written by the editor, not by a card of its own.
+
+    Adding a `wireguard` connection *is* the upload: the same dialog posts the
+    `.conf` with the row, the panel writes `EGRESS_PATH/wg0.conf` (mode 0600) and
+    the host's `koyura-egress.path` watcher applies it. Nothing here reads the
+    key back — the page only ever shows the watcher's report.
+    """
+
+    def _upload(self, client: TestClient, data: bytes, name: str = "wg0.conf", **fields):
+        data_fields = {
+            "name": "Tunnel",
+            "kind": "wireguard",
+            "url": "",
+            "assignment_mode": "all",
+            "csrf_token": _csrf(client),
+        }
+        data_fields.update(fields)
         return client.post(
-            "/admin/proxy/wireguard",
-            data={"csrf_token": _csrf(client)},
+            "/admin/proxy/connection",
+            data=data_fields,
             files={"wg_file": (name, data, "text/plain")},
-            follow_redirects=False,
+            headers={"X-Requested-With": "fetch"},
         )
 
     def test_a_valid_config_is_written_0600(self, admin):
         resp = self._upload(admin, WG_CONFIG)
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/admin/proxy?wg_saved=1"
+        assert resp.status_code == 201, resp.text
         path = _root() / "wg0.conf"
         assert path.exists()
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert asyncio.run(db.count_proxy_connections("wireguard")) == 1
 
-    def test_an_invalid_config_is_refused_and_nothing_is_written(self, admin):
+    def test_the_config_lands_where_the_watcher_watches(self, admin):
+        """The path is the contract with `koyura-egress.path`, not a detail."""
+        self._upload(admin, WG_CONFIG)
+        assert egress.wireguard_path() == _root() / "wg0.conf"
+        assert egress.wireguard_present() is True
+
+    def test_an_invalid_config_is_refused_and_nothing_is_stored(self, admin):
         resp = self._upload(admin, b"[Interface]\nPrivateKey = x\n")
-        assert resp.status_code == 303
-        assert "proxy_error" in resp.headers["location"]
+        assert resp.status_code == 400
+        assert "[Peer]" in resp.json()["error"]
         assert not (_root() / "wg0.conf").exists()
-        assert "[Peer]" in admin.get(
-            "/admin/proxy?proxy_error=%5BPeer%5D"
-        ).text or True
+        assert asyncio.run(db.count_proxy_connections("wireguard")) == 0
 
     def test_an_oversized_upload_is_refused(self, admin):
         resp = self._upload(admin, b"x" * (egress.MAX_WG_BYTES + 1))
-        assert resp.status_code == 303
-        assert "proxy_error" in resp.headers["location"]
+        assert resp.status_code == 400
         assert not (_root() / "wg0.conf").exists()
 
     def test_an_empty_upload_is_refused(self, admin):
         resp = self._upload(admin, b"")
-        assert resp.status_code == 303
-        assert "proxy_error" in resp.headers["location"]
-
-    def test_no_file_at_all_is_refused(self, admin):
-        resp = admin.post(
-            "/admin/proxy/wireguard",
-            data={"csrf_token": _csrf(admin)},
-            follow_redirects=False,
-        )
-        assert resp.status_code == 303
-        assert "proxy_error" in resp.headers["location"]
-
-    def test_disconnect_deletes_the_config_and_its_row(self, admin):
-        self._upload(admin, WG_CONFIG)
-        _connection(admin, name="Tunnel", kind="wireguard", url="")
-        assert asyncio.run(db.count_proxy_connections("wireguard")) == 1
-        resp = admin.post(
-            "/admin/proxy/wireguard/remove",
-            data={"csrf_token": _csrf(admin)},
-            follow_redirects=False,
-        )
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/admin/proxy?wg_removed=1"
+        assert resp.status_code == 400
         assert not (_root() / "wg0.conf").exists()
-        # The row that dials the deleted tunnel goes with it.
-        assert asyncio.run(db.count_proxy_connections("wireguard")) == 0
 
-    def test_refresh_status_answers_with_the_page(self, admin):
-        _root().mkdir(parents=True, exist_ok=True)
-        (_root() / "status.json").write_text(
-            json.dumps({"state": "error", "error": "handshake failed"})
-        )
+    def test_a_tunnel_without_a_file_keeps_the_one_on_disk(self, admin):
+        """Editing an existing tunnel must not require re-uploading its key."""
+        self._upload(admin, WG_CONFIG)
+        row = asyncio.run(db.list_proxy_connections())[-1]
         resp = admin.post(
-            "/admin/proxy/status",
-            data={"csrf_token": _csrf(admin)},
-            follow_redirects=True,
+            f"/admin/proxy/connection/{row['id']}",
+            data={
+                "name": "Renamed",
+                "kind": "wireguard",
+                "url": "",
+                "assignment_mode": "all",
+                "csrf_token": _csrf(admin),
+            },
+            headers={"X-Requested-With": "fetch"},
         )
-        assert resp.status_code == 200
-        assert "handshake failed" in resp.text
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["row"]["name"] == "Renamed"
+        assert (_root() / "wg0.conf").read_bytes() == WG_CONFIG
 
-    def test_the_page_shows_a_fake_config_as_an_error_not_a_crash(self, admin):
-        """The task's live check: a dummy key must produce `error`, not a 500."""
+    def test_the_row_says_where_the_config_lives(self, admin):
+        self._upload(admin, WG_CONFIG)
+        body = admin.get("/admin/proxy").text
+        assert "tunnel · " + str(egress.wireguard_path()) in body
+        assert 'id="wireguard-card"' not in body
+
+    def test_the_dialogs_status_line_reports_the_watcher(self, admin):
+        """The tunnel's state is in the dialog and in the row, not a third card."""
         self._upload(admin, WG_CONFIG)
         (_root() / "status.json").write_text(
             json.dumps({
@@ -1005,10 +1014,15 @@ class TestWireguardUpload:
                 "updated_at": "2026-01-31T12:00:00Z",
             })
         )
-        resp = admin.get("/admin/proxy")
-        assert resp.status_code == 200
-        assert "Invalid argument" in resp.text
-        assert "badge-danger" in resp.text
+        body = admin.get("/admin/proxy").text
+        assert 'id="proxy-wg-state"' in body
+        assert "tunnel: error" in body
+        assert "Tunnel reports: wg-quick: Unable to modify interface: Invalid argument" in body
+        assert "badge-danger" in body
+
+    def test_a_tunnel_without_a_report_says_so(self, admin):
+        body = admin.get("/admin/proxy").text
+        assert "tunnel: no report yet" in body
 
 
 # ---------------------------------------------------------------------------
@@ -1107,7 +1121,7 @@ class TestSecrecy:
         # The row keeps scheme://host:port, so there is nothing to mask there;
         # the *secret* is the part that must not appear.
         assert PROXY_HOST_URL in body
-        assert PROXY_USER not in body
+        assert PROXY_PASSWORD not in body
 
     def test_the_secret_is_a_0600_file_not_a_column(self, admin):
         row = self._with_password(admin)
@@ -1122,9 +1136,16 @@ class TestSecrecy:
             self._with_password(admin)
             admin.get("/admin/proxy")
             admin.post(
-                "/admin/proxy/wireguard",
-                data={"csrf_token": _csrf(admin)},
+                "/admin/proxy/connection",
+                data={
+                    "name": "Log tunnel",
+                    "kind": "wireguard",
+                    "url": "",
+                    "assignment_mode": "all",
+                    "csrf_token": _csrf(admin),
+                },
                 files={"wg_file": ("wg.conf", WG_CONFIG, "text/plain")},
+                headers={"X-Requested-With": "fetch"},
             )
         for record in caplog.records:
             message = record.getMessage()

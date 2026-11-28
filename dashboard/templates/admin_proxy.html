@@ -125,13 +125,14 @@
     </table>
   </div>
 
+  {# The empty state is a sentence, not a second toolbar: the "+ Add
+     connection" button lives in the card header, and one action per screenful
+     is what keeps a phone's first view unambiguous. #}
   <div class="empty-state proxy-empty" id="proxy-empty"
        {% if proxy_rows %}hidden{% endif %}>
     <span class="glyph" aria-hidden="true">空</span>
     <span class="empty-title">No connections yet</span><br />
     Add a proxy or WireGuard tunnel to route service traffic.
-    <button type="button" class="btn btn-primary proxy-empty-btn" id="proxy-empty-add"
-            aria-haspopup="dialog" aria-controls="proxy-modal">+ Add connection</button>
   </div>
 
   <div class="proxy-footer mono" id="proxy-footer">
@@ -147,95 +148,6 @@
   <p class="limits-note panel-body mono" id="proxy-save-line">
     the engine picks it up within a minute, no restart
   </p>
-</section>
-
-<!-- WireGuard config -------------------------------------------------------
-     The tunnel is one file and one watcher: uploading it belongs to the page,
-     not to the row, because the config exists before the row that dials it.
-     Nothing here ever reads the private key back. -->
-<section class="card panel" id="wireguard-card">
-  <div class="card-header panel-head">
-    <span class="help-row">
-      <h2 class="card-title">WireGuard config</h2>
-      {{ help_toggle("wireguard-note", "What the panel does with a WireGuard config") }}
-    </span>
-    <div class="card-actions">
-      <span class="badge {{ proxy_status.badge() }}" id="wg-badge">
-        {{ proxy_status.label() }}
-      </span>
-    </div>
-  </div>
-
-  {% call help_panel("wireguard-note") %}
-    Upload a WireGuard <span class="mono">.conf</span> and the server applies it
-    on its own: this panel only writes the file
-    (<span class="mono">{{ proxy_wg_path }}</span>, mode 0600). A tunnel
-    connection then dials the SOCKS address the watcher reports in
-    <span class="mono">status.json</span> — this panel never reads the key.
-  {% endcall %}
-
-  <dl class="proxy-status" id="wg-status">
-    <div class="proxy-status-cell">
-      <dt class="limits-label mono">State</dt>
-      <dd class="proxy-status-value mono">{{ proxy_status.label() }}</dd>
-    </div>
-    <div class="proxy-status-cell">
-      <dt class="limits-label mono">External IP</dt>
-      <dd class="proxy-status-value mono">{{ proxy_status.egress_ip or "—" }}</dd>
-    </div>
-    <div class="proxy-status-cell">
-      <dt class="limits-label mono">SOCKS</dt>
-      <dd class="proxy-status-value mono">{{ proxy_status.socks or "—" }}</dd>
-    </div>
-    <div class="proxy-status-cell">
-      <dt class="limits-label mono">Updated</dt>
-      <dd class="proxy-status-value mono">{{ proxy_status.updated_at or "—" }}</dd>
-    </div>
-  </dl>
-
-  {% if proxy_status.error %}
-  <p class="form-error" role="alert" id="wg-error">
-    Tunnel reports: {{ proxy_status.error }}
-  </p>
-  {% endif %}
-
-  <form method="post" action="/admin/proxy/wireguard"
-        enctype="multipart/form-data" id="wireguard-form" class="wireguard-upload">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-    <div class="cookies-cell cookies-cell--file">
-      <label class="limits-label mono" for="wg-file">WireGuard config</label>
-      <input id="wg-file"
-             name="wg_file"
-             type="file"
-             accept=".conf,text/plain"
-             class="cookies-file-input"
-             required
-             aria-describedby="wg-file-hint" />
-      <span class="limits-hint" id="wg-file-hint">
-        [Interface] + [Peer] with PrivateKey, Address, Endpoint · {{ proxy_wg_max_kb }} KB max
-      </span>
-    </div>
-    <button type="submit" class="btn btn-primary cookies-add-btn"
-            id="wg-apply">Apply</button>
-  </form>
-
-  <div class="limits-actions">
-    <form method="post" action="/admin/proxy/status" class="cookies-inline-form">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-      <button type="submit" class="btn btn-secondary" id="wg-refresh">
-        Refresh status
-      </button>
-    </form>
-    {% if proxy_wg_present %}
-    <form method="post" action="/admin/proxy/wireguard/remove" class="cookies-inline-form">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-      <button type="submit" class="btn btn-danger" id="wg-remove">Disconnect</button>
-    </form>
-    {% endif %}
-    <span class="limits-note mono">
-      {% if proxy_wg_present %}a config is on disk{% else %}no config uploaded{% endif %}
-    </span>
-  </div>
 </section>
 
 </div>
@@ -281,17 +193,33 @@
         </select>
       </div>
 
-      {# Proxy fields: URL, username, password. Hidden for WireGuard. #}
+      {# Proxy fields: host, port, username, password. Hidden for WireGuard.
+
+         The protocol is already a select, so the scheme never belongs in a text
+         field: an operator typing `http://host:port` into one box is a field
+         that has to be validated twice. Two inputs make the shared part (the
+         address) and the numeric part (the port) impossible to confuse, and the
+         module assembles the URL the server stores. #}
       <div id="proxy-fields">
-        <div class="proxy-field">
-          <label class="limits-label mono" for="proxy-url">Proxy URL</label>
-          <input id="proxy-url" name="url" type="text" class="limits-input"
-                 autocomplete="off" autocapitalize="off" spellcheck="false"
-                 placeholder="socks5h://host:port"
-                 aria-describedby="proxy-url-hint" />
-          <span class="limits-hint" id="proxy-url-hint">
-            socks5:// · socks5h:// · http:// · https:// · no path, no query
-          </span>
+        <div class="proxy-address">
+          <div class="proxy-field">
+            <label class="limits-label mono" for="proxy-host">Host</label>
+            <input id="proxy-host" name="host" type="text" class="limits-input"
+                   autocomplete="off" autocapitalize="off" spellcheck="false"
+                   placeholder="138.124.89.104"
+                   aria-describedby="proxy-host-hint" />
+            <span class="limits-hint" id="proxy-host-hint">
+              hostname, IPv4, or [IPv6] · no scheme, no path
+            </span>
+          </div>
+          <div class="proxy-field proxy-port-field">
+            <label class="limits-label mono" for="proxy-port">Port</label>
+            <input id="proxy-port" name="port" type="number" class="limits-input"
+                   inputmode="numeric" min="1" max="65535" step="1"
+                   autocomplete="off" placeholder="1080"
+                   aria-describedby="proxy-port-hint" />
+            <span class="limits-hint" id="proxy-port-hint">1–65535</span>
+          </div>
         </div>
 
         <div class="proxy-credentials">
@@ -330,6 +258,16 @@
           {%- if proxy_status.egress_ip %} · external IP {{ proxy_status.egress_ip }}{% endif %}
           {%- if proxy_status.socks %} · socks {{ proxy_status.socks }}{% endif %}
         </p>
+        {% if proxy_status.error %}
+        <p class="form-error" role="alert" id="proxy-wg-error">
+          Tunnel reports: {{ proxy_status.error }}
+        </p>
+        {% endif %}
+        {% if proxy_wg_present %}
+        <p class="limits-note mono">
+          a config is on disk — leave the field empty to keep it
+        </p>
+        {% endif %}
       </div>
 
       <div class="proxy-field">

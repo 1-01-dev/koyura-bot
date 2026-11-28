@@ -55,7 +55,7 @@ app = create_app()
 #: Admin page -> the help panel ids it must carry. The proxy page is the one
 #: the owner pointed at; the rest are the paragraphs that shared its shape.
 EXPECTED_PANELS = {
-    "/admin/proxy": ["proxy-note", "proxy-assignment-hint", "wireguard-note"],
+    "/admin/proxy": ["proxy-note", "proxy-assignment-hint"],
     "/admin/cookies": ["cookies-note"],
     "/admin/limits": ["per-user-hint"],
     "/admin/bot": ["languages-note", "templates-note"],
@@ -68,7 +68,6 @@ EXPECTED_PANELS = {
 PANEL_TEXT = {
     "proxy-note": "Some sites refuse a datacentre IP",
     "proxy-assignment-hint": "It is the same catalogue",
-    "wireguard-note": "this panel only writes the file",
     "cookies-note": "Netscape cookie",
     "languages-note": "The bot offers only the languages enabled here",
     "templates-note": "Один активный шаблон",
@@ -227,10 +226,10 @@ def test_every_panel_id_is_unique_and_resolves():
 def test_the_headings_stay_visible():
     """The "?" sits next to the title, it does not replace it."""
     proxy = _page("/admin/proxy")
-    # The page became a connection list; the headings say what the two cards
-    # hold now, and both keep their "?" beside the title.
+    # The page is one card now: the connection list. The tunnel has no second
+    # heading — it is added from the same editor as a proxy.
     assert '<h2 class="card-title">Connections</h2>' in proxy
-    assert '<h2 class="card-title">WireGuard config</h2>' in proxy
+    assert '<h2 class="card-title">WireGuard config</h2>' not in proxy
     assert '<h2 class="card-title">Cookie files</h2>' in _page("/admin/cookies")
     assert '<h2 class="card-title">Bot languages</h2>' in _page("/admin/bot")
 

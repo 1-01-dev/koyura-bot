@@ -148,6 +148,22 @@ def test_the_empty_state_says_what_to_do(admin):
     body = admin.get("/admin/proxy").text
     assert "No connections yet" in body
     assert "Add a proxy or WireGuard tunnel to route service traffic." in body
+    assert 'aria-hidden="true">空</span>' in body
+
+
+def test_the_empty_state_does_not_repeat_the_add_button(admin):
+    """One "+ Add connection" per screen: the header's.
+
+    The empty state used to carry a second copy of the button, directly under a
+    sentence that says the same thing. The header keeps the only one, so the
+    page has exactly one way to open the editor and a phone's first view is not
+    two identical calls to action.
+    """
+    body = admin.get("/admin/proxy").text
+    assert body.count("+ Add connection") == 1
+    empty = body.split('id="proxy-empty"', 1)[1].split("</div>", 1)[0]
+    assert "Add connection" not in empty
+    assert 'id="proxy-empty-add"' not in body
 
 
 def test_a_row_carries_the_five_columns_and_the_actions(admin):
@@ -185,11 +201,20 @@ def test_the_status_badge_matches_the_stored_verdict(admin):
     assert "connection refused" in body
 
 
-def test_the_wireguard_card_reports_the_watcher(admin):
+def test_the_wireguard_config_lives_in_the_editor_not_a_second_card(admin):
+    """The tunnel is added from the same dialog as a proxy: one upload, one row.
+
+    There used to be a second card (``#wireguard-card``) with its own upload,
+    status table, Refresh and Disconnect — a duplicate of what the editor's
+    WireGuard fields already do. It is gone; the file field, the path hint and
+    the watcher's status are in the dialog.
+    """
     body = admin.get("/admin/proxy").text
-    assert 'id="wireguard-card"' in body
-    assert 'name="wg_file"' in body
-    assert "no report yet" in body.lower()
+    assert 'id="wireguard-card"' not in body
+    assert 'id="wireguard-form"' not in body
+    assert 'id="wg-file"' not in body
+    assert 'id="wg-status"' not in body
+    assert 'name="wg_file"' in body, "the editor's upload disappeared too"
 
 
 # ---------------------------------------------------------------------------
@@ -269,9 +294,11 @@ def test_a_stored_password_is_a_flag_not_a_value(admin):
     )
     body = admin.get("/admin/proxy").text
     assert PROXY_PASSWORD not in body
-    assert PROXY_USER not in body
     assert '"has_password": true' in body
-    # The password field is rendered empty, always.
+    # The username is a name, not a secret: the editor fills it back in so an
+    # edit does not look like a lost login. The password is the value that
+    # must never be rendered.
+    assert '"username": "' + PROXY_USER + '"' in body
     assert re.search(r'id="proxy-password"[^>]*>', body)
     assert 'value="' not in body.split('id="proxy-password"', 1)[1][:120]
 
@@ -296,6 +323,10 @@ def test_the_payload_carries_the_clean_url(admin):
     stored = json.loads(payload.group(1).replace("&#39;", "'"))
     assert stored["url"] == PROXY_URL
     assert PROXY_USER not in stored["url"]
+    # The two address fields are what the dialog shows; both come from the URL.
+    assert stored["host"] == "10.0.0.7"
+    assert stored["port"] == "1080"
+    assert stored["scheme"] == "socks5h"
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +405,8 @@ def test_every_id_the_script_reads_is_rendered(admin):
         "proxy-fields",
         "proxy-wg-fields",
         "proxy-wg-file",
-        "proxy-url",
+        "proxy-host",
+        "proxy-port",
         "proxy-username",
         "proxy-password",
         "proxy-password-state",
@@ -427,9 +459,103 @@ def test_the_script_carries_the_csrf_header():
     assert "X-Requested-With" in source
 
 
+def test_every_fetch_carries_the_token_in_the_body_too():
+    """The proxy routes read `csrf_token` from the form, not from the header.
+
+    A Quick test posts an empty `FormData`; without the field in the body the
+    server answers a redirect and the browser tries to parse a page as JSON.
+    One helper adds it, so no caller can forget.
+    """
+    source = _module("proxy_rows.js")
+    helper = source.split("export function postBody(body) {", 1)[1].split("\n}", 1)[0]
+    assert "payload.set('csrf_token'" in helper
+    assert "new FormData()" in helper
+
+
 def test_no_module_is_a_700_line_scroll():
     for path in sorted(MODULES.glob("proxy*.js")):
         assert len(path.read_text().splitlines()) < 250, path.name
+
+
+def test_the_editor_fills_the_username_and_the_two_address_fields():
+    """The dialog opens on what was stored: host, port, and the login.
+
+    The username used to be written as an empty string, so an operator editing a
+    saved connection saw a blank Username and concluded the login had been lost
+    (it was in the database all along). Only the password stays empty — that is
+    the field whose value must never come back.
+    """
+    if not _node_available():
+        pytest.skip("node is not installed")
+    script = f'''
+const elements = new Map();
+function element(id) {{
+  if (!elements.has(id)) {{
+    elements.set(id, {{ id, value: '', hidden: true, textContent: '', required: false }});
+  }}
+  return elements.get(id);
+}}
+globalThis.document = {{
+  getElementById: element,
+  querySelector: () => null,
+  querySelectorAll: () => [],
+  addEventListener: () => {{}},
+}};
+const form =
+  element('proxy-form');
+form.reset = () => {{}};
+import('{(MODULES / 'proxy_form.js').as_uri()}').then((m) => {{
+  m.fillForm({{
+    id: 7,
+    name: 'Office',
+    kind: 'http',
+    host: '138.124.89.104',
+    port: '3128',
+    username: 'egress-user',
+    has_password: true,
+    mode: 'all',
+    services: [],
+  }});
+  process.stdout.write(JSON.stringify({{
+    username: element('proxy-username').value,
+    password: element('proxy-password').value,
+    host: element('proxy-host').value,
+    port: element('proxy-port').value,
+    hint: element('proxy-password-state').textContent,
+    action: element('proxy-form').action,
+  }}));
+}});
+'''
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    filled = json.loads(result.stdout)
+    assert filled["username"] == "egress-user"
+    assert filled["password"] == ""
+    assert filled["host"] == "138.124.89.104"
+    assert filled["port"] == "3128"
+    assert "blank keeps it" in filled["hint"]
+    assert filled["action"] == "/admin/proxy/connection/7"
+
+
+def test_the_editor_offers_two_fields_and_no_url_box():
+    source = (MODULES / "proxy_form.js").read_text()
+    assert "proxy-host" in source
+    assert "proxy-port" in source
+    assert "proxy-url" not in source
+    # The scheme belongs to the protocol select, not to a typed prefix.
+    assert "proxy-kind" in source
+
+
+def test_quick_test_saves_a_moved_address_first():
+    """A probe after typing a new port must dial that port, not the old one."""
+    source = (MODULES / "proxy_editor.js").read_text()
+    assert "addressChanged()" in source
+    assert "saveEditor()" in source
 
 
 def test_the_modules_import_without_a_document():

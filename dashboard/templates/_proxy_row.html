@@ -18,13 +18,7 @@
     data-payload='{{ proxy_payloads[row.id] | tojson }}'>
   <td>
     <span class="proxy-name" data-field="name">{{ row.name }}</span>
-    <span class="proxy-name-meta mono" data-field="target">
-      {% if row.is_wireguard %}
-      tunnel · {{ proxy_wg_path }}
-      {% else %}
-      {{ row.url or "no URL" }}
-      {% endif %}
-    </span>
+    <span class="proxy-name-meta mono" data-field="target">{{ row.address_label }}</span>
   </td>
   <td>
     <span class="{{ row.status_badge }}" data-field="status">{{ row.status }}</span>

@@ -32,9 +32,11 @@ Three rules shape the storage:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -184,11 +186,142 @@ def kind_for_url(url: object) -> str:
     return scheme if scheme in egress.PROXY_SCHEMES else ""
 
 
+#: What a host may contain when it is not an IPv6 literal: letters, digits, dots
+#: and dashes. Deliberately strict — the address is dialled verbatim, so a typo
+#: caught here is a check that never has to run.
+_HOST_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
+
+
+def split_address(url: object) -> tuple[str, str, str]:
+    """``(scheme, host, port)`` of a stored proxy URL, for the editor's two fields.
+
+    ``host`` keeps an IPv6 literal in brackets and ``port`` is a string (``""``
+    when the URL carries none): they are values for an ``<input>``, not a
+    parsed address. A URL that cannot be read answers three empty strings, and
+    the editor simply starts blank instead of guessing.
+    """
+    text = str(url or "").strip()
+    if not text:
+        return "", "", ""
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return "", "", ""
+    host = parts.hostname or ""
+    if ":" in host:
+        # An IPv6 literal only round-trips through a field with its brackets.
+        host = f"[{host}]"
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    return parts.scheme.lower(), host, "" if port is None else str(port)
+
+
+def host_field(host: object) -> str:
+    """The host an operator typed, validated and glued to a port.
+
+    One place for both rules, because the two shapes an address may take — an
+    IPv6 literal in brackets and everything else — are told apart by the same
+    character the URL needs. A missing port is allowed only when the host
+    already carries one (``proxy.example.com:1080``), which is what someone used
+    to the single URL box will type; the port field wins when both are given.
+    """
+    text = str(host or "").strip()
+    if not text:
+        raise ProxyConnectionError("MissingHost", "Enter the proxy's host.")
+    if any(character.isspace() for character in text):
+        raise ProxyConnectionError("InvalidHost", "The host must not contain spaces.")
+    if "://" in text or any(character in text for character in "/?#@"):
+        raise ProxyConnectionError(
+            "InvalidHost",
+            "Enter the host alone, for example 138.124.89.104 — no scheme, no path.",
+        )
+    if text.startswith("["):
+        if not text.endswith("]"):
+            raise ProxyConnectionError(
+                "InvalidHost", "Write an IPv6 address in brackets, for example [2a01:4f8::1]."
+            )
+        inner = text[1:-1]
+        try:
+            ipaddress.IPv6Address(inner)
+        except ValueError as exc:
+            raise ProxyConnectionError(
+                "InvalidHost", f"That is not an IPv6 address: {inner}."
+            ) from exc
+        return f"[{inner}]"
+    if ":" in text:
+        # ``host`` already carries its port: this is the old single-box habit.
+        name, _, port = text.rpartition(":")
+        if not name or not port.isdigit():
+            raise ProxyConnectionError(
+                "InvalidHost", "Write an IPv6 address in brackets, for example [2a01:4f8::1]."
+            )
+        return f"{host_field(name)}:{_port_field(port)}"
+    if len(text) > 255:
+        raise ProxyConnectionError("InvalidHost", "The host is too long.")
+    if not _HOST_PATTERN.match(text):
+        raise ProxyConnectionError(
+            "InvalidHost",
+            "A host is made of letters, digits, dots and dashes — "
+            "for example 138.124.89.104 or proxy.example.com.",
+        )
+    return text
+
+
+def _port_field(port: object) -> str:
+    """The port as a number in 1–65535, or a sentence saying why it is not."""
+    text = str(port or "").strip()
+    if not text:
+        raise ProxyConnectionError("MissingPort", "Enter the proxy's port.")
+    if not text.isdigit():
+        raise ProxyConnectionError("InvalidPort", "The port must be a whole number.")
+    value = int(text)
+    if not 1 <= value <= 65535:
+        raise ProxyConnectionError("InvalidPort", "The port must be between 1 and 65535.")
+    return str(value)
+
+
+def proxy_url_for(kind: object, host: object, port: object) -> str:
+    """The stored ``url`` from the protocol select and the two fields.
+
+    The scheme comes from the protocol, never from what was typed: that is the
+    whole point of two fields instead of one. The result goes through
+    :func:`egress.normalise_proxy_url`, so the row is the same canonical shape a
+    hand-written URL produced before this change.
+    """
+    scheme = str(kind or "").strip().lower()
+    if scheme not in KINDS:
+        raise ProxyConnectionError(
+            "InvalidKind", "Choose " + ", ".join(KINDS) + "."
+        )
+    address = host_field(host)
+    # A host typed as ``name:1080`` (the habit the single URL box created) keeps
+    # its port unless the Port field says otherwise; a bracketed IPv6 literal
+    # never carries one of its own, so it always needs the field.
+    name, separator, carried = address.rpartition(":")
+    carried_port = carried if separator and carried.isdigit() and not address.startswith("[") else ""
+    bare = name if carried_port else address
+    typed_port = str(port or "").strip()
+    if typed_port:
+        chosen_port = _port_field(typed_port)
+    elif carried_port:
+        chosen_port = _port_field(carried_port)
+    else:
+        raise ProxyConnectionError("MissingPort", "Enter the proxy's port.")
+    try:
+        return egress.normalise_proxy_url(f"{scheme}://{bare}:{chosen_port}")
+    except egress.EgressError as error:
+        raise ProxyConnectionError("InvalidUrl", str(error)) from error
+
+
 def parse_draft(
     *,
     name: object,
     kind: object = "",
     url: object = "",
+    host: object = "",
+    port: object = "",
     username: object = "",
     password: object | None = None,
     assignment_mode: object = "all",
@@ -202,6 +335,11 @@ def parse_draft(
     A password typed with the URL itself (``socks5h://user:pass@host:port``) is
     split out here, because storing it in the URL is exactly what must not
     happen.
+
+    Two shapes of submission arrive from the editor: ``host`` and ``port`` from
+    the two fields (assembled into the URL here, scheme from the protocol), or a
+    whole ``url`` from an older caller such as the migration. Exactly the same
+    draft comes out of both, and the row stores the canonical URL either way.
     """
     chosen_name = " ".join(str(name or "").split())
     if not chosen_name:
@@ -224,11 +362,13 @@ def parse_draft(
     )
 
     chosen_kind = str(kind or "").strip().lower()
+    has_address = bool(str(host or "").strip())
     if chosen_kind == WIREGUARD_KIND:
-        if str(url or "").strip():
+        if str(url or "").strip() or has_address:
             raise ProxyConnectionError(
                 "UnexpectedUrl",
-                "A WireGuard connection has no proxy URL. Leave the field empty.",
+                "A WireGuard connection has no proxy URL or address. "
+                "Leave both fields empty.",
             )
         return Draft(
             name=chosen_name,
@@ -245,8 +385,9 @@ def parse_draft(
             "InvalidKind", "Choose " + ", ".join(KINDS) + "."
         )
 
+    typed_url = proxy_url_for(chosen_kind, host, port) if has_address else str(url or "")
     try:
-        clean, url_user, url_password = split_credentials(url)
+        clean, url_user, url_password = split_credentials(typed_url)
         clean = egress.normalise_proxy_url(clean)
     except egress.EgressError as error:
         raise ProxyConnectionError("InvalidUrl", str(error)) from error
@@ -515,17 +656,25 @@ async def create_connection(
     name: object,
     kind: object = "",
     url: object = "",
+    host: object = "",
+    port: object = "",
     username: object = "",
     password: object | None = None,
     assignment_mode: object = "all",
     services: list[str] | tuple[str, ...] = (),
     enabled: bool = True,
 ) -> dict:
-    """Validate, insert and store the secret; returns the new row."""
+    """Validate, insert and store the secret; returns the new row.
+
+    ``host``/``port`` are what the editor sends; ``url`` stays accepted for the
+    migration and for a caller that already holds one canonical URL.
+    """
     draft = parse_draft(
         name=name,
         kind=kind,
         url=url,
+        host=host,
+        port=port,
         username=username,
         password=password,
         assignment_mode=assignment_mode,
@@ -565,6 +714,8 @@ async def update_connection(
     name: object,
     kind: object = "",
     url: object = "",
+    host: object = "",
+    port: object = "",
     username: object = "",
     password: object | None = None,
     assignment_mode: object = "all",
@@ -578,6 +729,8 @@ async def update_connection(
         name=name,
         kind=kind,
         url=url,
+        host=host,
+        port=port,
         username=username,
         password=password,
         assignment_mode=assignment_mode,
@@ -765,22 +918,38 @@ def page_row(row: dict) -> dict:
     ``has_password`` is the only thing the editor needs to know about the
     secret: whether to say "set" under the empty password field. The value
     itself stays in ``EGRESS_PATH/secrets/<id>.txt`` and never enters the page.
+
+    A ``wireguard`` row is the one exception to "the row only knows its own
+    verdict": before anyone presses Test it has no verdict of its own, and the
+    honest state of the tunnel is the watcher's report — so its badge reads
+    ``status.json`` instead of saying ``unknown`` about a tunnel that is up.
     """
     url = str(row.get("url") or "")
+    is_tunnel = str(row.get("kind") or "") == WIREGUARD_KIND
+    tunnel = egress.read_status() if is_tunnel else None
     return {
         "id": int(row["id"]),
         "name": str(row.get("name") or ""),
         "kind": str(row.get("kind") or ""),
         "kind_label": kind_label(row.get("kind")),
-        "is_wireguard": str(row.get("kind") or "") == WIREGUARD_KIND,
+        "is_wireguard": is_tunnel,
         "url": egress.mask_proxy_url(url),
+        "address_label": (
+            f"tunnel · {row.get('config_path') or egress.wireguard_path()}"
+            if is_tunnel
+            else (egress.mask_proxy_url(url) or "no URL")
+        ),
         "assignment_mode": str(row.get("assignment_mode") or "all"),
         "assignment_label": assignment_label(row),
         "services": services_of(row),
         "enabled": bool(row.get("enabled")),
         "enabled_label": enabled_label(row),
-        "status": status_label(row),
-        "status_badge": STATUS_BADGES.get(status_label(row), "badge"),
+        "status": tunnel.label() if tunnel else status_label(row),
+        "status_badge": (
+            f"badge {tunnel.badge()}"
+            if tunnel
+            else STATUS_BADGES.get(status_label(row), "badge")
+        ),
         "last_test_at": format_when(row.get("last_test_at")),
         "last_test_result": str(row.get("last_test_result") or ""),
         "has_password": bool(str(row.get("password_ref") or "")),
@@ -793,15 +962,22 @@ def connection_json(row: dict) -> dict:
 
     One payload per row instead of a form per row: the editor fills itself from
     the attribute (``js/proxy.js``) and the row's menu names the id. It carries
-    the masked URL, never the secret.
+    the masked URL, the host and port the two fields show, and the username — a
+    login is a name, not a secret, and the dialog cannot prefill what it never
+    receives. The password never appears here: ``has_password`` is a bool.
     """
     view = page_row(row)
+    scheme, host, port = split_address(row.get("url"))
     return {
         "id": view["id"],
         "name": view["name"],
         "kind": view["kind"],
         "url": str(row.get("url") or ""),
         "url_masked": view["url"],
+        "host": host,
+        "port": port,
+        "scheme": scheme,
+        "username": str(row.get("username") or ""),
         "auth": bool(str(row.get("username") or "")),
         "has_password": view["has_password"],
         "mode": view["assignment_mode"],
