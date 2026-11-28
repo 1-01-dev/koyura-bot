@@ -64,6 +64,15 @@ count and not an estimate. The bot re-checks active users once a day
 (`SUBSCRIPTION_SWEEP_INTERVAL_SECONDS`, `SUBSCRIPTION_SWEEP_LIMIT`); a failed
 check changes nothing.
 
+The numbers are read on the **Dashboard**, not on Channels: three cells
+(subscriptions, unsubscriptions, active subscribers), the two-series
+"Subscriptions over time" chart and the per-channel breakdown follow the same
+`1D`/`7D`/`1M`/`1Y` switch as the download charts. The block is drawn while the
+switch is on — zeros are an answer, they say the module works and nobody has
+joined yet — or while the table still holds at least one transition, whatever
+the gate says. Only "switch off *and* nothing ever recorded" leaves it out,
+and an empty history says **No subscriptions yet** under the chart.
+
 ## Media engine and limits
 
 | Variable | Required | Default | What it does |

@@ -421,3 +421,6 @@ class TestTheDashboardPage:
         assert "kpi-active-subscribers" in source
         # Visibility is the API's decision, not a client-side guess.
         assert "visible" in source
+        # An empty history says so in words; one channel is the total line.
+        assert "No subscriptions yet" in source
+        assert "'Total'" in source
