@@ -9,19 +9,29 @@
 </div>
 
 {% include "_admin_tabs.html" %}
+{% from "_help.html" import help_toggle, help_panel %}
 
-<div class="panel-stack">
+<div class="panel-stack" data-help-group="limits">
 
 <!-- Download limits -->
 <section class="card panel" id="limits-card">
   <div class="card-header panel-head">
-    <h2 class="card-title">Download limits</h2>
+    <span class="help-row">
+      <h2 class="card-title">Download limits</h2>
+      {{ help_toggle("per-user-hint", "How per-user active slots change the queue for everyone") }}
+    </span>
     <div class="card-actions">
       <span class="limits-meta mono" id="limits-state">
         slots {{ limits.max_concurrent }} · queue {{ limits.max_queue_length }} · wait {{ limits.max_wait_seconds }} s
       </span>
     </div>
   </div>
+
+  {% call help_panel("per-user-hint") %}
+    Per-user active: 1 — the fairest choice when more than one person uses the
+    bot (nobody can take every slot). 2 — faster for a single user: one person
+    holds both slots while everyone else waits.
+  {% endcall %}
 
   <div class="limits-presets panel-body" role="group" aria-label="Server presets">
     {% for preset in presets %}
@@ -57,7 +67,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
     <div class="limits-grid">
       {% for field in limit_fields %}
-      <div class="limits-cell">
+      <div class="limits-cell" data-help-group="limits-field">
         <label class="limits-label mono" for="limit-{{ field.name }}">{{ field.label }}</label>
         <input class="limits-input"
                id="limit-{{ field.name }}"
@@ -70,19 +80,21 @@
                value="{{ field.value }}"
                required
                aria-describedby="hint-{{ field.name }}{% if field.hint %} note-{{ field.name }}{% endif %}" />
-        <span class="limits-hint mono" id="hint-{{ field.name }}">{{ field.unit }} · {{ field.min }}…{{ field.max }}</span>
+        {# The unit and range stay visible: they are the caption the field needs
+           while typing. Only the sentence about *behaviour* goes behind the
+           question mark. #}
+        <span class="limits-hint mono" id="hint-{{ field.name }}">
+          {{- field.unit }} · {{ field.min }}…{{ field.max }}
+          {%- if field.hint %}
+          {{ ' ' }}{{ help_toggle('note-' ~ field.name, field.label ~ ': what the number changes') }}
+          {%- endif %}
+        </span>
         {% if field.hint %}
-        <span class="limits-hint" id="note-{{ field.name }}">{{ field.hint }}</span>
+        {% call help_panel("note-" ~ field.name) %}{{ field.hint }}{% endcall %}
         {% endif %}
       </div>
       {% endfor %}
     </div>
-
-    <p class="limits-note mono" id="per-user-hint">
-      Per-user active: 1 — the fairest choice when more than one person uses the
-      bot (nobody can take every slot). 2 — faster for a single user: one person
-      holds both slots while everyone else waits.
-    </p>
 
     <div class="limits-actions">
       <button type="submit" class="btn btn-primary" id="limits-save">Save limits</button>

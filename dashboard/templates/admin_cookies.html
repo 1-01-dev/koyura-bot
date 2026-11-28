@@ -9,8 +9,9 @@
 </div>
 
 {% include "_admin_tabs.html" %}
+{% from "_help.html" import help_toggle, help_panel %}
 
-<div class="panel-stack">
+<div class="panel-stack" data-help-group="cookies">
 
 <!-- Add a service and its first file -------------------------------------
      One form does both jobs: the search field picks (or creates) the service
@@ -20,7 +21,10 @@
      not carry. -->
 <section class="card panel" id="cookies-card">
   <div class="card-header panel-head">
-    <h2 class="card-title">Cookie files</h2>
+    <span class="help-row">
+      <h2 class="card-title">Cookie files</h2>
+      {{ help_toggle("cookies-note", "What a cookie file is and how several are tried") }}
+    </span>
     <div class="card-actions">
       <span class="limits-meta mono" id="cookies-state">
         {{ service_count }} service{{ "" if service_count == 1 else "s" }} ·
@@ -29,11 +33,11 @@
     </div>
   </div>
 
-  <p class="limits-note" id="cookies-note">
+  {% call help_panel("cookies-note") %}
     Where the engine keeps what a site needs to let it in: a Netscape cookie
     jar per account. A service may hold several files — they are tried in
     order, and the next one is only used when the previous is refused.
-  </p>
+  {% endcall %}
 
   {% if cookies_error %}
   <p class="form-error" role="alert">{{ cookies_error }}</p>

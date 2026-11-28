@@ -9,8 +9,9 @@
 </div>
 
 {% include "_admin_tabs.html" %}
+{% from "_help.html" import help_toggle, help_panel %}
 
-<div class="panel-stack">
+<div class="panel-stack" data-help-group="proxy">
 
 <!-- Mode and assignment ---------------------------------------------------
      One form for the three-way choice and the rule that applies it. Plain
@@ -18,7 +19,10 @@
      is the only authority on what a valid combination is. -->
 <section class="card panel" id="proxy-card">
   <div class="card-header panel-head">
-    <h2 class="card-title">Outbound route</h2>
+    <span class="help-row">
+      <h2 class="card-title">Outbound route</h2>
+      {{ help_toggle("proxy-note", "Why route through a proxy instead of a direct connection") }}
+    </span>
     <div class="card-actions">
       <span class="limits-meta mono" id="proxy-state">
         mode {{ egress.mode }} ·
@@ -27,12 +31,12 @@
     </div>
   </div>
 
-  <p class="limits-note" id="proxy-note">
+  {% call help_panel("proxy-note") %}
     Some sites refuse a datacentre IP whatever the cookies say. Send the
     engine's requests through a proxy or a WireGuard tunnel instead — for every
     service, or only the ones you pick. All services in the rule share one
     outbound IP.
-  </p>
+  {% endcall %}
 
   {% if egress_notice %}
   <p class="form-notice" role="status">{{ egress_notice }}</p>
@@ -89,7 +93,12 @@
 
     <!-- Assignment -------------------------------------------------------- -->
     <fieldset class="proxy-fieldset" id="proxy-assignment">
-      <legend class="limits-label mono">Apply to</legend>
+      <legend class="limits-label mono">
+        <span class="help-row">
+          Apply to
+          {{ help_toggle("proxy-assignment-hint", "Which services the list applies to") }}
+        </span>
+      </legend>
       <div class="proxy-choices" role="radiogroup" aria-label="Which services use it">
         {% for option in egress.assignment_options %}
         <label class="proxy-choice" for="assign-{{ option.value }}">
@@ -103,11 +112,11 @@
         {% endfor %}
       </div>
 
-      <p class="limits-note" id="proxy-assignment-hint">
+      {% call help_panel("proxy-assignment-hint") %}
         The list matters for <span class="mono">Selected</span> and
         <span class="mono">All except selected</span>. It is the same catalogue
         the Cookies page offers, so a name here is a name the engine computes.
-      </p>
+      {% endcall %}
 
       <details class="proxy-services" id="proxy-services">
         <summary class="cookies-summary">
@@ -180,7 +189,10 @@
      back. Nothing on this page ever reads the private key. -->
 <section class="card panel" id="wireguard-card">
   <div class="card-header panel-head">
-    <h2 class="card-title">WireGuard</h2>
+    <span class="help-row">
+      <h2 class="card-title">WireGuard</h2>
+      {{ help_toggle("wireguard-note", "What the panel does with a WireGuard config") }}
+    </span>
     <div class="card-actions">
       <span class="badge {{ egress_status.badge() }}" id="wg-badge">
         {{ egress_status.label() }}
@@ -188,12 +200,12 @@
     </div>
   </div>
 
-  <p class="limits-note" id="wireguard-note">
+  {% call help_panel("wireguard-note") %}
     Upload a WireGuard <span class="mono">.conf</span> and the server applies it
     on its own: this panel only writes the file
     (<span class="mono">{{ egress_path }}</span>, mode 0600). In this mode the
     engine dials the tunnel's SOCKS address, so no proxy URL is stored.
-  </p>
+  {% endcall %}
 
   {% if egress_wg_error %}
   <p class="form-error" role="alert">{{ egress_wg_error }}</p>
