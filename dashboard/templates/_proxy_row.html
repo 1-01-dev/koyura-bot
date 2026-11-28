@@ -1,0 +1,73 @@
+{# One row of the connections table.
+
+   Shared by the page (the first render) and by the `template` element the
+   module clones after "Add connection" succeeds — so a row the script inserts is
+   the same markup, with the same forms and the same aria-labels, as one the
+   server rendered. That is the whole reason this is a separate file: a second,
+   JS-built row would drift from this one within a release.
+
+   `row` is `proxy_connections.page_row(...)`: already formatted, and with no
+   secret in it (`has_password` is a bool, never a value). #}
+{# `data-payload` is the editor's copy of this row: the clean URL (never a
+   login), the stored service list and a yes/no for the password. It travels on
+   the row so a row the table re-fetches brings its own payload with it, and the
+   JSON is single-quoted because `tojson` escapes the quote that would end a
+   double-quoted attribute. #}
+<tr data-connection-id="{{ row.id }}"
+    data-enabled="{{ 'true' if row.enabled else 'false' }}"
+    data-payload='{{ proxy_payloads[row.id] | tojson }}'>
+  <td>
+    <span class="proxy-name" data-field="name">{{ row.name }}</span>
+    <span class="proxy-name-meta mono" data-field="target">
+      {% if row.is_wireguard %}
+      tunnel · {{ proxy_wg_path }}
+      {% else %}
+      {{ row.url or "no URL" }}
+      {% endif %}
+    </span>
+  </td>
+  <td>
+    <span class="{{ row.status_badge }}" data-field="status">{{ row.status }}</span>
+    {# Both of these are shown by CSS, not by a conditional attribute: the row
+       carries `data-enabled`, so the "off" badge is hidden on an enabled row,
+       and an empty result note hides itself with `:empty`. That keeps this
+       markup static enough for the editor to clone it verbatim. #}
+    <span class="badge proxy-off-badge" data-field="enabled">off</span>
+    <span class="proxy-test-note mono" data-field="result">{{ row.last_test_result }}</span>
+  </td>
+  <td class="mono" data-field="kind">{{ row.kind_label }}</td>
+  <td data-field="assignment">{{ row.assignment_label }}</td>
+  <td class="mono" data-field="last-test">{{ row.last_test_at }}</td>
+  <td class="col-actions">
+    <span class="proxy-actions">
+      <form method="post" class="proxy-inline-form"
+            action="/admin/proxy/connection/{{ row.id }}/test">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <button type="submit" class="btn btn-secondary proxy-icon-btn"
+                data-proxy-action="test"
+                aria-label="Test {{ row.name }} now">Test</button>
+      </form>
+      <form method="post" class="proxy-inline-form"
+            action="/admin/proxy/connection/{{ row.id }}/toggle">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <input type="hidden" name="enabled" value="{{ '0' if row.enabled else '1' }}" />
+        <button type="submit" class="btn btn-secondary proxy-icon-btn"
+                data-proxy-action="toggle"
+                aria-label="{{ 'Disable' if row.enabled else 'Enable' }} {{ row.name }}">
+          {{ "Disable" if row.enabled else "Enable" }}
+        </button>
+      </form>
+      <button type="button" class="btn btn-secondary proxy-icon-btn"
+              data-proxy-action="edit"
+              data-connection="{{ row.id }}"
+              aria-haspopup="dialog" aria-controls="proxy-modal"
+              aria-label="Edit {{ row.name }}">Edit</button>
+      <button type="button" class="btn btn-danger proxy-icon-btn"
+              data-proxy-action="delete"
+              data-connection="{{ row.id }}"
+              data-name="{{ row.name }}"
+              aria-haspopup="dialog" aria-controls="proxy-delete-modal"
+              aria-label="Delete {{ row.name }}">Delete</button>
+    </span>
+  </td>
+</tr>

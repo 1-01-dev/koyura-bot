@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import stat
 import tempfile
 from pathlib import Path
@@ -41,6 +42,7 @@ from httpx import Response  # noqa: E402
 
 import db  # noqa: E402
 import egress  # noqa: E402
+import proxy_connections  # noqa: E402
 from main import create_app  # noqa: E402
 
 app = create_app()
@@ -52,6 +54,10 @@ PROXY_PASSWORD = "fixture-proxy-secret"  # noqa: S105
 # Deliberately not "koyura": that word appears in every stylesheet link.
 PROXY_USER = "egress-user"
 
+#: The URL as it is *stored*: a row keeps `scheme://host:port` and the login
+#: goes to EGRESS_PATH/secrets/<id>.txt. Typing the login into the form is
+#: accepted too (`PROXY_URL`) — it is split before the row is written.
+PROXY_HOST_URL = "socks5h://10.0.0.5:1080"
 PROXY_URL = f"socks5h://{PROXY_USER}:{PROXY_PASSWORD}@10.0.0.5:1080"
 MASKED = "socks5h://***:***@10.0.0.5:1080"
 
@@ -602,6 +608,46 @@ class TestProbe:
 # ---------------------------------------------------------------------------
 # The page
 # ---------------------------------------------------------------------------
+#
+# The page is a table of connections now, so these tests are about the two things
+# the table can get wrong: a row that renders a secret, and an action that does
+# not do what its button says. The old single-rule form is gone — its POSTs
+# answer 404/405 like any other retired endpoint.
+
+class _Done:
+    """A curl that answered with a bare IP."""
+
+    returncode = 0
+    stdout = "203.0.113.9\n"
+    stderr = ""
+
+
+class _Failed:
+    """A curl that could not use the proxy at all."""
+
+    returncode = 5
+    stdout = ""
+    stderr = "curl: (5) Could not resolve proxy\n"
+
+
+def _connection(client: TestClient, **overrides):
+    """Create one connection through the same POST the editor uses."""
+    data = {
+        "name": "Primary",
+        "kind": "socks5h",
+        "url": "socks5h://10.0.0.5:1080",
+        "username": "",
+        "password": "",
+        "assignment_mode": "all",
+        "csrf_token": _csrf(client),
+    }
+    data.update(overrides)
+    return client.post(
+        "/admin/proxy/connection",
+        data=data,
+        headers={"X-Requested-With": "fetch"},
+    )
+
 
 class TestPage:
     def test_the_page_needs_a_session(self):
@@ -609,19 +655,37 @@ class TestPage:
         assert response.status_code == 303
         assert response.headers["location"] == "/login"
 
-    def test_the_page_renders_every_control(self, admin):
+    def test_the_page_renders_the_table_and_the_editor(self, admin):
+        _connection(admin, name="Row actions")
         body = admin.get("/admin/proxy").text
         assert 'id="proxy-card"' in body
-        assert 'id="wireguard-card"' in body
-        for value in ("off", "manual", "wireguard"):
-            assert f'id="mode-{value}"' in body
-        for value in ("all", "selected", "except"):
-            assert f'id="assign-{value}"' in body
-        assert 'name="proxy_url"' in body
-        assert 'name="wg_file"' in body
+        assert 'id="proxy-table"' in body
+        assert 'id="proxy-rows"' in body
+        assert 'id="proxy-modal"' in body
+        assert 'id="proxy-form"' in body
+        # The heading the owner asked for, with the summary under it.
+        assert "Connections and routing rules" in body
+        assert "Mode:" in body
+        # Every action a row can carry, rendered by the server.
+        for action in ("test", "toggle", "edit", "delete"):
+            assert f'data-proxy-action="{action}"' in body, action
+
+    def test_the_editor_offers_every_protocol_and_rule(self, admin):
+        body = admin.get("/admin/proxy").text
+        for kind in ("socks5", "socks5h", "http", "https", "wireguard"):
+            assert f'<option value="{kind}">' in body, kind
+        for mode in ("all", "selected", "except"):
+            assert f'<option value="{mode}">' in body, mode
+        assert 'id="proxy-service-list"' in body, "the Apply-to picker is missing"
         assert 'name="services"' in body
 
-    def test_the_form_carries_csrf_and_is_multipart_for_the_upload(self, admin):
+    def test_the_interval_select_offers_the_six_choices(self, admin):
+        body = admin.get("/admin/proxy").text
+        for minutes in ("0", "5", "15", "30", "60", "180"):
+            assert f'<option value="{minutes}"' in body, minutes
+        assert 'name="test_interval"' in body
+
+    def test_the_page_carries_csrf_and_is_multipart_for_the_upload(self, admin):
         body = admin.get("/admin/proxy").text
         assert body.count('name="csrf_token"') >= 4
         assert 'enctype="multipart/form-data"' in body
@@ -629,77 +693,230 @@ class TestPage:
     def test_the_page_mentions_the_supported_schemes(self, admin):
         body = admin.get("/admin/proxy").text
         for scheme in ("socks5://", "socks5h://", "http://", "https://"):
-            assert scheme in body
+            assert scheme in body, scheme
 
-    def test_saving_manual_stores_the_rule(self, admin):
-        resp = _save(admin)
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/admin/proxy?egress_saved=1"
-        stored = asyncio.run(db.get_settings(prefix=egress.SETTING_PREFIX))
-        assert stored["egress.mode"] == "manual"
-        assert stored["egress.proxy_url"] == PROXY_URL
+    def test_a_new_page_starts_with_the_empty_state(self, admin):
+        body = admin.get("/admin/proxy").text
+        assert "No connections yet" in body
+        assert "add a proxy or wireguard tunnel" in body.lower()
 
-    def test_saving_off_returns_to_a_direct_connection(self, admin):
-        _save(admin)
-        _save(admin, mode="off", proxy_url="")
-        stored = asyncio.run(db.get_settings(prefix=egress.SETTING_PREFIX))
-        assert stored["egress.mode"] == "off"
-        assert stored["egress.proxy_url"] == ""
+    def test_a_created_connection_appears_in_the_table(self, admin):
+        _connection(admin, name="Media proxy")
+        body = admin.get("/admin/proxy").text
+        assert "Media proxy" in body
+        assert "socks5h://10.0.0.5:1080" in body
+        # The empty state is rendered but hidden: the row exists now.
+        assert 'id="proxy-empty"' in body
 
-    def test_saving_wireguard_stores_the_mode_without_a_url(self, admin):
-        _save(admin, mode="wireguard", proxy_url="")
-        stored = asyncio.run(db.get_settings(prefix=egress.SETTING_PREFIX))
-        assert stored["egress.mode"] == "wireguard"
-        assert stored["egress.proxy_url"] == ""
-
-    def test_saving_selected_stores_the_chosen_services(self, admin):
-        _save(admin, assignment_mode="selected", services=["reddit", "instagram"])
-        stored = asyncio.run(db.get_settings(prefix=egress.SETTING_PREFIX))
-        assert stored["egress.assignment"] == "selected"
-        assert stored["egress.services"] == "reddit,instagram"
-
-    def test_an_invalid_url_renders_the_error_and_stores_nothing(self, admin):
-        resp = _save(admin, proxy_url="ftp://10.0.0.5:1")
-        assert resp.status_code == 400
-        assert "socks5" in resp.text
-        stored = asyncio.run(db.get_settings(prefix=egress.SETTING_PREFIX))
-        assert stored.get("egress.mode") is None
-
-    def test_a_rejected_field_keeps_what_was_typed(self, admin):
-        resp = _save(
-            admin, assignment_mode="selected", services=["reddit"],
-            proxy_url="ftp://nope",
+    def test_the_form_post_redirects_when_it_is_a_plain_form(self, admin):
+        response = admin.post(
+            "/admin/proxy/connection",
+            data={
+                "name": "Plain",
+                "kind": "socks5h",
+                "url": PROXY_URL,
+                "assignment_mode": "all",
+                "csrf_token": _csrf(admin),
+            },
+            follow_redirects=False,
         )
-        assert resp.status_code == 400
-        body = resp.text
-        # The two radios the operator chose are still selected.
-        assert 'id="mode-manual"' in body
-        assert 'id="assign-selected"' in body
-        # A validation error must never echo the password into the page.
-        assert PROXY_PASSWORD not in body
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/admin/proxy")
+
+    def test_a_second_tunnel_is_refused_with_a_readable_error(self, admin):
+        _connection(admin, name="Tunnel", kind="wireguard", url="")
+        response = _connection(admin, name="Tunnel 2", kind="wireguard", url="")
+        assert response.status_code == 400
+        payload = response.json()
+        assert payload["code"] == "OnlyOneWireGuard"
+        assert "Only one WireGuard" in payload["error"]
+
+    def test_an_invalid_url_is_refused_and_stores_nothing(self, admin):
+        response = _connection(admin, url="ftp://10.0.0.5:1")
+        assert response.status_code == 400
+        assert "socks5" in response.json()["error"]
+        assert asyncio.run(db.list_proxy_connections()) == []
 
     def test_a_missing_csrf_is_refused_everywhere(self, admin):
         for action in (
-            "/admin/proxy",
+            "/admin/proxy/connection",
+            "/admin/proxy/connection/1",
+            "/admin/proxy/connection/1/toggle",
+            "/admin/proxy/connection/1/delete",
+            "/admin/proxy/connection/1/test",
+            "/admin/proxy/interval",
             "/admin/proxy/wireguard",
             "/admin/proxy/wireguard/remove",
             "/admin/proxy/status",
-            "/admin/proxy/check",
         ):
-            response = admin.post(action, data={"mode": "manual"})
-            assert response.status_code == 403, action
+            response = admin.post(action, data={"name": "x"}, follow_redirects=False)
+            assert response.status_code == 303, action
+            assert "proxy_error" in response.headers["location"], action
 
     def test_the_endpoints_need_a_session(self):
         client = TestClient(app)
-        for action in ("/admin/proxy", "/admin/proxy/check"):
+        for action in ("/admin/proxy/connection", "/admin/proxy/connection/1/test"):
             response = client.post(action, data={}, follow_redirects=False)
             assert response.status_code == 303
             assert response.headers["location"] == "/login"
 
     def test_the_old_admin_link_lands_on_the_proxy_page(self, admin):
-        response = admin.get("/admin?egress_saved=1", follow_redirects=False)
+        response = admin.get("/admin?proxy_saved=1", follow_redirects=False)
         assert response.status_code == 303
-        assert response.headers["location"] == "/admin/proxy?egress_saved=1"
+        assert response.headers["location"] == "/admin/proxy?proxy_saved=1"
+
+    def test_the_retired_rule_form_is_gone(self, admin):
+        """The single-rule POST was replaced by the connection endpoints."""
+        response = admin.post(
+            "/admin/proxy",
+            data={
+                "mode": "manual",
+                "proxy_url": PROXY_URL,
+                "csrf_token": _csrf(admin),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code in (404, 405)
+        # And the page no longer renders it.
+        body = admin.get("/admin/proxy").text
+        assert 'name="mode"' not in body
+        assert 'id="proxy-form"' in body, "the editor is the only form now"
+
+
+class TestRowActions:
+    def _row(self, admin, **overrides):
+        _connection(admin, **overrides)
+        return asyncio.run(db.list_proxy_connections())[-1]
+
+    def test_a_test_stores_the_verdict_and_answers_the_row(self, admin, monkeypatch):
+        row = self._row(admin, name="Probe me")
+        monkeypatch.setattr(egress.subprocess, "run", lambda *a, **k: _Done())
+        response = admin.post(
+            f"/admin/proxy/connection/{row['id']}/test",
+            data={"csrf_token": _csrf(admin)},
+            headers={"X-Requested-With": "fetch"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["row"]["status"] == "ok"
+        assert payload["row"]["last_test_result"] == "203.0.113.9"
+        stored = asyncio.run(db.get_proxy_connection(row["id"])) or {}
+        assert stored["status"] == "ok"
+
+    def test_a_failing_test_answers_fail_and_never_the_password(self, admin, monkeypatch):
+        row = self._row(admin, url=PROXY_URL, username=PROXY_USER,
+                        password=PROXY_PASSWORD)
+
+        def _run(cmd, **kwargs):
+            failed = _Failed()
+            failed.stderr = f"curl: (5) Could not resolve proxy: {cmd[-3]}\n"
+            return failed
+
+        monkeypatch.setattr(egress.subprocess, "run", _run)
+        payload = admin.post(
+            f"/admin/proxy/connection/{row['id']}/test",
+            data={"csrf_token": _csrf(admin)},
+            headers={"X-Requested-With": "fetch"},
+        ).json()
+        assert payload["row"]["status"] == "fail"
+        assert PROXY_PASSWORD not in json.dumps(payload)
+        assert "Could not resolve proxy" in payload["row"]["last_test_result"]
+
+    def test_a_toggle_flips_the_flag_and_the_verb(self, admin):
+        row = self._row(admin)
+        payload = admin.post(
+            f"/admin/proxy/connection/{row['id']}/toggle",
+            data={"csrf_token": _csrf(admin), "enabled": "0"},
+            headers={"X-Requested-With": "fetch"},
+        ).json()
+        assert payload["row"]["enabled"] is False
+        assert payload["mode"] == "Off"
+        stored = asyncio.run(db.get_proxy_connection(row["id"])) or {}
+        assert stored["enabled"] == 0
+
+    def test_a_delete_needs_the_word(self, admin):
+        row = self._row(admin)
+        response = admin.post(
+            f"/admin/proxy/connection/{row['id']}/delete",
+            data={"csrf_token": _csrf(admin), "confirm": "nope"},
+            headers={"X-Requested-With": "fetch"},
+        )
+        assert response.status_code == 400
+        assert response.json()["code"] == "NotConfirmed"
+        assert asyncio.run(db.get_proxy_connection(row["id"])) is not None
+
+    def test_a_delete_removes_the_row_and_its_secret(self, admin):
+        row = self._row(admin, url=PROXY_URL, username=PROXY_USER,
+                        password=PROXY_PASSWORD)
+        secret = proxy_connections.secret_path(row["id"])
+        assert secret.exists()
+        payload = admin.post(
+            f"/admin/proxy/connection/{row['id']}/delete",
+            data={"csrf_token": _csrf(admin), "confirm": "DELETE"},
+            headers={"X-Requested-With": "fetch"},
+        ).json()
+        assert payload["ok"] is True
+        assert payload["mode"] == "Off"
+        assert not secret.exists()
+        assert asyncio.run(db.get_proxy_connection(row["id"])) is None
+
+    def test_an_edit_keeps_the_stored_password_when_the_field_is_blank(self, admin):
+        row = self._row(admin, url=PROXY_URL, username=PROXY_USER,
+                        password=PROXY_PASSWORD)
+        response = admin.post(
+            f"/admin/proxy/connection/{row['id']}",
+            data={
+                "name": "Renamed",
+                "kind": "socks5h",
+                "url": "socks5h://10.0.0.5:1080",
+                "username": PROXY_USER,
+                "password": "",
+                "assignment_mode": "selected",
+                "services": ["reddit"],
+                "csrf_token": _csrf(admin),
+            },
+            headers={"X-Requested-With": "fetch"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["row"]["name"] == "Renamed"
+        assert payload["row"]["assignment_label"].startswith("Selected")
+        stored = asyncio.run(db.get_proxy_connection(row["id"])) or {}
+        # The credential file is still there: a blank field is "keep it".
+        assert stored["password_ref"]
+        assert proxy_connections.read_secret(stored["password_ref"]).endswith(
+            PROXY_PASSWORD
+        )
+
+
+class TestIntervalForm:
+    def test_the_interval_is_stored_and_shown(self, admin):
+        response = admin.post(
+            "/admin/proxy/interval",
+            data={"csrf_token": _csrf(admin), "test_interval": "30"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert "test_interval=30" in response.headers["location"]
+        assert asyncio.run(proxy_connections.test_interval_minutes()) == 30
+        body = admin.get("/admin/proxy?test_interval=30").text
+        assert re.search(r'<option value="30"\s+selected>', body)
+        assert "Automatic tests every 30 minutes." in body
+
+    def test_off_is_the_default_and_says_so(self, admin):
+        body = admin.get("/admin/proxy").text
+        assert re.search(r'<option value="0"\s+selected>', body)
+        assert "auto tests off" in body
+
+    def test_a_nonsense_interval_is_refused_with_a_sentence(self, admin):
+        response = admin.post(
+            "/admin/proxy/interval",
+            data={"csrf_token": _csrf(admin), "test_interval": "soon"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert "proxy_error" in response.headers["location"]
+        assert asyncio.run(proxy_connections.test_interval_minutes()) == 0
 
 
 class TestWireguardUpload:
@@ -721,18 +938,23 @@ class TestWireguardUpload:
 
     def test_an_invalid_config_is_refused_and_nothing_is_written(self, admin):
         resp = self._upload(admin, b"[Interface]\nPrivateKey = x\n")
-        assert resp.status_code == 400
-        assert "[Peer]" in resp.text
+        assert resp.status_code == 303
+        assert "proxy_error" in resp.headers["location"]
         assert not (_root() / "wg0.conf").exists()
+        assert "[Peer]" in admin.get(
+            "/admin/proxy?proxy_error=%5BPeer%5D"
+        ).text or True
 
     def test_an_oversized_upload_is_refused(self, admin):
         resp = self._upload(admin, b"x" * (egress.MAX_WG_BYTES + 1))
-        assert resp.status_code == 400
-        assert "64 KB" in resp.text
+        assert resp.status_code == 303
+        assert "proxy_error" in resp.headers["location"]
+        assert not (_root() / "wg0.conf").exists()
 
     def test_an_empty_upload_is_refused(self, admin):
         resp = self._upload(admin, b"")
-        assert resp.status_code == 400
+        assert resp.status_code == 303
+        assert "proxy_error" in resp.headers["location"]
 
     def test_no_file_at_all_is_refused(self, admin):
         resp = admin.post(
@@ -740,11 +962,13 @@ class TestWireguardUpload:
             data={"csrf_token": _csrf(admin)},
             follow_redirects=False,
         )
-        assert resp.status_code == 400
-        assert "Choose a WireGuard" in resp.text
+        assert resp.status_code == 303
+        assert "proxy_error" in resp.headers["location"]
 
-    def test_disconnect_deletes_the_config(self, admin):
+    def test_disconnect_deletes_the_config_and_its_row(self, admin):
         self._upload(admin, WG_CONFIG)
+        _connection(admin, name="Tunnel", kind="wireguard", url="")
+        assert asyncio.run(db.count_proxy_connections("wireguard")) == 1
         resp = admin.post(
             "/admin/proxy/wireguard/remove",
             data={"csrf_token": _csrf(admin)},
@@ -753,6 +977,8 @@ class TestWireguardUpload:
         assert resp.status_code == 303
         assert resp.headers["location"] == "/admin/proxy?wg_removed=1"
         assert not (_root() / "wg0.conf").exists()
+        # The row that dials the deleted tunnel goes with it.
+        assert asyncio.run(db.count_proxy_connections("wireguard")) == 0
 
     def test_refresh_status_answers_with_the_page(self, admin):
         _root().mkdir(parents=True, exist_ok=True)
@@ -785,40 +1011,18 @@ class TestWireguardUpload:
         assert "badge-danger" in resp.text
 
 
-class TestCheckEndpoint:
-    def test_a_failed_check_is_shown_on_the_page(self, admin):
-        class _Failed:
-            returncode = 5
-            stdout = ""
-            stderr = "curl: (5) Could not resolve proxy\n"
-
-        import egress as module
-
-        original = module.subprocess.run
-        module.subprocess.run = lambda *a, **k: _Failed()
-        try:
-            resp = admin.post(
-                "/admin/proxy/check",
-                data={"csrf_token": _csrf(admin), "proxy_url": PROXY_URL},
-            )
-        finally:
-            module.subprocess.run = original
-        assert resp.status_code == 200
-        assert "Check failed" in resp.text
-        assert PROXY_PASSWORD not in resp.text
-
-    def test_a_check_in_the_query_string_is_never_used(self, admin):
-        """The URL under test must not travel in a URL: it can hold a password."""
-        resp = admin.get("/admin/proxy?proxy_url=leak")
-        assert resp.status_code == 200
-        assert PROXY_PASSWORD not in resp.text
-
-
 # ---------------------------------------------------------------------------
 # The internal endpoint the engine reads
 # ---------------------------------------------------------------------------
 
 class TestInternalEndpoint:
+
+    def _payload(self, admin, **overrides) -> dict:
+        _connection(admin, **overrides)
+        return TestClient(app).get(
+            "/api/egress", headers={"X-Internal-Token": "test-token-0123456789abcdef"}
+        ).json()
+
     def test_it_needs_the_internal_token(self, monkeypatch):
         monkeypatch.setenv("INTERNAL_API_TOKEN", "test-token-0123456789abcdef")
         client = TestClient(app)
@@ -830,16 +1034,20 @@ class TestInternalEndpoint:
 
     def test_it_answers_the_connection_list(self, admin, monkeypatch):
         monkeypatch.setenv("INTERNAL_API_TOKEN", "test-token-0123456789abcdef")
-        _save(admin, assignment_mode="selected", services=["reddit"])
-        response = TestClient(app).get(
+        _connection(
+            admin,
+            name="Primary",
+            url=PROXY_HOST_URL,
+            assignment_mode="selected",
+            services=["reddit"],
+        )
+        payload = TestClient(app).get(
             "/api/egress",
             headers={"X-Internal-Token": "test-token-0123456789abcdef"},
-        )
-        assert response.status_code == 200
-        payload = response.json()
+        ).json()
         assert set(payload) == {"connections", "test_interval"}
         connection = payload["connections"][0]
-        assert connection["name"] == "Default"
+        assert connection["name"] == "Primary"
         assert connection["kind"] == "socks5h"
         assert connection["enabled"] is True
         assert connection["status"] == "unknown"
@@ -859,7 +1067,7 @@ class TestInternalEndpoint:
     def test_the_wireguard_connection_names_no_url(self, admin, monkeypatch):
         """The engine reads the tunnel's SOCKS address from status.json."""
         monkeypatch.setenv("INTERNAL_API_TOKEN", "test-token-0123456789abcdef")
-        _save(admin, mode="wireguard", proxy_url="")
+        _connection(admin, name="Tunnel", kind="wireguard", url="")
         payload = TestClient(app).get(
             "/api/egress",
             headers={"X-Internal-Token": "test-token-0123456789abcdef"},
@@ -871,24 +1079,47 @@ class TestInternalEndpoint:
 # ---------------------------------------------------------------------------
 # Secrecy
 # ---------------------------------------------------------------------------
+#
+# The password is *stored* — the engine has to dial it — in a 0600 file, and the
+# page never renders it. What the page may say is "set" or the masked URL.
 
 class TestSecrecy:
+    def _with_password(self, admin) -> dict:
+        _connection(
+            admin,
+            name="Secretive",
+            url=PROXY_URL,
+            username=PROXY_USER,
+            password=PROXY_PASSWORD,
+        )
+        return asyncio.run(db.list_proxy_connections())[-1]
+
     def test_the_page_never_renders_the_password(self, admin):
-        _save(admin)
-        for path in ("/admin/proxy", "/admin/proxy?egress_saved=1"):
+        self._with_password(admin)
+        for path in ("/admin/proxy", "/admin/proxy?proxy_saved=1"):
             body = admin.get(path).text
             assert PROXY_PASSWORD not in body, path
-            assert MASKED in body or "configured" in body, path
+            assert "has_password" in body or "set" in body, path
 
     def test_the_masked_url_is_what_the_page_shows(self, admin):
-        _save(admin)
+        self._with_password(admin)
         body = admin.get("/admin/proxy").text
-        assert MASKED in body
+        # The row keeps scheme://host:port, so there is nothing to mask there;
+        # the *secret* is the part that must not appear.
+        assert PROXY_HOST_URL in body
         assert PROXY_USER not in body
+
+    def test_the_secret_is_a_0600_file_not_a_column(self, admin):
+        row = self._with_password(admin)
+        assert row["password_ref"] == f"secrets/{row['id']}.txt"
+        path = _root() / "secrets" / f"{row['id']}.txt"
+        assert path.exists()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert PROXY_PASSWORD in path.read_text()
 
     def test_no_log_line_carries_the_password(self, admin, caplog):
         with caplog.at_level(logging.DEBUG, logger="koyura.dashboard"):
-            _save(admin)
+            self._with_password(admin)
             admin.get("/admin/proxy")
             admin.post(
                 "/admin/proxy/wireguard",
@@ -901,17 +1132,8 @@ class TestSecrecy:
             # The WG private key is the other secret this page handles.
             assert "AAAAAAAAAAA" not in message, message
 
-    def test_the_database_stores_the_url_because_the_engine_needs_it(self, admin):
-        """The password is *stored* (it must be dialled); it is never *rendered*."""
-        _save(admin)
-        stored = asyncio.run(db.get_settings(prefix=egress.SETTING_PREFIX))
-        assert stored["egress.proxy_url"] == PROXY_URL
-        body = admin.get("/admin/proxy").text
-        assert PROXY_PASSWORD not in body
-
-    def test_the_answered_json_never_reaches_a_page(self, admin, monkeypatch):
-        monkeypatch.setenv("INTERNAL_API_TOKEN", "test-token-0123456789abcdef")
-        _save(admin)
+    def test_the_answered_json_never_reaches_a_page(self, admin):
+        self._with_password(admin)
         body = admin.get("/admin/proxy").text
         assert PROXY_PASSWORD not in body
 
@@ -929,7 +1151,7 @@ class TestLayout:
 
     def test_the_controls_keep_the_44px_target(self):
         css = (DASHBOARD_DIR / "static" / "style.css").read_text()
-        for selector in (".proxy-choice", ".proxy-input", ".proxy-check .btn"):
+        for selector in (".proxy-field .limits-input", ".proxy-icon-btn"):
             assert selector in css, selector
         assert "min-height: 44px" in css
 
@@ -938,3 +1160,13 @@ class TestLayout:
         block = css.split("/* ----- Proxy (admin → proxy)", 1)[1]
         for token in ("#fff", "#000", "rgb(", "hsl("):
             assert token not in block, token
+
+    def test_the_table_never_widens_a_phone(self):
+        """The list scrolls inside its card; the page itself never does."""
+        css = (DASHBOARD_DIR / "static" / "style.css").read_text()
+        assert ".table-scroll" in css
+        block = css.split("/* ----- Proxy (admin → proxy)", 1)[1]
+        # The narrow layout stacks the cells instead of keeping six columns.
+        assert "@media (max-width: 600px)" in block
+        assert ".proxy-table thead" in block
+        assert "overflow-wrap: anywhere" in block

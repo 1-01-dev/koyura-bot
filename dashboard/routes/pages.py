@@ -556,10 +556,18 @@ ADMIN_SECTION_PARAMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "proxy",
         (
-            "egress_saved",
+            "proxy_saved",
+            "proxy_deleted",
+            "proxy_toggled",
+            "proxy_tested",
+            "proxy_error",
             "wg_saved",
             "wg_removed",
             "status_refreshed",
+            "test_interval",
+            # The retired single-rule form's own parameter: an old bookmark or a
+            # redirect already in a browser still has to land on Proxy.
+            "egress_saved",
         ),
     ),
     (
