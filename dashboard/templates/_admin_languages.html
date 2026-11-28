@@ -3,9 +3,13 @@
    Its own partial since the /admin split: the panel moved from admin.html into
    /admin/bot unchanged, so the panel frame, ids and form action stay identical
    and only the include line moved. #}
+{% from "_help.html" import help_toggle, help_panel %}
 <section class="card panel" id="languages-card">
-  <div class="card-header panel-head">
-    <h2 class="card-title">Bot languages</h2>
+  <div class="card-header panel-head" data-help-group="bot">
+    <span class="help-row">
+      <h2 class="card-title">Bot languages</h2>
+      {{ help_toggle("languages-note", "Which languages the bot offers and how the panel itself stays") }}
+    </span>
     <div class="card-actions">
       <span class="limits-meta mono" id="languages-state">
         {{ bot_languages.languages | join(", ") }} · default {{ bot_languages.default_language }}
@@ -13,10 +17,10 @@
     </div>
   </div>
 
-  <p class="limits-note" id="languages-note">
+  {% call help_panel("languages-note") %}
     The bot offers only the languages enabled here; a new chat is asked once and
     keeps its choice. This panel itself stays in English.
-  </p>
+  {% endcall %}
 
   {% if languages_error %}
   <p class="form-error" role="alert">{{ languages_error }}</p>
@@ -67,10 +71,13 @@
     </div>
   </form>
 
-  <p class="limits-note" id="languages-templates-note">
-    This panel decides <em>which</em> languages exist, not what they say.
+  <div class="limits-note" id="languages-templates-note">
     <a href="#templates-card">The texts of every language are edited in Message templates</a>
-    — one body per message and language, with the built-in default always
-    available to fall back to.
-  </p>
+    {{ help_toggle("languages-templates-help", "Where the texts of every language are edited") }}
+    {% call help_panel("languages-templates-help") %}
+      This panel decides <em>which</em> languages exist, not what they say. One
+      body per message and language, with the built-in default always available
+      to fall back to.
+    {% endcall %}
+  </div>
 </section>

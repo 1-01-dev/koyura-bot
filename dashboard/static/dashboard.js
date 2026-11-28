@@ -10,6 +10,7 @@
 import { initDashboardPage } from './js/report.js';
 import { initLinkModal } from './js/linkmodal.js';
 import { initTemplates } from './js/templates.js';
+import { initHelpBubbles } from './js/help.js';
 import {
   deleteSelected,
   openPurgeModal,
@@ -47,6 +48,9 @@ function boot() {
   bootDashboard();
   bootAdmin();
   initLinkModal();
+  // Every page may carry a "?": the help bubbles are pure markup, so they are
+  // wired once here instead of per page.
+  initHelpBubbles();
 }
 
 if (document.readyState === 'loading') {

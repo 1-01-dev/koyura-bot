@@ -1,0 +1,35 @@
+{# Help bubble: a "?" beside a heading and the explanation it hides.
+
+   One component for every long paragraph the panel used to print in full. Two
+   macros, because the two places a bubble lives put the panel on different
+   sides of the rule:
+
+   * inside a card header the button sits in `.help-row` next to the title and
+     the panel is emitted after the header element closes, so the header keeps
+     its hairline and the panel reads as part of the body;
+   * inside a form cell or fieldset the button follows the label and the panel
+     is the last child of that cell.
+
+   The panel is a `span` rendered `display: block`, not a `div`: some of these
+   notes sit inside a `p` or a fieldset legend region, where a block element is
+   invalid HTML and the parser would close the paragraph early.
+
+   `hidden` is the closed state — no class, no inline style, and it is what the
+   server renders, so the text is present in the page but not visible before
+   the click. js/help.js only flips `aria-expanded` and `hidden`.
+
+   `label` defaults to "Help" (the word a screen reader announces); callers on
+   a page with more than one bubble pass a longer, unique label, because three
+   buttons all announced as "Help" are indistinguishable in a control list. #}
+
+{% macro help_toggle(panel_id, label="Help") -%}
+<button type="button"
+        class="help-toggle mono"
+        aria-expanded="false"
+        aria-controls="{{ panel_id }}"
+        aria-label="{{ label }}">?</button>
+{%- endmacro %}
+
+{% macro help_panel(panel_id) -%}
+<span class="help-panel" id="{{ panel_id }}" hidden>{{ caller() }}</span>
+{%- endmacro %}

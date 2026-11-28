@@ -9,10 +9,14 @@
    kind picker are links, the four actions are POST forms with the CSRF token,
    and js/templates.js only adds the convenience (insert at the cursor, live
    character count, debounced preview). With JS off the page still saves. #}
+{% from "_help.html" import help_toggle, help_panel %}
 <section class="card panel" id="templates-card"
          data-kind="{{ template_kind.id }}" data-lang="{{ template_lang }}">
-  <div class="card-header panel-head">
-    <h2 class="card-title">Message templates</h2>
+  <div class="card-header panel-head" data-help-group="bot">
+    <span class="help-row">
+      <h2 class="card-title">Message templates</h2>
+      {{ help_toggle("templates-note", "How a template is chosen, saved and fallen back to") }}
+    </span>
     <div class="card-actions">
       <span class="limits-meta mono" id="templates-coverage">
         свои: {{ template_covered_lang }} / {{ template_total }} видов ·
@@ -21,13 +25,13 @@
     </div>
   </div>
 
-  <p class="limits-note" id="templates-note">
+  {% call help_panel("templates-note") %}
     Текст любого сообщения бота: выберите вид слева, язык сверху и напишите
     свой вариант. Встроенный шаблон (Default) только для чтения — сломать его
     нельзя. Один активный шаблон на пару «вид + язык»; пустой, битый или
     недоступный шаблон бот заменяет дефолтным и никогда не отправляет пустое
     сообщение.
-  </p>
+  {% endcall %}
 
   {% if template_error %}
   <p class="form-error" role="alert" id="templates-error">{{ template_error }}</p>
@@ -215,13 +219,18 @@
       <div class="templates-preview">
         <div class="templates-preview-head">
           <h3 class="card-title">Предпросмотр</h3>
-          <span class="limits-meta mono" id="template-preview-meta">{{ template_preview.length }} символов</span>
+          <span class="help-row">
+            <span class="limits-meta mono" id="template-preview-meta">{{ template_preview.length }} символов</span>
+            {{ help_toggle("template-preview-note", "Как собран предпросмотр") }}
+          </span>
         </div>
         <p class="form-error" id="template-preview-error" role="alert"
            {% if not template_preview.error %}hidden{% endif %}>{{ template_preview.error or '' }}</p>
         <pre class="templates-preview-body mono" id="template-preview"
              {% if template_preview.error %}hidden{% endif %}>{{ template_preview.text }}</pre>
-        <p class="limits-note mono">Рендер тем же кодом, что и в боте, на реалистичных тестовых данных.</p>
+        {% call help_panel("template-preview-note") %}
+          Рендер тем же кодом, что и в боте, на реалистичных тестовых данных.
+        {% endcall %}
       </div>
 
       <details class="templates-reference" open>
@@ -254,8 +263,7 @@
           а свой текст — нет. Непарный <span class="mono">*</span>,
           <span class="mono">_</span> или <span class="mono">`</span> не ломает
           отправку: сообщение уйдёт как обычный текст.
-        </p>
-      </details>
+        </p>      </details>
     </div>
   </div>
 </section>

@@ -2517,3 +2517,109 @@
     width: 100%;
   }
 }
+
+/* ----- Help bubbles (the "?" beside a heading) ---------------------------
+   One component for every long explanation a panel used to print in full: a
+   1px-bordered mono square next to the heading and a compact panel that starts
+   with the `hidden` attribute. The text stays in the markup as text — never a
+   title attribute — so it is selectable, reachable by keyboard and readable by
+   a screen reader through aria-controls.
+
+   The component has two homes: a card header (the panel is a sibling of the
+   header, so the header keeps its rule) and a form cell (the panel is the last
+   child of the cell, under the input). Both wrap; neither sets a width that
+   could push the page past the viewport at 390px. */
+.help-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.help-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.help-toggle:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+/* The open state is not colour-only: the panel below it is what says "open". */
+.help-toggle[aria-expanded='true'] {
+  color: var(--red-ink);
+  border-color: var(--red);
+}
+
+.help-panel {
+  max-width: 68ch;
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: var(--wash);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.55;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  /* A long URL or a pasted key in a hint must not widen the page. */
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.help-panel[hidden] {
+  display: none;
+}
+
+.help-panel > * + * {
+  margin-top: 8px;
+}
+
+.help-panel a {
+  color: var(--red-ink);
+}
+
+.help-panel a:hover {
+  color: var(--red-hover);
+}
+
+/* In a card header the panel sits under the rule, aligned with the body. */
+.panel > .help-panel,
+.card > .help-panel {
+  margin: 0 16px 14px;
+}
+
+/* In a form cell the panel is the last line of the cell, flush with its
+   label and input, and never wider than the cell itself. */
+.limits-cell > .help-panel,
+.cookies-cell > .help-panel,
+.proxy-fieldset > .help-panel {
+  width: 100%;
+  margin: 4px 0 0;
+}
+
+/* The glyph is a control a thumb has to hit: give coarse pointers the 24px
+   target WCAG asks for without making the mouse layout bulky. */
+@media (pointer: coarse) {
+  .help-toggle {
+    width: 28px;
+    height: 28px;
+    font-size: 12px;
+  }
+}
