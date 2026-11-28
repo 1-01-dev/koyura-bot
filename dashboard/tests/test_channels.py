@@ -482,6 +482,34 @@ class TestTheStatistics:
         assert 3 not in active_ids
         assert {1, 2, 4} <= set(active_ids)
 
+    def test_an_unverifiable_channel_does_not_make_active_impossible(
+        self, admin: TestClient
+    ):
+        """The gate ignores a channel where the bot is not an administrator.
+
+        So does the "active" count: otherwise adding such a row would drop every
+        user out of the KPI, and the number would disagree with the ids the
+        bot's nightly sweep is actually handed.
+        """
+        working = asyncio.run(
+            db.add_required_channel(username="koyura_news", bot_is_admin=True)
+        )
+        asyncio.run(
+            db.add_required_channel(
+                username="noadmin", bot_is_admin=False, check_error="not_admin"
+            )
+        )
+
+        async def run() -> None:
+            await db.record_subscription(31, working["id"], "subscribed")
+            await db.record_subscription(32, working["id"], "subscribed")
+
+        asyncio.run(run())
+
+        stats = asyncio.run(db.get_subscription_stats("30d"))
+        assert stats["active"] == 2
+        assert set(asyncio.run(db.subscribed_user_ids([working["id"]]))) == {31, 32}
+
     def test_a_disabled_channel_is_out_of_the_breakdown(self, admin: TestClient):
         channel_id = self._seed()
         asyncio.run(db.set_required_channel_enabled(channel_id, False))

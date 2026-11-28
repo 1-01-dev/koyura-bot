@@ -806,35 +806,6 @@ async def delete_settings(prefix: str) -> int:
 # Message templates (admin-editable bodies, one active per kind + language)
 # ---------------------------------------------------------------------------
 
-_TEMPLATES_ALL = (
-    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
-    "FROM message_templates ORDER BY is_active DESC, updated_at DESC, id DESC"
-)
-_TEMPLATES_BY_KIND = (
-    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
-    "FROM message_templates WHERE kind = ? "
-    "ORDER BY is_active DESC, updated_at DESC, id DESC"
-)
-_TEMPLATES_BY_LANG = (
-    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
-    "FROM message_templates WHERE lang = ? "
-    "ORDER BY is_active DESC, updated_at DESC, id DESC"
-)
-_TEMPLATES_BY_PAIR = (
-    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
-    "FROM message_templates WHERE kind = ? AND lang = ? "
-    "ORDER BY is_active DESC, updated_at DESC, id DESC"
-)
-_TEMPLATE_BY_ID = (
-    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
-    "FROM message_templates WHERE id = ?"
-)
-_TEMPLATES_ACTIVE = (
-    "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
-    "FROM message_templates WHERE is_active = 1 ORDER BY kind, lang"
-)
-
-
 def _template_row(row) -> dict[str, Any]:
     return dict(row)
 
@@ -850,13 +821,32 @@ async def list_message_templates(
     """
     async with _conn() as conn:
         if kind is not None and lang is not None:
-            cursor = await conn.execute(_TEMPLATES_BY_PAIR, (str(kind), str(lang)))
+            cursor = await conn.execute(
+                "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+                "FROM message_templates WHERE kind = ? AND lang = ? "
+                "ORDER BY is_active DESC, updated_at DESC, id DESC",
+                (str(kind), str(lang)),
+            )
         elif kind is not None:
-            cursor = await conn.execute(_TEMPLATES_BY_KIND, (str(kind),))
+            cursor = await conn.execute(
+                "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+                "FROM message_templates WHERE kind = ? "
+                "ORDER BY is_active DESC, updated_at DESC, id DESC",
+                (str(kind),),
+            )
         elif lang is not None:
-            cursor = await conn.execute(_TEMPLATES_BY_LANG, (str(lang),))
+            cursor = await conn.execute(
+                "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+                "FROM message_templates WHERE lang = ? "
+                "ORDER BY is_active DESC, updated_at DESC, id DESC",
+                (str(lang),),
+            )
         else:
-            cursor = await conn.execute(_TEMPLATES_ALL)
+            cursor = await conn.execute(
+                "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+                "FROM message_templates "
+                "ORDER BY is_active DESC, updated_at DESC, id DESC"
+            )
         rows = await cursor.fetchall()
         await cursor.close()
     return [_template_row(row) for row in rows]
@@ -866,7 +856,8 @@ async def get_message_template(template_id: int) -> dict[str, Any] | None:
     """One stored body, or ``None``."""
     async with _conn() as conn:
         cursor = await conn.execute(
-            _TEMPLATE_BY_ID,
+            "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+            "FROM message_templates WHERE id = ?",
             (int(template_id),),
         )
         row = await cursor.fetchone()
@@ -878,7 +869,8 @@ async def active_message_templates() -> list[dict[str, Any]]:
     """Only the rows the bot should render (``is_active = 1``)."""
     async with _conn() as conn:
         cursor = await conn.execute(
-            _TEMPLATES_ACTIVE
+            "SELECT id, kind, lang, name, body, is_active, created_at, updated_at "
+            "FROM message_templates WHERE is_active = 1 ORDER BY kind, lang"
         )
         rows = await cursor.fetchall()
         await cursor.close()
@@ -1746,7 +1738,14 @@ async def get_subscription_stats(period: str = "30d") -> dict[str, Any]:
     start = _period_start(period)
     labels, bucket_keys, bucket_format = subscription_chart_buckets(period)
     channels = await list_required_channels(enabled_only=True)
-    channel_ids = [int(channel["id"]) for channel in channels]
+    # "Active" means subscribed to every channel the gate actually asks for,
+    # which is the same set the API hands the bot: enabled *and* one where the
+    # bot is an administrator. A channel it cannot verify is listed in the
+    # breakdown (the operator should see it) but must not make the "active"
+    # number impossible to reach.
+    channel_ids = [
+        int(channel["id"]) for channel in channels if channel["bot_is_admin"]
+    ]
 
     subscribed_by_channel, left_by_channel = await _transition_counts(start)
     history = await _period_history(start)
