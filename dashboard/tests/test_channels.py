@@ -419,11 +419,11 @@ class TestTheStatistics:
         assert rows[0]["active"] == 3
         assert rows[0]["link"] == "https://t.me/koyura_news"
 
-    def test_the_page_no_longer_repeats_the_statistics(self, admin: TestClient):
-        """The numbers live on the dashboard now; this page must not keep a copy.
+    def test_the_page_keeps_only_the_gate_and_the_channels(self, admin: TestClient):
+        """No second copy of the statistics, and no card that only links to them.
 
-        Two pages rendering the same KPI row means two places to read the same
-        number, and one of them eventually shows a different period.
+        The numbers live on the dashboard; a card on this page that says "go
+        look over there" was a third thing to read and not a number at all.
         """
         self._seed()
         body = admin.get("/admin/channels").text
@@ -431,9 +431,17 @@ class TestTheStatistics:
                         "channel-kpis", "channel-stats-table",
                         "subscriptions-chart", "subscription-chart-data"):
             assert f'id="{element}"' not in body, f"{element} is duplicated on Channels"
-        # ... and it says where they went, with a link that goes there.
-        assert "Statistics — on Dashboard" in body
-        assert 'href="/"' in body
+        # ... and no link card either: the page is the switch and the list.
+        assert "channel-stats-link-card" not in body
+        assert "channel-stats-link" not in body
+        assert "Statistics — on Dashboard" not in body
+
+    def test_the_templates_mention_no_link_card(self):
+        """A leftover ``channel-stats-*`` id in any template would render again."""
+        templates = Path(__file__).resolve().parents[1] / "templates"
+        for template in templates.glob("*.html"):
+            source = template.read_text()
+            assert "channel-stats-link" not in source, template.name
 
     def test_the_page_keeps_no_period_selector(self, admin: TestClient):
         """One period switch on the panel: the dashboard's own range buttons."""
