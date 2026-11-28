@@ -1,14 +1,20 @@
-"""The engine's egress: the rule, the cache, ``--proxy`` and `blocked`.
+"""The engine's egress: the connection list, the cache, ``--proxy`` and `blocked`.
 
 What these tests pin is the part that only shows up in production:
 
-* the panel's answer is read **tolerantly** — an unknown mode, a URL with a
+* the panel's answer is read **tolerantly** — an unknown kind, a URL with a
   scheme yt-dlp cannot dial, or no panel at all means "direct", never a failed
   job;
+* **the first usable connection wins**: enabled, its rule covers the service,
+  and its last check did not fail; when only failed ones are left the first of
+  those is the last chance;
 * the assignment rule decides **per service**, in all three shapes, using the
   same extractor table the cookie lookup uses;
-* the ``--proxy`` flag reaches the real yt-dlp argument vector, before the URL,
-  and a WireGuard rule without a live tunnel adds nothing;
+* a WireGuard row dials the SOCKS address in ``status.json``, and a tunnel that
+  is not up is skipped rather than turned into a broken proxy;
+* a password never arrives over the wire: it is read from
+  ``EGRESS_PATH/secrets/<id>.txt`` when the URL is dialled;
+* the ``--proxy`` flag reaches the real yt-dlp argument vector, before the URL;
 * a datacentre block (`blocked`, `429`, `captcha`, Reddit's API 403) is
   classified as ``blocked`` — before ``auth``, because another cookie jar
   answers the same 403 — and ends the job with ``service_blocked``.
@@ -25,6 +31,7 @@ import tempfile
 import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -45,7 +52,13 @@ import egress  # noqa: E402
 TOKEN = os.environ["INTERNAL_API_TOKEN"]
 HEADERS = {"X-Internal-Token": TOKEN}
 
-PROXY = "socks5h://user:secret@10.0.0.5:1080"
+#: What the panel publishes: the URL as stored, with no login in it.
+PANEL_PROXY = "socks5h://10.0.0.5:1080"
+#: The credential the panel keeps in ``secrets/1.txt``, percent-encoded.
+CREDENTIAL = "user:secret"
+#: What the engine dials once it has read that file.
+PROXY = f"socks5h://{CREDENTIAL}@{PANEL_PROXY.split('://', 1)[1]}"
+SECOND = "http://10.0.0.9:3128"
 SOCKS = "10.8.0.2:11080"
 
 #: The exact strings the task recorded on the server.
@@ -59,26 +72,52 @@ BLOCKED_403 = "ERROR: [Reddit] Unable to download JSON metadata: HTTP Error 403:
 
 
 @pytest.fixture(autouse=True)
-def _fresh() -> Iterator[None]:
-    """A clean rule, cache and job table for every test."""
+def _fresh(monkeypatch, tmp_path) -> Iterator[Path]:
+    """A clean rule, cache, egress tree and job table for every test."""
+    root = tmp_path / "egress"
+    (root / "secrets").mkdir(parents=True)
+    monkeypatch.setenv("EGRESS_PATH", str(root))
     egress.reset_cache()
     cookie_store.reset_registry_cache()
     koyura_app.jobs.clear()
-    yield
+    yield root
     egress.reset_cache()
     cookie_store.reset_registry_cache()
     koyura_app.jobs.clear()
 
 
-def _payload(**overrides) -> dict:
-    payload = {
-        "mode": "manual",
-        "proxy_url": PROXY,
-        "wg_socks": "",
+def _secret(root: Path, credential: str = CREDENTIAL, connection_id: int = 1) -> None:
+    """Write the panel's password file (0600, like the panel writes it)."""
+    path = root / "secrets" / f"{connection_id}.txt"
+    path.write_text(credential + "\n")
+    path.chmod(0o600)
+
+
+def _tunnel(root: Path, **payload: object) -> None:
+    """Write the watcher's ``status.json``."""
+    (root / "status.json").write_text(json.dumps(payload))
+
+
+def _connection(**overrides: object) -> dict:
+    """One entry of the panel's list, with the documented defaults."""
+    entry: dict = {
+        "id": 1,
+        "name": "Primary",
+        "kind": "socks5h",
+        "url": PANEL_PROXY,
         "assignment": {"mode": "all", "services": []},
+        "enabled": True,
+        "status": "unknown",
     }
-    payload.update(overrides)
-    return payload
+    entry.update(overrides)
+    return entry
+
+
+def _payload(*connections: object, test_interval: int = 0) -> dict:
+    return {
+        "connections": list(connections) or [_connection()],
+        "test_interval": test_interval,
+    }
 
 
 @pytest.fixture()
@@ -123,56 +162,87 @@ def panel() -> Iterator:
 
 class TestRuleParsing:
     def test_the_documented_shape_is_read(self):
-        rule = egress.Rule.from_payload(_payload(assignment={"mode": "selected", "services": ["reddit"]}))
-        assert rule.mode == "manual"
-        assert rule.proxy_url == PROXY
-        assert rule.assignment_mode == "selected"
-        assert rule.services == ("reddit",)
+        rule = egress.Rule.from_payload(
+            _payload(
+                _connection(
+                    assignment={"mode": "selected", "services": ["reddit"]}
+                )
+            )
+        )
+        assert len(rule.connections) == 1
+        connection = rule.connections[0]
+        assert connection.id == 1
+        assert connection.kind == "socks5h"
+        assert connection.url == PANEL_PROXY
+        assert connection.assignment_mode == "selected"
+        assert connection.services == ("reddit",)
 
     def test_an_unreadable_payload_is_a_direct_connection(self):
-        for payload in (None, [], "manual", 3, {}):
+        for payload in (None, [], "manual", 3, {}, {"connections": "one"}):
             rule = egress.Rule.from_payload(payload)
-            assert rule.mode == "off", payload
+            assert rule.connections == (), payload
             assert rule.proxy_for("reddit") == ""
 
-    def test_an_unknown_mode_is_off(self):
-        assert egress.Rule.from_payload(_payload(mode="tunnel")).mode == "off"
+    def test_an_unknown_kind_is_dropped(self):
+        rule = egress.Rule.from_payload(_payload(_connection(kind="tunnel")))
+        assert rule.connections == ()
 
     def test_an_unknown_scheme_is_dropped(self):
-        rule = egress.Rule.from_payload(_payload(proxy_url="ftp://10.0.0.5:1"))
-        assert rule.proxy_url == ""
+        rule = egress.Rule.from_payload(
+            _payload(_connection(kind="http", url="ftp://10.0.0.5:1"))
+        )
+        assert rule.connections[0].url == ""
+        assert rule.proxy_for("reddit") == ""
 
     def test_a_url_with_whitespace_is_dropped(self):
-        rule = egress.Rule.from_payload(_payload(proxy_url="socks5h://x y:1"))
-        assert rule.proxy_url == ""
+        rule = egress.Rule.from_payload(
+            _payload(_connection(url="socks5h://x y:1"))
+        )
+        assert rule.connections[0].url == ""
 
-    @pytest.mark.parametrize(
-        "scheme", ["socks5", "socks5h", "http", "https"]
-    )
+    @pytest.mark.parametrize("scheme", ["socks5", "socks5h", "http", "https"])
     def test_all_four_schemes_survive(self, scheme: str):
         url = f"{scheme}://10.0.0.5:1080"
-        assert egress.Rule.from_payload(_payload(proxy_url=url)).proxy_url == url
+        rule = egress.Rule.from_payload(
+            _payload(_connection(kind=scheme, url=url))
+        )
+        assert rule.connections[0].url == url
 
     def test_an_unknown_assignment_mode_becomes_all(self):
-        rule = egress.Rule.from_payload(_payload(assignment={"mode": "some", "services": []}))
-        assert rule.assignment_mode == "all"
+        rule = egress.Rule.from_payload(
+            _payload(_connection(assignment={"mode": "some", "services": []}))
+        )
+        assert rule.connections[0].assignment_mode == "all"
 
     def test_a_missing_assignment_block_becomes_all(self):
-        payload = _payload()
-        payload.pop("assignment")
-        assert egress.Rule.from_payload(payload).assignment_mode == "all"
+        entry = _connection()
+        entry.pop("assignment")
+        rule = egress.Rule.from_payload(_payload(entry))
+        assert rule.connections[0].assignment_mode == "all"
 
-    def test_a_bare_socks_address_gets_socks5h(self):
-        payload = _payload(mode="wireguard", proxy_url="", wg_socks=SOCKS)
-        assert egress.Rule.from_payload(payload).wg_socks == f"socks5h://{SOCKS}"
+    def test_an_unknown_status_becomes_unknown(self):
+        rule = egress.Rule.from_payload(_payload(_connection(status="half-up")))
+        assert rule.connections[0].status == "unknown"
 
-    def test_a_full_socks_url_is_kept(self):
-        payload = _payload(mode="wireguard", proxy_url="", wg_socks=f"socks5://{SOCKS}")
-        assert egress.Rule.from_payload(payload).wg_socks == f"socks5://{SOCKS}"
+    def test_a_disabled_entry_is_read_as_disabled(self):
+        rule = egress.Rule.from_payload(_payload(_connection(enabled=False)))
+        assert rule.connections[0].enabled is False
 
-    def test_an_unknown_socks_scheme_is_dropped(self):
-        payload = _payload(mode="wireguard", proxy_url="", wg_socks=f"ftp://{SOCKS}")
-        assert egress.Rule.from_payload(payload).wg_socks == ""
+    def test_a_wireguard_entry_ignores_any_url(self):
+        """Its proxy is the tunnel's SOCKS address, not a stale URL."""
+        rule = egress.Rule.from_payload(
+            _payload(_connection(kind="wireguard", url=PANEL_PROXY))
+        )
+        assert rule.connections[0].url == ""
+
+    def test_an_entry_that_is_not_an_object_is_dropped(self):
+        rule = egress.Rule.from_payload(_payload("socks5h", _connection()))
+        assert len(rule.connections) == 1
+
+    def test_the_test_interval_is_carried_through(self):
+        rule = egress.Rule.from_payload(_payload(test_interval=30))
+        assert rule.test_interval == 30
+        assert rule.as_payload()["test_interval"] == 30
 
 
 # ---------------------------------------------------------------------------
@@ -183,49 +253,179 @@ class TestAssignment:
     def test_all_covers_every_service(self):
         rule = egress.Rule.from_payload(_payload())
         for service in ("reddit", "youtube", "", "anything"):
-            assert rule.applies_to(service) is True
+            assert rule.connections[0].applies_to(service) is True
 
     def test_selected_covers_only_the_list(self):
         rule = egress.Rule.from_payload(
-            _payload(assignment={"mode": "selected", "services": ["reddit"]})
+            _payload(_connection(assignment={"mode": "selected", "services": ["reddit"]}))
         )
-        assert rule.applies_to("reddit") is True
-        assert rule.applies_to("youtube") is False
-        assert rule.applies_to("") is False
+        assert rule.connections[0].applies_to("reddit") is True
+        assert rule.connections[0].applies_to("youtube") is False
+        assert rule.connections[0].applies_to("") is False
 
     def test_except_covers_everything_but_the_list(self):
         rule = egress.Rule.from_payload(
-            _payload(assignment={"mode": "except", "services": ["youtube"]})
+            _payload(_connection(assignment={"mode": "except", "services": ["youtube"]}))
         )
-        assert rule.applies_to("reddit") is True
-        assert rule.applies_to("youtube") is False
-        assert rule.applies_to("") is True
+        assert rule.connections[0].applies_to("reddit") is True
+        assert rule.connections[0].applies_to("youtube") is False
+        assert rule.connections[0].applies_to("") is True
 
-    def test_off_never_covers_anything(self):
+    def test_no_connections_never_covers_anything(self):
         rule = egress.Rule.off()
         assert rule.applies_to("reddit") is False
         assert rule.proxy_for("reddit") == ""
 
-    def test_manual_answers_with_the_url(self):
-        assert egress.Rule.from_payload(_payload()).proxy_for("reddit") == PROXY
-
-    def test_wireguard_answers_with_the_tunnel(self):
+    def test_the_service_name_is_normalised(self):
         rule = egress.Rule.from_payload(
-            _payload(mode="wireguard", proxy_url="", wg_socks=SOCKS)
+            _payload(_connection(assignment={"mode": "selected", "services": ["reddit"]}))
+        )
+        assert rule.connections[0].applies_to("Reddit") is True
+        assert rule.connections[0].applies_to(" reddit ") is True
+
+    def test_a_disabled_connection_is_not_a_candidate(self):
+        rule = egress.Rule.from_payload(_payload(_connection(enabled=False)))
+        assert rule.applies_to("reddit") is False
+        assert rule.proxy_for("reddit") == ""
+
+
+# ---------------------------------------------------------------------------
+# Which connection is dialled
+# ---------------------------------------------------------------------------
+
+class TestSelection:
+    def test_the_first_healthy_connection_wins(self, _fresh):
+        _secret(_fresh, "one:pass", 1)
+        _secret(_fresh, "two:pass", 2)
+        rule = egress.Rule.from_payload(
+            _payload(
+                _connection(id=1, status="unknown"),
+                _connection(id=2, url=SECOND, kind="http", status="ok"),
+            )
+        )
+        assert rule.proxy_for("reddit") == "socks5h://one:pass@10.0.0.5:1080"
+
+    def test_a_failed_connection_is_skipped(self, _fresh):
+        _secret(_fresh, "one:pass", 1)
+        _secret(_fresh, "two:pass", 2)
+        rule = egress.Rule.from_payload(
+            _payload(
+                _connection(id=1, status="fail"),
+                _connection(id=2, url=SECOND, kind="http", status="unknown"),
+            )
+        )
+        assert rule.proxy_for("reddit") == "http://two:pass@10.0.0.9:3128"
+
+    def test_when_only_failed_ones_are_left_the_first_is_the_last_chance(
+        self, _fresh
+    ):
+        _secret(_fresh, "one:pass", 1)
+        _secret(_fresh, "two:pass", 2)
+        rule = egress.Rule.from_payload(
+            _payload(
+                _connection(id=1, status="fail"),
+                _connection(id=2, url=SECOND, kind="http", status="fail"),
+            )
+        )
+        assert rule.proxy_for("reddit") == "socks5h://one:pass@10.0.0.5:1080"
+
+    def test_a_disabled_connection_is_skipped(self, _fresh):
+        _secret(_fresh, "one:pass", 1)
+        _secret(_fresh, "two:pass", 2)
+        rule = egress.Rule.from_payload(
+            _payload(
+                _connection(id=1, enabled=False),
+                _connection(id=2, url=SECOND, kind="http"),
+            )
+        )
+        assert rule.proxy_for("reddit") == "http://two:pass@10.0.0.9:3128"
+
+    def test_the_rule_decides_which_connection_answers(self, _fresh):
+        _secret(_fresh, "one:pass", 1)
+        _secret(_fresh, "two:pass", 2)
+        rule = egress.Rule.from_payload(
+            _payload(
+                _connection(
+                    id=1, assignment={"mode": "selected", "services": ["youtube"]}
+                ),
+                _connection(id=2, url=SECOND, kind="http"),
+            )
+        )
+        assert rule.proxy_for("reddit") == "http://two:pass@10.0.0.9:3128"
+        assert rule.proxy_for("youtube") == "socks5h://one:pass@10.0.0.5:1080"
+
+    def test_a_connection_with_no_url_is_not_dialled(self):
+        rule = egress.Rule.from_payload(
+            _payload(_connection(url=""), _connection(id=2, url=SECOND, kind="http"))
+        )
+        assert rule.proxy_for("reddit") == SECOND
+
+    def test_no_match_means_direct(self):
+        rule = egress.Rule.from_payload(
+            _payload(
+                _connection(assignment={"mode": "selected", "services": ["youtube"]})
+            )
+        )
+        assert rule.proxy_for("reddit") == ""
+
+    def test_the_password_is_read_from_the_secrets_tree(self, _fresh):
+        """The panel never sends it: the engine reads ``secrets/<id>.txt``."""
+        _secret(_fresh, "user:secret", 1)
+        rule = egress.Rule.from_payload(_payload())
+        assert rule.proxy_for("reddit") == PROXY
+        assert (PANEL_PROXY.split("://", 1)[1]) in rule.proxy_for("reddit")
+
+    def test_no_secret_file_means_no_login(self):
+        rule = egress.Rule.from_payload(_payload())
+        assert rule.proxy_for("reddit") == PANEL_PROXY
+
+    def test_a_url_that_already_has_a_login_is_not_rewritten(self, _fresh):
+        _secret(_fresh, "user:secret", 1)
+        rule = egress.Rule.from_payload(
+            _payload(_connection(url=PROXY))
+        )
+        assert rule.proxy_for("reddit") == PROXY
+
+    def test_wireguard_answers_with_the_tunnel(self, _fresh):
+        _tunnel(_fresh, state="up", socks=SOCKS)
+        egress.reset_cache()
+        rule = egress.Rule.from_payload(
+            _payload(_connection(kind="wireguard", url=""))
         )
         assert rule.proxy_for("reddit") == f"socks5h://{SOCKS}"
 
-    def test_a_wireguard_rule_without_a_tunnel_is_direct(self):
+    def test_a_dead_tunnel_is_skipped_for_the_next_connection(self, _fresh):
         """A dead tunnel must never become a half-configured proxy."""
-        rule = egress.Rule.from_payload(_payload(mode="wireguard", proxy_url="", wg_socks=""))
+        _tunnel(_fresh, state="down")
+        egress.reset_cache()
+        rule = egress.Rule.from_payload(
+            _payload(
+                _connection(id=1, kind="wireguard", url=""),
+                _connection(id=2, url=SECOND, kind="http"),
+            )
+        )
+        assert rule.proxy_for("reddit") == SECOND
+
+    def test_a_dead_tunnel_alone_means_direct(self, _fresh):
+        _tunnel(_fresh, state="error", error="handshake failed")
+        egress.reset_cache()
+        rule = egress.Rule.from_payload(
+            _payload(_connection(kind="wireguard", url=""))
+        )
         assert rule.proxy_for("reddit") == ""
 
-    def test_the_service_name_is_normalised(self):
-        rule = egress.Rule.from_payload(
-            _payload(assignment={"mode": "selected", "services": ["reddit"]})
-        )
-        assert rule.applies_to("Reddit") is True
-        assert rule.applies_to(" reddit ") is True
+    def test_the_tunnel_status_is_cached(self, _fresh):
+        _tunnel(_fresh, state="up", socks=SOCKS)
+        egress.reset_cache()
+        assert egress.wireguard_socks() == f"socks5h://{SOCKS}"
+        # A rewrite inside the TTL is not re-read: 45 s is the contract.
+        _tunnel(_fresh, state="down")
+        assert egress.wireguard_socks() == f"socks5h://{SOCKS}"
+
+    def test_a_broken_status_file_is_down(self, _fresh):
+        (_fresh / "status.json").write_text("{not json")
+        egress.reset_cache()
+        assert egress.wireguard_socks() == ""
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +434,7 @@ class TestAssignment:
 
 class TestCache:
     def test_an_unreachable_panel_means_direct(self):
-        assert egress.rule().mode == "off"
+        assert egress.rule().connections == ()
 
     def test_a_fetched_rule_is_cached(self, monkeypatch):
         calls: list[int] = []
@@ -246,7 +446,7 @@ class TestCache:
         monkeypatch.setattr(egress, "_fetch", _fetch)
         first = egress.rule()
         second = egress.rule()
-        assert first.mode == "manual"
+        assert len(first.connections) == 1
         assert second is first
         assert len(calls) == 1, "a second call inside the TTL must not refetch"
 
@@ -254,17 +454,33 @@ class TestCache:
         monkeypatch.setattr(
             egress, "_fetch", lambda: egress.Rule.from_payload(_payload())
         )
-        assert egress.rule().mode == "manual"
+        assert len(egress.rule().connections) == 1
         # Expire the cache, then make the panel vanish.
         monkeypatch.setattr(egress, "_expires", 0.0)
         monkeypatch.setattr(egress, "_fetch", lambda: None)
-        assert egress.rule().mode == "manual", "a panel restart must not reroute jobs"
+        assert len(egress.rule().connections) == 1, (
+            "a panel restart must not reroute jobs"
+        )
+
+    def test_a_fetched_list_is_cached_for_the_whole_ttl(self, monkeypatch):
+        calls: list[int] = []
+
+        def _fetch():
+            calls.append(1)
+            return egress.Rule.from_payload(_payload())
+
+        monkeypatch.setattr(egress, "_fetch", _fetch)
+        egress.rule()
+        egress.rule()
+        egress.rule()
+        assert len(calls) == 1
 
     def test_reset_forces_a_refetch(self, monkeypatch):
         """``reset_cache`` drops the answer; the next call asks the panel again.
 
-        It does not pin "off": the panel is the authority, so a reset followed
-        by a reachable panel must show that panel's rule, not a direct fallback.
+        It does not pin an empty list: the panel is the authority, so a reset
+        followed by a reachable panel must show that panel's list, not a direct
+        fallback.
         """
         calls: list[int] = []
 
@@ -273,27 +489,35 @@ class TestCache:
             return egress.Rule.from_payload(_payload())
 
         monkeypatch.setattr(egress, "_fetch", _fetch)
-        assert egress.rule().mode == "manual"
+        assert len(egress.rule().connections) == 1
         egress.reset_cache()
-        assert egress.rule().mode == "manual"
+        assert len(egress.rule().connections) == 1
         assert len(calls) == 2, "the cache was dropped, so the panel was asked again"
 
     def test_reset_without_a_panel_falls_back_to_direct(self):
         egress.reset_cache()
-        assert egress.rule().mode == "off"
+        assert egress.rule().connections == ()
 
     def test_the_ttl_is_under_a_minute(self):
         assert 30 <= egress.CACHE_TTL_SECONDS <= 60
 
-    def test_describe_names_the_mode_and_scope_but_never_the_url(self):
+    def test_describe_counts_the_states_but_never_the_url(self):
         rule = egress.Rule.from_payload(
-            _payload(assignment={"mode": "selected", "services": ["reddit"]})
+            _payload(
+                _connection(id=1, status="ok"),
+                _connection(id=2, url=SECOND, kind="http", status="fail"),
+            )
         )
         described = rule.describe()
-        assert "manual" in described
-        assert "reddit" in described
+        assert "2/2 enabled" in described
+        assert "ok:1" in described
+        assert "fail:1" in described
         assert "secret" not in described
-        assert PROXY not in described
+        assert PANEL_PROXY not in described
+        assert SECOND not in described
+
+    def test_describe_of_an_empty_list_says_off(self):
+        assert egress.Rule.off().describe() == "off"
 
 
 # ---------------------------------------------------------------------------
@@ -329,12 +553,12 @@ class TestPanelAddress:
         assert egress.dashboard_source() == "default"
 
     def test_a_native_panel_address_is_actually_used(self, monkeypatch, panel):
-        """Only ``DASHBOARD_URL`` set: the rule the panel holds must apply."""
+        """Only ``DASHBOARD_URL`` set: the list the panel holds must apply."""
         monkeypatch.delenv("KOYURA_DASHBOARD_URL", raising=False)
         monkeypatch.setenv("DASHBOARD_URL", panel())
         egress.reset_cache()
-        assert egress.rule().mode == "manual"
-        assert egress.proxy_for_url("https://www.reddit.com/r/x") == PROXY
+        assert len(egress.rule().connections) == 1
+        assert egress.proxy_for_url("https://www.reddit.com/r/x") == PANEL_PROXY
 
     def test_the_engine_name_still_wins_end_to_end(self, monkeypatch, panel):
         """Both set: the panel at ``KOYURA_DASHBOARD_URL`` is the one dialled."""
@@ -342,7 +566,7 @@ class TestPanelAddress:
         # A closed port, so reading the wrong name cannot look like success.
         monkeypatch.setenv("DASHBOARD_URL", "http://127.0.0.1:9")
         egress.reset_cache()
-        assert egress.rule().mode == "manual"
+        assert len(egress.rule().connections) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +607,7 @@ class TestDiagnostics:
         with caplog.at_level(logging.WARNING, logger="koyura.engine.egress"):
             for expected in (0, 0, 1):
                 monkeypatch.setattr(egress, "_expires", 0.0)
-                assert egress.rule().mode == "off"
+                assert egress.rule().connections == ()
                 warnings = self._lines(caplog, "could not be read", logging.WARNING)
                 assert len(warnings) == expected
         message = self._lines(caplog, "could not be read", logging.WARNING)[0].getMessage()
@@ -403,7 +627,7 @@ class TestDiagnostics:
 
             monkeypatch.setenv("KOYURA_DASHBOARD_URL", panel())
             monkeypatch.setattr(egress, "_expires", 0.0)
-            assert egress.rule().mode == "manual"
+            assert len(egress.rule().connections) == 1
             assert self._lines(caplog, "answers again", logging.INFO), (
                 "a recovered panel has to be visible too"
             )
@@ -420,14 +644,30 @@ class TestDiagnostics:
 # ---------------------------------------------------------------------------
 
 class TestEndpoint:
-    def test_it_answers_the_rule(self, monkeypatch):
+    def test_it_answers_the_list(self, monkeypatch):
         monkeypatch.setattr(
             egress, "_fetch", lambda: egress.Rule.from_payload(_payload())
         )
         client = koyura_app.app.test_client()
         response = client.get("/api/egress", headers=HEADERS)
         assert response.status_code == 200
-        assert response.get_json() == _payload()
+        body = response.get_json()
+        assert set(body) == {"connections", "test_interval"}
+        assert body["connections"][0]["url"] == PANEL_PROXY
+        assert body["connections"][0]["kind"] == "socks5h"
+        assert body["connections"][0]["status"] == "unknown"
+
+    def test_it_never_answers_a_login(self, monkeypatch, _fresh):
+        """The credential lives in the secrets tree, not in the answer."""
+        _secret(_fresh, "user:topsecret", 1)
+        monkeypatch.setattr(
+            egress, "_fetch", lambda: egress.Rule.from_payload(_payload())
+        )
+        body = koyura_app.app.test_client().get(
+            "/api/egress", headers=HEADERS
+        ).get_json()
+        assert "topsecret" not in json.dumps(body)
+        assert "user:" not in body["connections"][0]["url"]
 
     def test_it_needs_the_internal_token(self, monkeypatch):
         monkeypatch.setattr(
@@ -436,16 +676,11 @@ class TestEndpoint:
         client = koyura_app.app.test_client()
         assert client.get("/api/egress").status_code == 401
 
-    def test_an_off_rule_answers_the_documented_shape(self):
+    def test_an_empty_list_answers_the_documented_shape(self):
         body = koyura_app.app.test_client().get(
             "/api/egress", headers=HEADERS
         ).get_json()
-        assert body == {
-            "mode": "off",
-            "proxy_url": "",
-            "wg_socks": "",
-            "assignment": {"mode": "all", "services": []},
-        }
+        assert body == {"connections": [], "test_interval": 0}
 
 
 # ---------------------------------------------------------------------------
@@ -481,19 +716,22 @@ class TestCommand:
 # ---------------------------------------------------------------------------
 
 class TestProxyForUrl:
-    def test_a_manual_rule_covers_a_reddit_url(self, monkeypatch):
+    def test_a_connection_covers_a_reddit_url(self, monkeypatch):
         monkeypatch.setattr(
             egress, "_fetch", lambda: egress.Rule.from_payload(_payload())
         )
-        assert egress.proxy_for_url("https://www.reddit.com/r/x") is not None
-        assert egress.proxy_for_url("https://www.reddit.com/r/x") != ""
+        assert egress.proxy_for_url("https://www.reddit.com/r/x") == PANEL_PROXY
 
     def test_a_selected_rule_skips_an_unlisted_service(self, monkeypatch):
         monkeypatch.setattr(
             egress,
             "_fetch",
             lambda: egress.Rule.from_payload(
-                _payload(assignment={"mode": "selected", "services": ["reddit"]})
+                _payload(
+                    _connection(
+                        assignment={"mode": "selected", "services": ["reddit"]}
+                    )
+                )
             ),
         )
         assert egress.proxy_for_url("https://www.reddit.com/r/x") != ""
@@ -504,11 +742,23 @@ class TestProxyForUrl:
             egress,
             "_fetch",
             lambda: egress.Rule.from_payload(
-                _payload(assignment={"mode": "except", "services": ["youtube"]})
+                _payload(
+                    _connection(
+                        assignment={"mode": "except", "services": ["youtube"]}
+                    )
+                )
             ),
         )
         assert egress.proxy_for_url("https://www.reddit.com/r/x") != ""
         assert egress.proxy_for_url("https://www.youtube.com/watch?v=x") == ""
+
+    def test_a_failed_connection_is_used_as_the_last_chance(self, monkeypatch):
+        monkeypatch.setattr(
+            egress,
+            "_fetch",
+            lambda: egress.Rule.from_payload(_payload(_connection(status="fail"))),
+        )
+        assert egress.proxy_for_url("https://www.reddit.com/r/x") == PANEL_PROXY
 
     def test_an_unreachable_panel_means_direct(self):
         assert egress.proxy_for_url("https://www.reddit.com/r/x") == ""
