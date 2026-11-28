@@ -40,6 +40,29 @@ Set either `DASHBOARD_PASSWORD` or `DASHBOARD_PASSWORD_HASH`, not both.
 | `LOGIN_RATE_LIMIT_WINDOW_SECONDS` | no | `300` | Length of that window. |
 | `TRUST_PROXY_HEADERS` | no | `false` | Honour `X-Forwarded-For` / `X-Forwarded-Proto`. Enable only behind a reverse proxy you control, otherwise clients can spoof their address. |
 | `MARK_STALE_ON_STARTUP` | no | `true` | On start, mark downloads left in `started`/`downloading` as failed. The engine's job table is in memory, so those rows can never finish. |
+| `BOT_TOKEN` | yes | — | Also read by the dashboard: `Admin → Channels` validates a channel with `getChat`/`getChatMember`, which needs the bot's own token. It is never logged — `dashboard/logging_setup.py` pins `httpx`/`httpcore` to WARNING and redacts the secret and any `bot<id>:<secret>` fragment from every handler. |
+| `TELEGRAM_BOT_API_URL` | no | `https://api.telegram.org` | The Bot API the panel probes. Compose points it at the self-hosted server (`http://telegram-bot-api:8081`), so a channel is checked exactly where the bot checks it. |
+
+### The subscription gate
+
+`Admin → Channels` turns the mandatory-subscription feature on and off. It is
+**off by default**, so an upgraded deployment behaves exactly as before; the
+channels stay stored while it is off, so the configuration can be prepared in
+advance. Three things the page states plainly:
+
+* a channel where **the bot is not an administrator** cannot be verified
+  (`getChatMember` answers "not a member" for everyone), so it is stored, marked
+  "bot is not an administrator", and kept out of the gate;
+* the gate needs the switch **and** at least one working channel — switching it
+  on with none says so instead of silently doing nothing;
+* the bot picks a change up within a minute (the same 45 s settings cache), so
+  no restart is needed.
+
+The `subscriptions` table records one row per state **transition**
+(`subscribed` → `left`), which is why "unsubscribed in the last 7 days" is a
+count and not an estimate. The bot re-checks active users once a day
+(`SUBSCRIPTION_SWEEP_INTERVAL_SECONDS`, `SUBSCRIPTION_SWEEP_LIMIT`); a failed
+check changes nothing.
 
 ## Media engine and limits
 

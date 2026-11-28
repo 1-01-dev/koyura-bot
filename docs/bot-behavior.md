@@ -656,3 +656,146 @@ label follows the language (`Back` / `Назад`).
 
 The four patterns are separate handlers, so the card router's contract
 (`^(dl|fmt|qty):` and its four-field payload) is unchanged.
+
+---
+
+## 11. The subscription gate
+
+The bot can ask a new user to subscribe to the owner's channels before it does
+anything for them. The whole feature is **off by default**: an upgraded
+deployment behaves exactly as it did before until an operator turns it on.
+
+### The one switch, and the two conditions
+
+`Admin → Channels` carries a master switch stored as one row:
+
+```text
+settings.subscriptions.enabled   "true" / "false"   (absent = off)
+```
+
+The bot reads the switch in `GET /api/bot-settings` and the channel list in
+`GET /api/subscriptions` (both `X-Internal-Token`, both cached 45 s). It answers
+"is there a gate?" with **one** question — `bot/subscriptions.py:Gate.active()` —
+which needs both halves:
+
+| Switch | Enabled channels the bot can verify | Gate |
+| --- | --- | --- |
+| off | any | **none** — the bot never mentions subscribing |
+| on | none | **none** — a list of zero channels cannot be asked for |
+| on | one or more | **on** — every one of them must be subscribed |
+
+The third column only counts channels where **the bot is an administrator**.
+`getChatMember` answers "not a member" for every user when the bot is not an
+admin, so such a channel can never be passed; the panel stores it, says so in
+words ("bot is not an administrator"), and keeps it out of the gate. The API
+reports those rows in `unusable` so the page and the bot cannot disagree.
+
+### Where the gate appears
+
+Two entry points, one rule:
+
+* **after the language screen** — the `lang:` tap answers with the gate instead
+  of the welcome. `/start` with a saved language does the same. The welcome
+  screen is what the user reaches by *passing* the gate;
+* **before any ordinary action** — a link message from an unsubscribed user is
+  answered with the gate instead of a preview card. Nothing is downloaded and
+  the engine is never called.
+
+A passed gate is remembered for a day (`user_prefs.subscription_passed_at`, an
+additive column). Within that day the bot does not ask Telegram again; the
+nightly sweep in `bot/subscription_sweep.py` re-checks the users the panel
+reports as active and clears the flag for anyone who left.
+
+### The screen
+
+```text
+One more step:
+To use the bot, subscribe to these channels:
+
+  • Koyura · news
+  • Koyura · chat
+
+Tap a channel to open it, then tap "Check subscription".
+[Open channel: Koyura · news] [Open channel: Koyura · chat] [Check subscription]
+```
+
+Each channel is a **URL** button (tapping it opens the channel; the bot never
+sees the tap). `Check subscription` is the one callback, `sub:check`.
+
+### What counts as subscribed
+
+`getChatMember(channel, user_id)` decides, and only Telegram's answer does:
+
+| Status | Counts as subscribed |
+| --- | --- |
+| `member`, `administrator`, `creator` | yes |
+| `restricted` | yes — a restricted member is a member |
+| `left`, `kicked` | no |
+| anything else | no (the gate exists to be passed on purpose) |
+
+Three outcomes, three answers, and they never blur into each other:
+
+| Outcome | `query.answer` | The screen |
+| --- | --- | --- |
+| subscribed | (silent) | replaced by the welcome |
+| not subscribed | alert naming the missing channels | rewritten in place, **same buttons** |
+| the call failed | alert: "could not check, try again later" | unchanged |
+
+A failed call is deliberately neither a pass nor a refusal: a network error must
+never read as "you are not subscribed", and must never let the user through.
+
+### The history and the unsubscribe count
+
+Every verdict is posted to the panel (`POST /api/subscriptions/events`), which
+writes `subscriptions` rows:
+
+```sql
+subscriptions(id, user_id, channel_id, state, changed_at)
+```
+
+**One row per state transition, not per observation.** `record_subscription`
+compares the wanted state with the last row for that pair and writes only when
+it differs; a `left` with no `subscribed` before it is not a transition and is
+not written. Two consequences that make the numbers trustworthy:
+
+* the daily sweep can re-post the same verdict every day without inflating
+  anything (`written: false` is the normal answer);
+* "unsubscribed in the last 7 days" is a count of rows, not a guess — it is
+  exactly the number of `subscribed → left` transitions in that window.
+
+The bot's sweep (`subscription_sweep_loop`) runs once a day, starts ten minutes
+after boot, walks the active users **sequentially** with a 50 ms pause, caps one
+run at `SUBSCRIPTION_SWEEP_LIMIT` (200), and changes nothing when a check fails.
+
+### Costs
+
+* one `getChatMember` per enabled channel when the gate is passed (twice for a
+  "still not subscribed" answer, because the screen names what is missing);
+* one per active user per channel per day, in the nightly sweep;
+* nothing at all while the switch is off.
+
+### `callback_data`
+
+| Scheme | Origin | Shape |
+| --- | --- | --- |
+| `sub:check` | the gate screen | the one actionable button |
+| `sub:open:<id>` | a channel button | never delivered — the URL is on the button |
+
+`^sub:` is its own handler, so a gate button never looks like a download, a
+language switch or Back.
+
+### Templates
+
+The gate's texts are message kinds, so the owner can reword them in
+`Admin → Bot settings → Message templates` without touching the code:
+
+| Kind | Category | Placeholders |
+| --- | --- | --- |
+| `subscription.gate` | onboarding | `@channels` |
+| `subscription.missing` | onboarding | `@missing` |
+| `subscription.error` | onboarding | — |
+| `button.subscription_check` | buttons | — |
+| `button.subscription_open` | buttons | — |
+
+All five exist in `en` and `ru`, and `docs/message-templates.md` is generated
+from the same catalogue.
