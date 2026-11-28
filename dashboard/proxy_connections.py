@@ -602,14 +602,13 @@ def _rename_credential(stored: str, username: str) -> str:
     """The stored credential with a new username and its old password.
 
     The file holds ``user:password`` percent-encoded; the password half is
-    already encoded, so only the username is quoted again.
+    already encoded, so only the username is quoted again. An empty file means
+    there is no password to keep — writing ``user:`` would invent one.
     """
     if not stored:
-        return credential_for(username, "")
+        return ""
     _user, _, password = stored.partition(":")
-    return credential_for(username, unquote(password)) if password else credential_for(
-        username, ""
-    )
+    return credential_for(username, unquote(password))
 
 
 async def delete_connection(connection_id: int) -> bool:

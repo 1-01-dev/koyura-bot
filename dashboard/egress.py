@@ -196,6 +196,9 @@ def mask_proxy_url(raw: object) -> str:
     except ValueError:
         return "***"
     host = parts.hostname or ""
+    if ":" in host:
+        # An IPv6 literal only survives a round trip with its brackets.
+        host = f"[{host}]"
     try:
         port = parts.port
     except ValueError:
