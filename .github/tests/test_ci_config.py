@@ -117,6 +117,41 @@ def test_ci_installs_the_requirements_it_declares():
         assert requirements.is_file(), f"{requirements} is missing"
 
 
+def test_the_dashboard_job_installs_the_runtime_set():
+    """The panel package that was deployed without PyYAML has to be caught here.
+
+    ``dashboard/message_styles.py`` imports ``yaml`` at runtime, so a CI job
+    that installed some other file would stay green while the image answered
+    400 on every style apply. ``requirements-dev.txt`` starts with
+    ``-r requirements.txt``; this pins that the job keeps using it, and that
+    the runtime file really is what the matrix names for the dashboard.
+    """
+    matrix = load(CI_PATH)["jobs"]["tests"]["strategy"]["matrix"]
+    entry = next(item for item in matrix["include"] if item["service"] == "dashboard")
+    assert entry["requirements"] == "requirements-dev.txt"
+
+    dev = (REPO_ROOT / "dashboard" / entry["requirements"]).read_text().splitlines()
+    includes = [
+        line.split("#", 1)[0].strip()
+        for line in dev
+        if line.split("#", 1)[0].strip().startswith("-r ")
+    ]
+    assert "-r requirements.txt" in includes, (
+        "the dashboard test job must install the runtime requirements too"
+    )
+
+    runtime = (REPO_ROOT / "dashboard" / "requirements.txt").read_text()
+    declared = {
+        line.split("#", 1)[0].split("<", 1)[0].split(">", 1)[0].split("=", 1)[0].strip().lower()
+        for line in runtime.splitlines()
+        if line.split("#", 1)[0].strip() and not line.strip().startswith("#")
+    }
+    assert "pyyaml" in declared, (
+        "dashboard/requirements.txt must declare pyyaml: the panel parses the "
+        "style files with it, and the image installs only this file"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Build context and image naming
 # ---------------------------------------------------------------------------
