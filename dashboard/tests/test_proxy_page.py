@@ -148,6 +148,22 @@ def test_the_empty_state_says_what_to_do(admin):
     body = admin.get("/admin/proxy").text
     assert "No connections yet" in body
     assert "Add a proxy or WireGuard tunnel to route service traffic." in body
+    assert 'aria-hidden="true">空</span>' in body
+
+
+def test_the_empty_state_does_not_repeat_the_add_button(admin):
+    """One "+ Add connection" per screen: the header's.
+
+    The empty state used to carry a second copy of the button, directly under a
+    sentence that says the same thing. The header keeps the only one, so the
+    page has one way to open the editor and a phone's first view is not two
+    identical calls to action.
+    """
+    body = admin.get("/admin/proxy").text
+    assert body.count("+ Add connection") == 1
+    empty = body.split('id="proxy-empty"', 1)[1].split("</div>", 1)[0]
+    assert "Add connection" not in empty
+    assert 'id="proxy-empty-add"' not in body
 
 
 def test_a_row_carries_the_five_columns_and_the_actions(admin):
@@ -185,11 +201,20 @@ def test_the_status_badge_matches_the_stored_verdict(admin):
     assert "connection refused" in body
 
 
-def test_the_wireguard_card_reports_the_watcher(admin):
+def test_the_wireguard_config_lives_in_the_editor_not_a_second_card(admin):
+    """The tunnel is added from the same dialog as a proxy: one upload, one row.
+
+    There used to be a second card (``#wireguard-card``) with its own upload,
+    status table, Refresh and Disconnect — a duplicate of what the editor's
+    WireGuard fields already do. It is gone; the file field, the path hint and
+    the watcher's status are in the dialog.
+    """
     body = admin.get("/admin/proxy").text
-    assert 'id="wireguard-card"' in body
-    assert 'name="wg_file"' in body
-    assert "no report yet" in body.lower()
+    assert 'id="wireguard-card"' not in body
+    assert 'id="wireguard-form"' not in body
+    assert 'id="wg-file"' not in body
+    assert 'id="wg-status"' not in body
+    assert 'name="wg_file"' in body, "the editor's upload disappeared too"
 
 
 # ---------------------------------------------------------------------------

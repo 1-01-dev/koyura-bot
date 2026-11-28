@@ -765,22 +765,38 @@ def page_row(row: dict) -> dict:
     ``has_password`` is the only thing the editor needs to know about the
     secret: whether to say "set" under the empty password field. The value
     itself stays in ``EGRESS_PATH/secrets/<id>.txt`` and never enters the page.
+
+    A ``wireguard`` row is the one exception to "the row only knows its own
+    verdict": before anyone presses Test it has no verdict of its own, and the
+    honest state of the tunnel is the watcher's report — so its badge reads
+    ``status.json`` instead of saying ``unknown`` about a tunnel that is up.
     """
     url = str(row.get("url") or "")
+    is_tunnel = str(row.get("kind") or "") == WIREGUARD_KIND
+    tunnel = egress.read_status() if is_tunnel else None
     return {
         "id": int(row["id"]),
         "name": str(row.get("name") or ""),
         "kind": str(row.get("kind") or ""),
         "kind_label": kind_label(row.get("kind")),
-        "is_wireguard": str(row.get("kind") or "") == WIREGUARD_KIND,
+        "is_wireguard": is_tunnel,
         "url": egress.mask_proxy_url(url),
+        "address_label": (
+            f"tunnel · {row.get('config_path') or egress.wireguard_path()}"
+            if is_tunnel
+            else (egress.mask_proxy_url(url) or "no URL")
+        ),
         "assignment_mode": str(row.get("assignment_mode") or "all"),
         "assignment_label": assignment_label(row),
         "services": services_of(row),
         "enabled": bool(row.get("enabled")),
         "enabled_label": enabled_label(row),
-        "status": status_label(row),
-        "status_badge": STATUS_BADGES.get(status_label(row), "badge"),
+        "status": tunnel.label() if tunnel else status_label(row),
+        "status_badge": (
+            f"badge {tunnel.badge()}"
+            if tunnel
+            else STATUS_BADGES.get(status_label(row), "badge")
+        ),
         "last_test_at": format_when(row.get("last_test_at")),
         "last_test_result": str(row.get("last_test_result") or ""),
         "has_password": bool(str(row.get("password_ref") or "")),

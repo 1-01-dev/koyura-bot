@@ -561,9 +561,7 @@ ADMIN_SECTION_PARAMS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "proxy_toggled",
             "proxy_tested",
             "proxy_error",
-            "wg_saved",
             "wg_removed",
-            "status_refreshed",
             "test_interval",
             # The retired single-rule form's own parameter: an old bookmark or a
             # redirect already in a browser still has to land on Proxy.
@@ -640,18 +638,16 @@ def _human_size(value: int, *, gb_decimals: int = 1, kb_fallback: bool = False) 
 
 def _proxy_notice(
     *,
-    wg_saved: int = 0,
     wg_removed: int = 0,
     test_interval: str | None = None,
 ) -> str | None:
     """The one-line notice above the Proxy page's table.
 
     The page itself updates a row without a reload, so this notice answers the
-    two actions that *do* navigate (a tunnel upload, a disconnect) and the one
-    setting that is a plain form post (the automatic-test interval).
+    one action that removes something with a file behind it (a tunnel
+    disconnect) and the one setting that is a plain form post (the
+    automatic-test interval).
     """
-    if wg_saved:
-        return "WireGuard config written. The server watcher applies the tunnel."
     if wg_removed:
         return "WireGuard config removed. The engine is back to a direct connection."
     if test_interval:
@@ -945,7 +941,6 @@ async def admin_section_page(
     proxy_toggled: int = 0,
     proxy_tested: int = 0,
     proxy_error: str | None = None,
-    wg_saved: int = 0,
     wg_removed: int = 0,
     test_interval: str | None = None,
     channel_period: str | None = None,
@@ -1015,7 +1010,6 @@ async def admin_section_page(
         # history.
         context.update(await proxy_connections.page_context())
         context["proxy_notice"] = _proxy_notice(
-            wg_saved=wg_saved,
             wg_removed=wg_removed,
             test_interval=test_interval,
         )
@@ -1600,7 +1594,12 @@ async def create_proxy_connection(request: Request) -> Response:
     user, form = prologue
 
     try:
+        _write_uploaded_wireguard(form)
         row = await proxy_connections.create_connection(**_proxy_form_payload(form))
+    except egress.EgressError as error:
+        return await _proxy_error_answer(
+            request, user, str(error), code="InvalidWireGuard"
+        )
     except proxy_connections.ProxyConnectionError as error:
         return await _proxy_error_answer(request, user, str(error), code=error.code)
 
@@ -1610,6 +1609,23 @@ async def create_proxy_connection(request: Request) -> Response:
     if _proxy_wants_json(request):
         return _proxy_row_answer(row, status_code=201)
     return _proxy_redirect(proxy_saved=1)
+
+
+def _write_uploaded_wireguard(form: FormData) -> None:
+    """Store the `.conf` the dialog sent, when it sent one.
+
+    The tunnel is one file and one watcher: adding a `wireguard` row *is* the
+    upload, so the editor's file field writes `EGRESS_PATH/wg0.conf` (0600) and
+    `koyura-egress.path` applies it. A field left empty keeps whatever is on
+    disk — that is what makes the same dialog work for editing an existing
+    tunnel and for replacing its config. Nothing here reads the key back.
+    """
+    upload = form.get("wg_file")
+    if not upload or isinstance(upload, str):
+        return
+    if not getattr(upload, "filename", None):
+        return
+    egress.write_wireguard(upload.file.read())
 
 
 @router.post("/admin/proxy/connection/{connection_id}")
@@ -1626,8 +1642,13 @@ async def update_proxy_connection(request: Request, connection_id: int) -> Respo
             request, user, "That connection no longer exists.", code="NotFound"
         )
     try:
+        _write_uploaded_wireguard(form)
         row = await proxy_connections.update_connection(
             connection_id, **_proxy_form_payload(form)
+        )
+    except egress.EgressError as error:
+        return await _proxy_error_answer(
+            request, user, str(error), code="InvalidWireGuard", row=existing
         )
     except proxy_connections.ProxyConnectionError as error:
         return await _proxy_error_answer(
@@ -1773,41 +1794,13 @@ async def save_proxy_interval(request: Request) -> Response:
     return _proxy_redirect(test_interval=minutes)
 
 
-# --- the WireGuard config ---------------------------------------------------
+# --- deleting a tunnel ------------------------------------------------------
 #
-# The tunnel is one file and one watcher: uploading it is a separate action from
-# editing a row, because the file exists before (and after) the row that dials
-# it. `wireguard` in the editor only *names* the tunnel; these two endpoints
-# write and delete the config the host applies.
-
-@router.post("/admin/proxy/wireguard")
-async def upload_wireguard(request: Request) -> Response:
-    """Validate and store an uploaded ``.conf`` for the server's watcher.
-
-    The panel only writes the file: applying a tunnel needs root, and a
-    ``.path`` unit watches exactly this path. Nothing here reads the config back
-    or logs a byte of it — a private key is the whole point of the file.
-    """
-    prologue = await _proxy_request(request)
-    if isinstance(prologue, Response):
-        return prologue
-    user, form = prologue
-
-    upload = form.get("wg_file")
-    filename = getattr(upload, "filename", None)
-    if not upload or not filename or isinstance(upload, str):
-        return _proxy_redirect(proxy_error="Choose a WireGuard .conf file to upload.")
-    data = await upload.read()
-    try:
-        egress.write_wireguard(data)
-    except egress.EgressError as error:
-        return _proxy_redirect(proxy_error=str(error))
-
-    logging.getLogger("koyura.dashboard").info(
-        "WireGuard config written by %s (%d bytes)", user, len(data)
-    )
-    return _proxy_redirect(wg_saved=1)
-
+# The tunnel's config is written by the editor (it travels with the `wireguard`
+# row: `_write_uploaded_wireguard`), so the only action left for the file is its
+# removal. Removing a row is not the same thing: an operator may delete the
+# tunnel to add a different one, and a `wg0.conf` left behind would be applied by
+# the watcher with nothing on the page pointing at it.
 
 @router.post("/admin/proxy/wireguard/remove")
 async def remove_wireguard(request: Request) -> Response:
@@ -1830,15 +1823,6 @@ async def remove_wireguard(request: Request) -> Response:
         "WireGuard config %s by %s", "removed" if removed else "was already absent", user
     )
     return _proxy_redirect(wg_removed=1)
-
-
-@router.post("/admin/proxy/status")
-async def refresh_wireguard_status(request: Request) -> Response:
-    """Re-read ``status.json`` and show it (the page itself is the report)."""
-    prologue = await _proxy_request(request)
-    if isinstance(prologue, Response):
-        return prologue
-    return _proxy_redirect(status_refreshed=1)
 
 
 # ---------------------------------------------------------------------------

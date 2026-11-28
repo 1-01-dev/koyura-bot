@@ -189,13 +189,10 @@ export function initProxyPage() {
     });
   }
 
-  // The "Add connection" buttons are the editor's, but they belong to this card.
-  ['proxy-add', 'proxy-empty-add'].forEach((id) => {
-    const button = document.getElementById(id);
-    if (button) {
-      button.addEventListener('click', () => openEditor(null));
-    }
-  });
+  // One "+ Add connection", in the card header: the empty state is a sentence,
+  // not a second copy of the same button.
+  const addButton = document.getElementById('proxy-add');
+  if (addButton) addButton.addEventListener('click', () => openEditor(null));
 
   // The interval form is a plain POST: its CSRF token is rendered with it, and
   // the background loop reads the stored value on every sweep, so reloading the
