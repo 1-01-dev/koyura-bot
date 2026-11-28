@@ -141,3 +141,152 @@ def test_probe_media_uses_ffprobe(tmp_path, monkeypatch):
     assert calls == ["ffprobe"]
     assert probe["width"] == 1920
     assert probe["duration"] == 12.5
+
+
+# ---------------------------------------------------------------------------
+# A substituted track: audio only, and the player client that gets there
+# ---------------------------------------------------------------------------
+
+#: Every selector that would make yt-dlp fetch a *video* stream.
+VIDEO_SELECTOR_MARKERS = ("bv*", "bestvideo", "vcodec", "+bestaudio", "bestvideo+")
+
+
+def _track_audio_cmd(client="default,android"):
+    return koyura_app._build_download_cmd(
+        "track1",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "audio",
+        None,
+        youtube_client=client,
+    )
+
+
+def test_a_track_job_has_no_video_selector():
+    """The whole promise of the substitution is one MP3, so no video stream may
+    be selected: a ``bv*``/``bestvideo`` selector would download the picture too
+    and a ``+bestaudio`` merge would mean a second stream."""
+    cmd = _track_audio_cmd()
+    selector = cmd[cmd.index("-f") + 1]
+    assert selector == "bestaudio/best"
+    for marker in VIDEO_SELECTOR_MARKERS:
+        assert marker not in selector, marker
+
+
+def test_a_track_job_does_not_merge_output():
+    """``--merge-output-format`` is a video-only concept; with it in the command
+    the output could never be an MP3."""
+    cmd = _track_audio_cmd()
+    assert "--merge-output-format" not in cmd
+    assert "mp4" not in cmd
+
+
+def test_a_track_job_extracts_mp3():
+    cmd = _track_audio_cmd()
+    assert "-x" in cmd
+    assert cmd[cmd.index("--audio-format") + 1] == "mp3"
+
+
+def test_a_track_job_asks_for_the_cover_and_the_tags():
+    """The MP3 is tagged from the streaming metadata; the cover has to be
+    fetched for that to be possible."""
+    cmd = _track_audio_cmd()
+    assert "--write-thumbnail" in cmd
+    assert "--convert-thumbnails" in cmd
+
+
+def test_a_track_job_pins_the_youtube_player_clients():
+    cmd = _track_audio_cmd()
+    assert "--extractor-args" in cmd
+    value = cmd[cmd.index("--extractor-args") + 1]
+    assert value == "youtube:player_client=default,android"
+
+
+def test_an_ordinary_job_gets_no_extractor_args():
+    """Nothing outside the substitution path changes behaviour."""
+    assert "--extractor-args" not in koyura_app._build_download_cmd(
+        "plain", "https://example.com/v", "audio", None
+    )
+    assert "--extractor-args" not in koyura_app._build_download_cmd(
+        "plain", "https://example.com/v", "video", None
+    )
+
+
+def test_the_client_is_configurable(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_PLAYER_CLIENT", "android")
+    cmd = _track_audio_cmd(koyura_app.streaming.player_client())
+    assert cmd[cmd.index("--extractor-args") + 1] == "youtube:player_client=android"
+
+
+def test_the_search_and_the_download_agree_on_the_client():
+    """The hit the user is offered must be the hit that downloads, so the search
+    and the extraction are pinned to the same client list."""
+    import streaming
+
+    client = streaming.player_client()
+    search = streaming.search_cmd("youtube", "a b", python="py", client=client)
+    assert search[search.index("--extractor-args") + 1] == (
+        f"youtube:player_client={client}"
+    )
+    assert client in _track_audio_cmd()[_track_audio_cmd().index("--extractor-args") + 1]
+
+
+def test_the_info_lookup_for_a_candidate_pins_the_client(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, timeout):
+        captured["cmd"] = cmd
+        return 0, '{"title": "x", "formats": []}', "", False
+
+    monkeypatch.setattr(koyura_app, "_run_capture", fake_run)
+    cmd = koyura_app._build_info_cmd(
+        "https://www.youtube.com/watch?v=x",
+        youtube_client=koyura_app.streaming.player_client(),
+    )
+    assert "--extractor-args" in cmd
+    # The URL stays last: an option after it could be swallowed by it.
+    assert cmd[-1] == "https://www.youtube.com/watch?v=x"
+
+
+def test_a_job_for_a_track_carries_the_client_but_a_plain_one_does_not(monkeypatch):
+    """``/api/download`` records the client on a track job only."""
+    import streaming
+
+    monkeypatch.setattr(
+        koyura_app.job_queue, "submit", lambda *a, **k: _accepted()
+    )
+    # The engine must not dial Spotify for this: the block is what matters.
+    monkeypatch.setattr(koyura_app, "_track_payload", lambda url: {
+        "service": "spotify", "service_label": "Spotify", "title": "x",
+        "artist": "y", "duration": 200, "thumbnail": "",
+        "candidates": [
+            {"index": 1, "label": "1 · 3:20", "duration": 200,
+             "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+        ],
+    })
+
+    with koyura_app.app.test_client() as client:
+        plain = client.post(
+            "/api/download",
+            json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                  "format": "audio", "title": "x"},
+            headers=HEADERS,
+        ).get_json()
+        track_job = client.post(
+            "/api/download",
+            json={"url": "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT",
+                  "format": "audio", "title": "x",
+                  "candidate_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+            headers=HEADERS,
+        ).get_json()
+
+    plain_job = koyura_app.jobs[plain["job_id"]]
+    track_entry = koyura_app.jobs[track_job["job_id"]]
+    assert plain_job["youtube_client"] is None
+    assert track_entry["youtube_client"] == streaming.player_client()
+
+
+def _accepted():
+    return koyura_app.download_queue.Admission(
+        accepted=True, status="queued", position=1, wait_seconds=1,
+        estimate_seconds=2.0, queue_length=1,
+    )

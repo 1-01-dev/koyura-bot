@@ -557,6 +557,7 @@ def _build_info_cmd(
     *,
     cookies_path: str | None = None,
     proxy_url: str = "",
+    youtube_client: str | None = None,
 ) -> list[str]:
     """yt-dlp's argument vector for one metadata lookup.
 
@@ -565,8 +566,14 @@ def _build_info_cmd(
     panel's egress rule covers this service. Both are options in the option
     block, so the URL stays last. With neither the command is the plain one
     this endpoint always ran.
+
+    ``youtube_client`` pins the YouTube player clients for a substituted track;
+    ``None`` keeps every other lookup on yt-dlp's own choice.
     """
-    cmd = _yt_dlp_cmd("--no-playlist", "-j", "--no-warnings", url)
+    cmd = _yt_dlp_cmd("--no-playlist", "-j", "--no-warnings")
+    if youtube_client:
+        cmd += streaming.extractor_args(youtube_client)
+    cmd.append(url)
     if cookies_path:
         cmd = with_cookies(cmd, cookies_path)
     if proxy_url:
@@ -671,7 +678,8 @@ def _track_info(url: str) -> dict:
     target = str(chosen.get("url") or "")
 
     rc, stdout, stderr, timed_out = _run_capture(
-        _build_info_cmd(target), timeout=INFO_TIMEOUT
+        _build_info_cmd(target, youtube_client=streaming.player_client()),
+        timeout=INFO_TIMEOUT,
     )
     if timed_out or rc != 0 or not stdout.strip():
         logger.info(
@@ -726,11 +734,23 @@ def _download_target(url: str, candidate_url: object = None) -> str:
     return str(candidates[0].get("url"))
 
 
-def _build_download_cmd(job_id: str, url: str, format_choice: str, format_id: str | None) -> list[str]:
+def _build_download_cmd(
+    job_id: str,
+    url: str,
+    format_choice: str,
+    format_id: str | None,
+    *,
+    youtube_client: str | None = None,
+) -> list[str]:
     """Build the yt-dlp argument vector for a job.
 
     yt-dlp is invoked as ``<sys.executable> -m yt_dlp`` so the call works in a
     container and in a venv/systemd deployment without relying on PATH.
+
+    ``youtube_client`` pins the YouTube player clients for this one job; a
+    substituted track passes the same list its search used. ``None`` keeps the
+    plain command every other job gets, so nothing outside the substitution path
+    changes behaviour.
     """
     out_template = os.path.join(DOWNLOAD_DIR, f"{job_id}.%(ext)s")
     cmd = _yt_dlp_cmd(
@@ -745,6 +765,8 @@ def _build_download_cmd(job_id: str, url: str, format_choice: str, format_id: st
         "--throttled-rate", "50K",
         "--newline",
     )
+    if youtube_client:
+        cmd += streaming.extractor_args(youtube_client)
     if HLS_DOWNLOADER and HLS_DOWNLOADER != "native":
         cmd += ["--downloader", f"hls:{HLS_DOWNLOADER}"]
 
@@ -924,8 +946,17 @@ def _attempt_download(
     try the next cookie jar; everything else is terminal and already recorded
     on the job. ``proxy_url`` is the egress rule's answer for this service —
     empty for a direct connection — and the URL itself is never logged.
+
+    The YouTube player clients come from the job registry rather than a
+    parameter: only a substituted track sets ``youtube_client`` on its job, so
+    reading it here keeps every other job on yt-dlp's own choice without
+    threading a new argument through four call sites (the ``transcode`` field
+    already travels the same way).
     """
-    cmd = _build_download_cmd(job_id, url, format_choice, format_id)
+    youtube_client = (jobs.get(job_id) or {}).get("youtube_client")
+    cmd = _build_download_cmd(
+        job_id, url, format_choice, format_id, youtube_client=youtube_client
+    )
     if cookies_path:
         cmd = with_cookies(cmd, cookies_path)
     if proxy_url:
@@ -1593,6 +1624,7 @@ def start_download():
     # the chat picked instead. The source link is kept for the record, so the
     # dashboard shows what the user actually sent.
     source_url = url
+    is_track = streaming.parse_track_url(url) is not None
     try:
         url = _download_target(url, data.get("candidate_url"))
     except streaming.TrackError as exc:
@@ -1623,6 +1655,11 @@ def start_download():
             "status": "queued",
             "url": url,
             "source_url": source_url,
+            # A substituted track is fetched with the same YouTube player
+            # clients its search used, so the alternative the user chose is the
+            # alternative that downloads. ``None`` for every other job: yt-dlp
+            # keeps its own choice there.
+            "youtube_client": streaming.player_client() if is_track else None,
             "title": title,
             "uploader": uploader,
             "height_hint": height_hint,

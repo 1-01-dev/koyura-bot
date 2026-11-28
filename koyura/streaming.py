@@ -78,6 +78,24 @@ SERVICE_ENV: dict[str, str] = {
     "deezer": "DEEZER_SUBSTITUTE",
 }
 
+#: The yt-dlp YouTube player clients a substituted track is fetched with.
+#:
+#: YouTube now serves some videos to none of the clients yt-dlp tries first and
+#: answers "The following content is not available on this app" — a refusal that
+#: has nothing to do with the video being private or deleted, and one that the
+#: `android` client does not get. But `android` alone only ever exposes the
+#: muxed 360p stream for many videos, so it would cost the video picker its
+#: resolutions.
+#:
+#: A *list* is the answer rather than one client: yt-dlp merges the clients'
+#: format lists, so `default` still provides the full ladder (2160p down) where
+#: it works and `android` fills in the videos it refuses. Measured on the three
+#: IDs that failed: `default` alone failed two of them, `android` alone resolved
+#: all three but at 360p, and `default,android` resolved all three at full
+#: quality. Override with ``YOUTUBE_PLAYER_CLIENT``; ``default`` restores
+#: yt-dlp's own order.
+DEFAULT_YOUTUBE_PLAYER_CLIENT = "default,android"
+
 #: The yt-dlp search prefixes, in the order they are tried. SoundCloud is the
 #: fallback: YouTube is the better match, but it is not always there.
 SEARCH_PREFIXES: dict[str, str] = {"youtube": "ytsearch", "soundcloud": "scsearch"}
@@ -623,24 +641,64 @@ def format_clock(value: object) -> str:
     return f"{minutes}:{secs:02d}"
 
 
+def player_client() -> str:
+    """The ``YOUTUBE_PLAYER_CLIENT`` value (``default,android`` unless overridden).
+
+    Read at call time, like ``substitute_mode``: a test (and an operator who
+    edits the unit's ``Environment=``) does not need a new process to see the
+    change. An empty value falls back to the default rather than to yt-dlp's
+    own order: "unset" must not silently reintroduce the failure this exists
+    to avoid. ``default`` is how an operator opts back in to yt-dlp's choice.
+    """
+    return os.environ.get("YOUTUBE_PLAYER_CLIENT", "").strip() or (
+        DEFAULT_YOUTUBE_PLAYER_CLIENT
+    )
+
+
+def extractor_args(client: str | None = None) -> list[str]:
+    """The ``--extractor-args`` pair for one client list, or ``[]`` for none.
+
+    The value is passed as its own argv element (``--extractor-args`` plus
+    ``youtube:player_client=…``) because yt-dlp parses the pair, not the two
+    as one string. ``default`` is passed through as-is: it is yt-dlp's own
+    order and means "do not change anything", which is also what an empty
+    ``client`` asks for.
+    """
+    chosen = (player_client() if client is None else client).strip()
+    if not chosen:
+        return []
+    return ["--extractor-args", f"youtube:player_client={chosen}"]
+
+
 def search_cmd(
-    provider: str, query: str, count: int = SEARCH_COUNT, *, python: str | None = None
+    provider: str,
+    query: str,
+    count: int = SEARCH_COUNT,
+    *,
+    python: str | None = None,
+    client: str | None = None,
 ) -> list[str]:
     """The yt-dlp argv for one provider's search (``ytsearchN:`` / ``scsearchN:``).
 
     ``--flat-playlist`` is what makes this cheap: the search itself already
     returns the titles and durations, and extracting every hit fully would cost
     one network round trip per candidate.
+
+    The YouTube player clients are pinned here too. The search that lists a hit
+    and the extraction that opens it are two different requests, and the second
+    is where "not available on this app" appears; sending the same client list
+    to both keeps the alternative the user is offered the alternative that will
+    actually download.
     """
     prefix = SEARCH_PREFIXES.get(provider)
     if prefix is None:
         raise ValueError(f"Unknown search provider: {provider}")
     executable = python or sys.executable
-    return [
-        executable, "-m", "yt_dlp",
-        "-J", "--flat-playlist", "--no-warnings",
-        f"{prefix}{int(count)}:{query}",
-    ]
+    cmd = [executable, "-m", "yt_dlp", "-J", "--flat-playlist", "--no-warnings"]
+    if provider == "youtube":
+        cmd += extractor_args(client)
+    cmd.append(f"{prefix}{int(count)}:{query}")
+    return cmd
 
 
 def _tokens(text: object) -> set[str]:
@@ -705,8 +763,18 @@ def select_candidates(
     Returns the candidates plus how many hits were dropped for DRM, so the
     caller can tell "nothing matched" apart from "everything matched was
     protected".
+
+    A hit that reports **no duration** is kept rather than dropped. YouTube's
+    search intermittently answers with a full list in which every entry is
+    missing its duration (measured: one run in six), and the old rule — "a hit
+    with no duration cannot be trusted" — then rejected all ten results and the
+    caller fell through to SoundCloud, where a 198-second cover matched the
+    title and the track was silently a different recording. Those hits are
+    ranked after the ones whose length is known and confirmed, so a complete
+    answer still wins; they are only reached when the filter would otherwise
+    throw away the entire provider.
     """
-    scored: list[tuple[float, float, int, Candidate]] = []
+    scored: list[tuple[int, float, int, int, Candidate]] = []
     drm_skipped = 0
     for position, entry in enumerate(entries or []):
         if not isinstance(entry, dict):
@@ -721,20 +789,21 @@ def select_candidates(
         score = title_match(meta.title, title)
         if score < MIN_TITLE_MATCH:
             continue
-        if not duration_matches(meta.duration, entry.get("duration")):
+        found = duration_seconds(entry.get("duration"))
+        if found is not None and not duration_matches(meta.duration, found):
             continue
-        delta = abs(
-            (duration_seconds(entry.get("duration")) or 0)
-            - (duration_seconds(meta.duration) or 0)
-        )
+        # ``0`` sorts before ``1``: a measured duration beats an unknown one.
+        certainty = 0 if found is not None else 1
+        delta = abs(found - (duration_seconds(meta.duration) or 0)) if found else 0
         scored.append((
+            certainty,
             -score,
             delta,
             position,
             Candidate(url=url, title=title, duration=entry.get("duration"), provider=provider),
         ))
-    scored.sort(key=lambda item: (item[0], item[1], item[2]))
-    return [item[3] for item in scored[:limit]], drm_skipped
+    scored.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+    return [item[4] for item in scored[:limit]], drm_skipped
 
 
 SearchRunner = Callable[[str, str], object]

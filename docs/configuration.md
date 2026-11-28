@@ -233,7 +233,7 @@ decide what may be offered and what may be downloaded.
 
 Those three catalogues are DRM-only, and `yt-dlp` says so in as many words:
 
-```
+```text
 ERROR: [DRM] The requested site is known to use DRM protection. It will NOT be supported.
 ```
 
@@ -273,6 +273,38 @@ so there is no format or quality to choose.
 | `TRACK_SUBSTITUTE` | no | `auto` | `auto` resolves a track link to a downloadable version; `off` refuses it with "not supported", the behaviour before this existed. |
 | `SPOTIFY_SUBSTITUTE` | no | — | Per-service override of `TRACK_SUBSTITUTE`; also `APPLE_MUSIC_SUBSTITUTE` and `DEEZER_SUBSTITUTE`. |
 | `TRACK_CACHE_TTL_SECONDS` | no | `600` | How long a resolved track (its metadata and its alternatives) is reused. `0` disables the cache; each `/api/info` then costs a fresh search. |
+| `YOUTUBE_PLAYER_CLIENT` | no | `default,android` | yt-dlp's YouTube player clients for the search and the download of a substituted track. See below. |
+
+### Why `YOUTUBE_PLAYER_CLIENT` exists
+
+YouTube now answers some videos to every client yt-dlp tries first with
+
+```text
+ERROR: [youtube] <id>: The following content is not available on this app.
+```
+
+It has nothing to do with the video being private or deleted: the `android`
+client gets it fine. But `android` on its own only ever exposes the muxed 360p
+stream for many videos, so pinning it alone would cost the video picker its
+resolutions.
+
+A *list* is therefore the default. yt-dlp merges the clients' format lists, so
+`default` still provides the full ladder (2160p down) where it works and
+`android` fills in the videos it refuses. Measured on three IDs that failed:
+`default` alone failed two, `android` alone resolved all three but at 360p, and
+`default,android` resolved all three at full quality.
+
+The same list is used for the search that finds the alternatives and for opening
+the one that is picked, so the button the user chooses is the version that
+actually downloads. Only substituted tracks are affected: every other job keeps
+yt-dlp's own choice.
+
+| Value | Effect |
+| --- | --- |
+| `default,android` | both, in that order — the default |
+| `default` | yt-dlp's own choice; the behaviour before this existed |
+| `android` | widest coverage, but a 360p ceiling for video |
+
 
 The errors are codes, not yt-dlp lines, and the bot turns each into one sentence:
 

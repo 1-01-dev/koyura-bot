@@ -361,6 +361,63 @@ class TestSearchCommand:
             streaming.search_cmd("vimeo", "x")
 
 
+class TestPlayerClient:
+    """The YouTube client list that keeps "not available on this app" away.
+
+    YouTube serves some videos to none of the clients yt-dlp tries first and
+    answers *"The following content is not available on this app"* — measured on
+    two of the three IDs that a Spotify search turned up. The ``android`` client
+    does not get that refusal, but on its own it only exposes the muxed 360p
+    stream, so pinning it alone would cost the video picker its resolutions.
+    A *list* is therefore the default: yt-dlp merges the clients' format lists.
+    """
+
+    def test_the_default_is_a_list_rather_than_one_client(self):
+        assert streaming.player_client() == "default,android"
+
+    def test_the_default_argument_is_the_documented_one(self):
+        assert streaming.DEFAULT_YOUTUBE_PLAYER_CLIENT == "default,android"
+
+    def test_the_environment_overrides_it(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_PLAYER_CLIENT", "android")
+        assert streaming.player_client() == "android"
+        assert streaming.extractor_args() == [
+            "--extractor-args", "youtube:player_client=android"
+        ]
+
+    def test_an_empty_value_keeps_the_default(self, monkeypatch):
+        """An unset or blank variable must not silently restore the failure."""
+        monkeypatch.setenv("YOUTUBE_PLAYER_CLIENT", "   ")
+        assert streaming.player_client() == "default,android"
+
+    def test_default_is_how_an_operator_opts_out(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_PLAYER_CLIENT", "default")
+        assert streaming.extractor_args() == [
+            "--extractor-args", "youtube:player_client=default"
+        ]
+
+    def test_the_search_passes_it_as_its_own_argv_pair(self):
+        cmd = streaming.search_cmd("youtube", "a b", python="py")
+        assert cmd[cmd.index("--extractor-args") + 1] == (
+            "youtube:player_client=default,android"
+        )
+        # The query stays last, so yt-dlp cannot read it as the flag's value.
+        assert cmd[-1] == "ytsearch10:a b"
+
+    def test_a_non_youtube_provider_gets_no_youtube_flag(self):
+        cmd = streaming.search_cmd("soundcloud", "a b", python="py")
+        assert "--extractor-args" not in cmd
+
+    def test_an_explicit_client_wins_over_the_environment(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_PLAYER_CLIENT", "ios")
+        assert streaming.extractor_args("android") == [
+            "--extractor-args", "youtube:player_client=android"
+        ]
+
+    def test_no_client_means_no_flag(self):
+        assert streaming.extractor_args("") == []
+
+
 # ---------------------------------------------------------------------------
 # 4. Filtering the hits
 # ---------------------------------------------------------------------------
@@ -403,9 +460,39 @@ class TestFiltering:
         assert streaming.duration_matches(100, 115)      # 15 %
         assert not streaming.duration_matches(100, 130)
 
-    def test_a_hit_without_a_duration_is_dropped(self):
+    def test_a_hit_without_a_duration_is_kept_but_ranked_last(self):
+        """YouTube's search intermittently omits every duration.
+
+        Dropping those hits made the whole provider look empty and the caller
+        fall through to SoundCloud, where a longer cover matched the title — the
+        user silently got a different recording. They are offered instead, after
+        any hit whose length is known and confirmed.
+        """
         found, _ = streaming.select_candidates(
-            [entry("Rick Astley - Never Gonna Give You Up", None)], self.meta, "youtube"
+            [
+                entry("Rick Astley - Never Gonna Give You Up", None),
+                entry("Rick Astley - Never Gonna Give You Up (Official)", 213),
+            ],
+            self.meta,
+            "youtube",
+        )
+        assert len(found) == 2
+        assert found[0].duration == 213, "a measured duration must win"
+        assert found[1].duration is None
+
+    def test_an_all_durationless_answer_still_offers_the_track(self):
+        """The measured failure: ten hits, none with a duration, no candidates."""
+        hits = [entry(f"Rick Astley - Never Gonna Give You Up ({index})", None)
+                for index in range(10)]
+        found, _ = streaming.select_candidates(hits, self.meta, "youtube")
+        assert len(found) == streaming.MAX_CANDIDATES
+
+    def test_a_wrong_duration_is_still_dropped(self):
+        """An unknown length is forgivable; a known, wrong one is not."""
+        found, _ = streaming.select_candidates(
+            [entry("Rick Astley - Never Gonna Give You Up (Extended Mix)", 400)],
+            self.meta,
+            "youtube",
         )
         assert found == []
 
@@ -591,3 +678,66 @@ class TestResolveTrack:
         assert "ERROR" not in payload["error"]
         assert "yt-dlp" not in payload["error"]
         assert "DRM" not in payload["error"]
+
+
+class TestTheDurationlessSearchAnswer:
+    """The regression that made a substituted track the wrong recording.
+
+    YouTube's flat search sometimes answers with ten hits and no duration on any
+    of them (observed once in six runs). Every hit was then rejected, the
+    provider looked empty, and the code fell through to SoundCloud — where a
+    198 s cover matched the title and won because it was the only candidate.
+    """
+
+    meta = streaming.TrackMeta(
+        service="spotify", track_id="x", title="Never Gonna Give You Up",
+        artist="Rick Astley", duration=214.0,
+    )
+
+    def _durationless_youtube(self, count: int = 3) -> dict:
+        return {"entries": [
+            {"title": f"Rick Astley - Never Gonna Give You Up ({index})",
+             "duration": None,
+             "url": f"https://www.youtube.com/watch?v=id{index}"}
+            for index in range(count)
+        ]}
+
+    def test_youtube_without_durations_does_not_fall_back_to_soundcloud(self):
+        runner = fake_runner({
+            "youtube": self._durationless_youtube(),
+            "soundcloud": {"entries": [
+                {"title": "Branime Studios - Never Gonna Give You Up (Rick Astley Cover)",
+                 "duration": 198.048,
+                 "webpage_url": "https://soundcloud.com/x/cover"},
+            ]},
+        })
+        found, _ = streaming.find_candidates(self.meta, runner)
+        assert [provider for provider, _ in runner.calls] == ["youtube"]
+        assert all(candidate.provider == "youtube" for candidate in found)
+
+    def test_a_complete_youtube_answer_is_still_preferred(self):
+        runner = fake_runner({"youtube": {"entries": [
+            {"title": "Rick Astley - Never Gonna Give You Up", "duration": 214,
+             "webpage_url": "https://www.youtube.com/watch?v=good"},
+            {"title": "Rick Astley - Never Gonna Give You Up (HQ)", "duration": None,
+             "webpage_url": "https://www.youtube.com/watch?v=unknown"},
+        ]}})
+        found, _ = streaming.find_candidates(self.meta, runner)
+        assert found[0].url == "https://www.youtube.com/watch?v=good"
+        assert found[0].duration == 214
+
+    def test_the_ranked_order_is_measured_first(self):
+        found, _ = streaming.select_candidates(
+            [
+                {"title": "Never Gonna Give You Up", "duration": None,
+                 "webpage_url": "https://youtu.be/a"},
+                {"title": "Never Gonna Give You Up", "duration": 214,
+                 "webpage_url": "https://youtu.be/b"},
+                {"title": "Never Gonna Give You Up", "duration": 214,
+                 "webpage_url": "https://youtu.be/c"},
+            ],
+            self.meta,
+            "youtube",
+        )
+        assert [c.url for c in found] == ["https://youtu.be/b", "https://youtu.be/c",
+                                          "https://youtu.be/a"]
