@@ -1666,6 +1666,74 @@
    above it; no new colours, only the existing tokens.
    --------------------------------------------------------- */
 
+/* The preset styles sit above the editor: one button per voice, the active one
+   lit. Applying one writes the whole set, so the row is a group of forms and
+   nothing here is a toggle. Same hairlines and mono labels as the panels
+   around it; the only colour is the existing red accent for "active". */
+
+.templates-styles {
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.templates-styles-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.templates-style-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.templates-style-form {
+  display: contents;
+}
+
+.templates-style {
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--dim);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.templates-style:hover:not(:disabled) {
+  border-color: var(--red);
+  color: var(--ink);
+}
+
+.templates-style.is-active {
+  border-color: var(--red);
+  color: var(--ink);
+  background: var(--wash);
+}
+
+/* A preset with no file on disk is listed but not clickable: the operator can
+   see that the style exists without a broken apply. */
+.templates-style:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* "Custom" is a state, not an action: it is a span, and only shown when the
+   set no longer matches the preset it came from. */
+.templates-style-custom {
+  display: inline-flex;
+  align-items: center;
+  cursor: default;
+}
+
 .templates-layout {
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr);
