@@ -657,29 +657,44 @@ async def set_enabled(connection_id: int, enabled: bool) -> bool:
 # ---------------------------------------------------------------------------
 
 async def test_connection(connection_id: int) -> dict:
-    """Probe one connection, store the verdict and return the updated row."""
+    """Probe one connection, store the verdict and return the updated row.
+
+    The probe itself is a synchronous ``curl`` with a 10 s timeout, so it runs in
+    a worker thread: this coroutine is called from a request handler and from the
+    background sweep, and blocking the event loop for ten seconds would freeze
+    every other page the panel is serving at the time.
+    """
     row = await db.get_proxy_connection(connection_id)
     if row is None:
         raise ProxyConnectionError("NotFound", "That connection no longer exists.")
-    url = dial_url(row)
-    if not url:
-        status = egress.read_status()
-        if str(row.get("kind") or "") == WIREGUARD_KIND:
-            detail = status.error or (
-                "The WireGuard tunnel is not up."
-                if status.available
-                else "The host watcher has not reported the tunnel yet."
-            )
-        else:
-            detail = "The connection has no proxy URL."
-        ok = False
-    else:
-        ok, detail = egress.probe_proxy(url)
-        detail = egress.redact(detail, url)
+    ok, detail = await asyncio.to_thread(_probe_row, row)
     await db.record_proxy_connection_test(
         connection_id, status="ok" if ok else "fail", result=detail
     )
     return await db.get_proxy_connection(connection_id) or row
+
+
+def _probe_row(row: dict) -> tuple[bool, str]:
+    """The blocking half of :func:`test_connection`: dial and describe.
+
+    Separated so the caller can hand it to a thread, and so the two failure
+    shapes — a tunnel that is not up, and a proxy with nothing to dial — stay in
+    one place instead of in the middle of an async function.
+    """
+    url = dial_url(row)
+    if url:
+        ok, detail = egress.probe_proxy(url)
+        return ok, egress.redact(detail, url)
+    status = egress.read_status()
+    if str(row.get("kind") or "") == WIREGUARD_KIND:
+        detail = status.error or (
+            "The WireGuard tunnel is not up."
+            if status.available
+            else "The host watcher has not reported the tunnel yet."
+        )
+    else:
+        detail = "The connection has no proxy URL."
+    return False, detail
 
 
 # ---------------------------------------------------------------------------
