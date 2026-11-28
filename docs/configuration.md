@@ -228,6 +228,102 @@ above are chosen to live inside it, not to fight it.
 Nothing above changes `MAX_SEND_MB` or `MAX_FILESIZE_MB`: the ceilings still
 decide what may be offered and what may be downloaded.
 
+
+## Streaming links (Spotify, Apple Music, Deezer)
+
+Those three catalogues are DRM-only, and `yt-dlp` says so in as many words:
+
+```text
+ERROR: [DRM] The requested site is known to use DRM protection. It will NOT be supported.
+```
+
+That is not a bug and not a version problem: there is nothing to download. What
+*is* public is the metadata — a title, an artist, a duration and a cover — and a
+link to a track is enough to find the same recording somewhere that can be
+fetched.
+
+A link to a single track therefore takes a different path through `/api/info`:
+
+1. the engine names the service and the track id (a share link with a market
+   prefix, an embed link and a `spotify:track:<id>` URI all work);
+2. it reads the track's metadata from the service's own endpoint — no key, no
+   account:
+
+   | Service | Title + cover | Artist + duration |
+   | --- | --- | --- |
+   | Spotify | `open.spotify.com/oembed?url=…` | the `/embed/track/<id>` page |
+   | Apple Music | `itunes.apple.com/lookup?id=<id>` | the same answer |
+   | Deezer | `api.deezer.com/track/<id>` | the same answer |
+
+3. it searches `ytsearch10:` for `"<artist> <title>"` and, when that has no hit
+   (or fails), `scsearch10:`;
+4. it keeps the hits whose title matches and whose duration is within **15 % or
+   20 seconds**, skips DRM-protected ones, and offers up to eight as buttons.
+
+What the chat shows is the track, not the recording: the card is the service's
+cover, `Artist — Title` and the running time, and the buttons are numbered
+(`1 · 3:33`, `2 · 3:48`). Nothing in the card, the caption under the file or the
+MP3 tags names the site the audio actually came from — the substitution is an
+implementation detail, not something the user has to read about. Tapping a
+button downloads that version as an MP3 straight away: a track has one output,
+so there is no format or quality to choose.
+
+| Variable | Required | Default | What it does |
+| --- | --- | --- | --- |
+| `TRACK_SUBSTITUTE` | no | `auto` | `auto` resolves a track link to a downloadable version; `off` refuses it with "not supported", the behaviour before this existed. |
+| `SPOTIFY_SUBSTITUTE` | no | — | Per-service override of `TRACK_SUBSTITUTE`; also `APPLE_MUSIC_SUBSTITUTE` and `DEEZER_SUBSTITUTE`. |
+| `TRACK_CACHE_TTL_SECONDS` | no | `600` | How long a resolved track (its metadata and its alternatives) is reused. `0` disables the cache; each `/api/info` then costs a fresh search. |
+| `YOUTUBE_PLAYER_CLIENT` | no | `default,android` | yt-dlp's YouTube player clients for the search and the download of a substituted track. See below. |
+
+### Why `YOUTUBE_PLAYER_CLIENT` exists
+
+YouTube now answers some videos to every client yt-dlp tries first with
+
+```text
+ERROR: [youtube] <id>: The following content is not available on this app.
+```
+
+It has nothing to do with the video being private or deleted: the `android`
+client gets it fine. But `android` on its own only ever exposes the muxed 360p
+stream for many videos, so pinning it alone would cost the video picker its
+resolutions.
+
+A *list* is therefore the default. yt-dlp merges the clients' format lists, so
+`default` still provides the full ladder (2160p down) where it works and
+`android` fills in the videos it refuses. Measured on three IDs that failed:
+`default` alone failed two, `android` alone resolved all three but at 360p, and
+`default,android` resolved all three at full quality.
+
+The same list is used for the search that finds the alternatives and for opening
+the one that is picked, so the button the user chooses is the version that
+actually downloads. Only substituted tracks are affected: every other job keeps
+yt-dlp's own choice.
+
+| Value | Effect |
+| --- | --- |
+| `default,android` | both, in that order — the default |
+| `default` | yt-dlp's own choice; the behaviour before this existed |
+| `android` | widest coverage, but a 360p ceiling for video |
+
+
+The errors are codes, not yt-dlp lines, and the bot turns each into one sentence:
+
+| Code | When | What the user reads |
+| --- | --- | --- |
+| `track_not_found` | the search found nothing that matches | "Could not find this track…" |
+| `track_unsupported_type` | an album, a playlist, an artist page | "Only single tracks are supported…" |
+| `track_unsupported_service` | Tidal, Яндекс Музыка, Amazon Music | "This service needs an API key…" |
+| `track_drm_only` | every candidate was DRM-protected | "Every match is DRM protected…" |
+| `track_metadata_failed` | the service did not answer | "Could not read this track's details…" |
+| `track_disabled` | `TRACK_SUBSTITUTE=off` | "These links are not supported on this bot." |
+
+Tidal, Яндекс Музыка and Amazon Music are refused with
+`track_unsupported_service` on purpose: their catalogues need a token or an
+app-only API, and guessing at an undocumented endpoint is worse than saying so.
+SoundCloud is not touched at all — `yt-dlp` downloads it directly, so it never
+reaches this path.
+
+
 ## Cleanup (shared downloads volume)
 
 | Variable | Required | Default | What it does |

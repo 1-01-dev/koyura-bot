@@ -198,6 +198,43 @@ def limit_message(key: str, lang: object = None) -> str:
     return md(key, lang, limit=send_limit_label(lang))
 
 
+# The engine's codes for a streaming track that could not be resolved, mapped
+# to the sentence the chat says instead. The engine never gets to explain itself:
+# its message names a site and a DRM error the user cannot act on.
+TRACK_ERROR_KEYS: dict[str, str] = {
+    "track_not_found": "track.not_found",
+    "track_unsupported_type": "track.unsupported_type",
+    "track_unsupported_service": "track.unsupported_service",
+    "track_unsupported_site": "track.unsupported_site",
+    "track_drm_only": "track.drm_only",
+    "track_metadata_failed": "track.metadata_failed",
+    "track_disabled": "track.disabled",
+    "track_no_candidates": "track.no_candidates",
+}
+
+
+def track_error_line(error: object, lang: object = None) -> str | None:
+    """The catalogued sentence for a track refusal, or ``None`` for other errors."""
+    code = str(getattr(error, "code", "") or "")
+    key = TRACK_ERROR_KEYS.get(code)
+    return md(key, lang) if key else None
+
+
+def track_or_engine_line(
+    error: object, fallback_key: str, lang: object = None
+) -> str:
+    """A track refusal in the bot's own words, else the usual engine line.
+
+    ``fallback_key`` is ``engine.info_failed`` on the preview path and
+    ``engine.error`` on a command; either way an unrecognised code keeps the
+    message the engine sent, exactly as before.
+    """
+    line = track_error_line(error, lang)
+    if line is not None:
+        return line
+    return md(fallback_key, lang, error=error)
+
+
 def limit_note(quality: str, skipped: str, lang: object = None) -> str:
     """The caption line explaining a quality that was lowered to fit.
 
@@ -397,6 +434,7 @@ __all__ = [
     "FORMAT_OPTIONS",
     "QUALITY_OPTIONS",
     "SUPPORTED_PLATFORMS",
+    "TRACK_ERROR_KEYS",
     "VERSION",
     "button",
     "enabled_language_names",
@@ -418,5 +456,7 @@ __all__ = [
     "settings_report",
     "stats_report",
     "t",
+    "track_error_line",
+    "track_or_engine_line",
     "welcome_text",
 ]

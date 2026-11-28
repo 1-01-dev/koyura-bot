@@ -454,3 +454,127 @@ class TestPreviewCard:
 
         entry = sessions.get(5, 11, sessions.url_hash("https://x.example/1"))
         assert entry is not None and entry["username"] == "7"
+
+
+# ---------------------------------------------------------------------------
+# A streaming track
+# ---------------------------------------------------------------------------
+
+TRACK_URL = "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT"
+
+TRACK_INFO = {
+    "title": "Never Gonna Give You Up",
+    "thumbnail": "https://image-cdn.spotifycdn.com/x",
+    "duration": 213,
+    "uploader": "Rick Astley",
+    "channel": "Rick Astley",
+    "formats": [{"id": "137", "label": "1080p", "height": 1080}],
+    "audio": {"abr": 129},
+    "track": {
+        "service": "spotify",
+        "service_label": "Spotify",
+        "title": "Never Gonna Give You Up",
+        "artist": "Rick Astley",
+        "duration": 214,
+        "thumbnail": "https://image-cdn.spotifycdn.com/x",
+        "candidates": [
+            {"index": 1, "label": "1 · 3:34", "duration": 214,
+             "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+            {"index": 2, "label": "2 · 3:48", "duration": 228,
+             "url": "https://www.youtube.com/watch?v=6PLatPMoxGw"},
+        ],
+    },
+}
+
+
+class TestTrackPreview:
+    @pytest.mark.asyncio
+    async def test_the_cover_becomes_the_card(self, monkeypatch):
+        monkeypatch.setattr(url_flow, "get_info", AsyncMock(return_value=TRACK_INFO))
+        update, status = fake_update(TRACK_URL)
+
+        await url_flow.url_handler(update, MagicMock())
+
+        bot = update.get_bot()
+        kwargs = bot.of("send_photo")[0]
+        assert kwargs["photo"] == "https://image-cdn.spotifycdn.com/x"
+
+    @pytest.mark.asyncio
+    async def test_the_caption_is_the_artist_and_the_track(self, monkeypatch):
+        monkeypatch.setattr(url_flow, "get_info", AsyncMock(return_value=TRACK_INFO))
+        update, status = fake_update(TRACK_URL)
+
+        await url_flow.url_handler(update, MagicMock())
+
+        caption = _plain(update.get_bot().of("send_photo")[0]["caption"])
+        assert "Rick Astley" in caption
+        assert "Never Gonna Give You Up" in caption
+        assert "3:34" in caption
+        # Nothing about the film clip the audio is fetched from.
+        for leaked in ("YouTube", "youtube", "Official", "Video", "заменён"):
+            assert leaked not in caption, leaked
+
+    @pytest.mark.asyncio
+    async def test_the_buttons_are_the_numbered_versions(self, monkeypatch):
+        monkeypatch.setattr(url_flow, "get_info", AsyncMock(return_value=TRACK_INFO))
+        update, status = fake_update(TRACK_URL)
+
+        await url_flow.url_handler(update, MagicMock())
+
+        markup = update.get_bot().of("edit_message_reply_markup")[0]["reply_markup"]
+        labels = [b.text for row in markup.inline_keyboard for b in row]
+        assert labels == ["1 · 3:34", "2 · 3:48"]
+        datas = [b.callback_data for row in markup.inline_keyboard for b in row]
+        fingerprint = sessions.url_hash(TRACK_URL)
+        assert datas == [f"dl:101:{fingerprint}:t1", f"dl:101:{fingerprint}:t2"]
+
+    @pytest.mark.asyncio
+    async def test_no_video_format_button_appears(self, monkeypatch):
+        """A track has one output: the payload's formats must not reach the card."""
+        monkeypatch.setattr(url_flow, "get_info", AsyncMock(return_value=TRACK_INFO))
+        update, status = fake_update(TRACK_URL)
+
+        await url_flow.url_handler(update, MagicMock())
+
+        markup = update.get_bot().of("edit_message_reply_markup")[0]["reply_markup"]
+        labels = [b.text for row in markup.inline_keyboard for b in row]
+        assert not any("1080p" in label or "MP3" in label for label in labels)
+
+    @pytest.mark.asyncio
+    async def test_a_track_payload_without_candidates_explains_itself(self, monkeypatch):
+        info = dict(TRACK_INFO)
+        info["track"] = dict(TRACK_INFO["track"], candidates=[])
+        monkeypatch.setattr(url_flow, "get_info", AsyncMock(return_value=info))
+        update, status = fake_update(TRACK_URL)
+
+        await url_flow.url_handler(update, MagicMock())
+
+        written = " ".join(_plain(text) for text in update.get_bot().written_texts())
+        assert "No versions of this track" in written
+
+    @pytest.mark.asyncio
+    async def test_a_refused_track_uses_the_bots_sentence(self, monkeypatch):
+        error = KoyuraInfoError(
+            "ERROR: [DRM] The requested site is known to use DRM protection.",
+            code="track_drm_only",
+        )
+        monkeypatch.setattr(url_flow, "get_info", AsyncMock(side_effect=error))
+        update, status = fake_update(TRACK_URL)
+
+        await url_flow.url_handler(update, MagicMock())
+
+        written = " ".join(_plain(text) for text in update.get_bot().written_texts())
+        assert "DRM" in written
+        assert "ERROR" not in written
+        assert "requested site" not in written
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_refusal_keeps_the_engine_message(self, monkeypatch):
+        error = KoyuraInfoError("reddit requires cookies", code="cookies_required")
+        monkeypatch.setattr(url_flow, "get_info", AsyncMock(side_effect=error))
+        update, status = fake_update("https://www.reddit.com/r/x/comments/1/y/")
+
+        await url_flow.url_handler(update, MagicMock())
+
+        written = " ".join(_plain(text) for text in update.get_bot().written_texts())
+        assert "reddit requires cookies" in written

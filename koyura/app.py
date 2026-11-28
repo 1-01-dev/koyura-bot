@@ -30,6 +30,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 import download_queue
 import egress
 import media_meta
+import streaming
 import transcode
 from cookies import (
     blocked_message,
@@ -90,6 +91,12 @@ INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "").strip()
 INTERNAL_API_AUTH_DISABLED = os.environ.get(
     "INTERNAL_API_AUTH_DISABLED", ""
 ).strip().lower() in {"1", "true", "yes", "on"}
+
+# How long a resolved track (metadata + its alternatives) is reused. One card is
+# usually re-rendered once — the bot asks for /api/info, then a job starts
+# minutes later — so a short TTL removes the repeat search without ever serving
+# a stale choice. Set 0 to disable the cache entirely.
+TRACK_CACHE_TTL_SECONDS = _env_int("TRACK_CACHE_TTL_SECONDS", 600, minimum=0)
 
 # Runtime limits: env first, the admin panel may override them through
 # ``POST /api/settings`` without a restart (the queue applies them live).
@@ -550,6 +557,7 @@ def _build_info_cmd(
     *,
     cookies_path: str | None = None,
     proxy_url: str = "",
+    youtube_client: str | None = None,
 ) -> list[str]:
     """yt-dlp's argument vector for one metadata lookup.
 
@@ -558,8 +566,14 @@ def _build_info_cmd(
     panel's egress rule covers this service. Both are options in the option
     block, so the URL stays last. With neither the command is the plain one
     this endpoint always ran.
+
+    ``youtube_client`` pins the YouTube player clients for a substituted track;
+    ``None`` keeps every other lookup on yt-dlp's own choice.
     """
-    cmd = _yt_dlp_cmd("--no-playlist", "-j", "--no-warnings", url)
+    cmd = _yt_dlp_cmd("--no-playlist", "-j", "--no-warnings")
+    if youtube_client:
+        cmd += streaming.extractor_args(youtube_client)
+    cmd.append(url)
     if cookies_path:
         cmd = with_cookies(cmd, cookies_path)
     if proxy_url:
@@ -567,11 +581,176 @@ def _build_info_cmd(
     return cmd
 
 
-def _build_download_cmd(job_id: str, url: str, format_choice: str, format_id: str | None) -> list[str]:
+# ---------------------------------------------------------------------------
+# Streaming links (Spotify, Apple Music, Deezer)
+# ---------------------------------------------------------------------------
+
+#: Resolved tracks, keyed by the link that was asked for: ``{url: (at, block)}``.
+#: Re-rendering one card otherwise costs another search per format button.
+_track_cache: dict[str, tuple[float, dict]] = {}
+_track_cache_lock = threading.Lock()
+
+
+def _track_cached(url: str) -> dict | None:
+    """A still-valid resolved track for ``url``, or ``None``."""
+    if TRACK_CACHE_TTL_SECONDS <= 0:
+        return None
+    with _track_cache_lock:
+        entry = _track_cache.get(url)
+        if entry is None:
+            return None
+        stored_at, block = entry
+        if time.time() - stored_at > TRACK_CACHE_TTL_SECONDS:
+            _track_cache.pop(url, None)
+            return None
+        return block
+
+
+def _track_remember(url: str, block: dict) -> None:
+    """Keep a resolved track for the next card, bounded to avoid unbounded growth."""
+    if TRACK_CACHE_TTL_SECONDS <= 0:
+        return
+    with _track_cache_lock:
+        now = time.time()
+        for stale in [key for key, (at, _) in _track_cache.items()
+                      if now - at > TRACK_CACHE_TTL_SECONDS]:
+            _track_cache.pop(stale, None)
+        if len(_track_cache) >= 256:
+            _track_cache.pop(next(iter(_track_cache)), None)
+        _track_cache[url] = (now, block)
+
+
+def _run_search(provider: str, query: str) -> object:
+    """Run one provider search and return its JSON payload (``{}`` on failure).
+
+    A search is a plain ``yt-dlp`` call like every other one this engine makes:
+    same interpreter, same option block. ``--flat-playlist`` keeps it to the
+    metadata the search already carries, so ten hits cost one request, not ten.
+    Timeouts and failures are the caller's business: a provider with no answer
+    simply has no candidates.
+    """
+    cmd = streaming.search_cmd(provider, query, python=sys.executable)
+    rc, stdout, stderr, timed_out = _run_capture(cmd, timeout=INFO_TIMEOUT)
+    if timed_out or rc != 0 or not stdout.strip():
+        logger.info(
+            "Track search on %s returned nothing (rc=%s, timed_out=%s): %s",
+            provider, rc, timed_out, (stderr or "").strip().splitlines()[-1:],
+        )
+        return {}
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        logger.info("Track search on %s returned unparsable JSON", provider)
+        return {}
+
+
+def _track_payload(url: str) -> dict:
+    """Metadata and alternatives for a streaming link (cached per link)."""
+    cached = _track_cached(url)
+    if cached is not None:
+        return cached
+    block = streaming.resolve_track(url, runner=_run_search)
+    if block is None:  # pragma: no cover - the caller checked the link first
+        raise streaming.TrackError("track_not_found", "No track was found.")
+    _track_remember(url, block)
+    return block
+
+
+def _track_info(url: str) -> dict:
+    """The yt-dlp-shaped info blob for the track a candidate points at.
+
+    The candidate is an ordinary link, so the ordinary extraction runs; what
+    changes is that the *metadata* is then replaced with the streaming
+    service's. The title, the artist and the cover come from Spotify (or Apple
+    Music, or Deezer), the formats and the duration from the file — the user
+    asked for a track, and the card must describe the track, not the upload that
+    happens to carry it.
+    """
+    track = _track_payload(url)
+    candidates = track.get("candidates") or []
+    if not candidates:
+        raise streaming.TrackError(
+            "track_not_found",
+            "No matching track was found.",
+            service=track.get("service_label") or "",
+        )
+    chosen = candidates[0]
+    target = str(chosen.get("url") or "")
+
+    rc, stdout, stderr, timed_out = _run_capture(
+        _build_info_cmd(target, youtube_client=streaming.player_client()),
+        timeout=INFO_TIMEOUT,
+    )
+    if timed_out or rc != 0 or not stdout.strip():
+        logger.info(
+            "Track %s: the first candidate did not answer (rc=%s, timed_out=%s)",
+            track.get("service"), rc, timed_out,
+        )
+        raise streaming.TrackError(
+            "track_not_found",
+            "The matching track could not be read.",
+            service=track.get("service_label") or "",
+        )
+    try:
+        info = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise streaming.TrackError(
+            "track_not_found",
+            "The matching track could not be read.",
+            service=track.get("service_label") or "",
+        ) from exc
+    if not isinstance(info, dict):
+        raise streaming.TrackError(
+            "track_not_found",
+            "The matching track could not be read.",
+            service=track.get("service_label") or "",
+        )
+    return media_meta.apply_track_metadata(info, track)
+
+
+def _download_target(url: str, candidate_url: object = None) -> str:
+    """The link a download job should actually fetch.
+
+    A streaming link is never downloadable, so a job for one resolves to the
+    candidate the chat picked (``candidate_url``) or the best match. An ordinary
+    link is returned untouched.
+    """
+    if streaming.parse_track_url(url) is None:
+        return url
+    if candidate_url:
+        candidate = validate_url(candidate_url)
+        # Only a link this engine itself proposed may be substituted: otherwise
+        # a caller could have /api/download fetch any address by naming it.
+        known = {
+            str(entry.get("url"))
+            for entry in (_track_payload(url).get("candidates") or [])
+        }
+        if candidate not in known:
+            raise ValueError("candidate is not one of the offered tracks")
+        return candidate
+    candidates = _track_payload(url).get("candidates") or []
+    if not candidates:
+        raise ValueError("no matching track was found")
+    return str(candidates[0].get("url"))
+
+
+def _build_download_cmd(
+    job_id: str,
+    url: str,
+    format_choice: str,
+    format_id: str | None,
+    *,
+    youtube_client: str | None = None,
+) -> list[str]:
     """Build the yt-dlp argument vector for a job.
 
     yt-dlp is invoked as ``<sys.executable> -m yt_dlp`` so the call works in a
     container and in a venv/systemd deployment without relying on PATH.
+
+    ``youtube_client`` pins the YouTube player clients for this one job; a
+    substituted track passes the same list its search used. ``None`` keeps the
+    plain command every other job gets, so nothing outside the substitution path
+    changes behaviour.
     """
     out_template = os.path.join(DOWNLOAD_DIR, f"{job_id}.%(ext)s")
     cmd = _yt_dlp_cmd(
@@ -586,6 +765,8 @@ def _build_download_cmd(job_id: str, url: str, format_choice: str, format_id: st
         "--throttled-rate", "50K",
         "--newline",
     )
+    if youtube_client:
+        cmd += streaming.extractor_args(youtube_client)
     if HLS_DOWNLOADER and HLS_DOWNLOADER != "native":
         cmd += ["--downloader", f"hls:{HLS_DOWNLOADER}"]
 
@@ -765,8 +946,17 @@ def _attempt_download(
     try the next cookie jar; everything else is terminal and already recorded
     on the job. ``proxy_url`` is the egress rule's answer for this service —
     empty for a direct connection — and the URL itself is never logged.
+
+    The YouTube player clients come from the job registry rather than a
+    parameter: only a substituted track sets ``youtube_client`` on its job, so
+    reading it here keeps every other job on yt-dlp's own choice without
+    threading a new argument through four call sites (the ``transcode`` field
+    already travels the same way).
     """
-    cmd = _build_download_cmd(job_id, url, format_choice, format_id)
+    youtube_client = (jobs.get(job_id) or {}).get("youtube_client")
+    cmd = _build_download_cmd(
+        job_id, url, format_choice, format_id, youtube_client=youtube_client
+    )
     if cookies_path:
         cmd = with_cookies(cmd, cookies_path)
     if proxy_url:
@@ -1305,6 +1495,26 @@ def get_info():
     except UnsafeURLError as exc:
         return jsonify({"error": str(exc)}), 400
 
+    # A streaming link is not a download source at all — yt-dlp refuses those
+    # sites by design — so it takes a different path: read the track's metadata
+    # from the service, find the same recording where it *can* be fetched, and
+    # answer with the ordinary payload shaped around that recording.
+    try:
+        if streaming.parse_track_url(url) is not None:
+            info = _track_info(url)
+            return jsonify(
+                media_meta.build_info_payload(
+                    info,
+                    transcode_info={"mode": TRANSCODE_MODE, "max_mb": TRANSCODE_MAX_MB},
+                    estimate=transcode_stats.estimate,
+                )
+            )
+    except streaming.TrackError as exc:
+        logger.info("Info: %s for %s (%s)", exc.code, exc.service or "track", exc.message)
+        return jsonify(exc.payload()), 400
+    except UnsafeURLError as exc:
+        return jsonify({"error": str(exc)}), 400
+
     service = service_for_url(url)
     proxy_url = egress.proxy_for_url(url)
     paths = cookie_paths(service) if service else []
@@ -1410,6 +1620,18 @@ def start_download():
     except (TypeError, ValueError):
         height_hint = None
 
+    # A streaming link is never the file: the job is pointed at the candidate
+    # the chat picked instead. The source link is kept for the record, so the
+    # dashboard shows what the user actually sent.
+    source_url = url
+    is_track = streaming.parse_track_url(url) is not None
+    try:
+        url = _download_target(url, data.get("candidate_url"))
+    except streaming.TrackError as exc:
+        return jsonify(exc.payload()), 400
+    except (ValueError, UnsafeURLError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
     user_id = _optional_int(data.get("user_id"))
     size_hint = _optional_int(
         data.get("size_bytes") or data.get("filesize") or data.get("filesize_approx")
@@ -1432,6 +1654,12 @@ def start_download():
             # to ``downloading``; both states answer on /api/status.
             "status": "queued",
             "url": url,
+            "source_url": source_url,
+            # A substituted track is fetched with the same YouTube player
+            # clients its search used, so the alternative the user chose is the
+            # alternative that downloads. ``None`` for every other job: yt-dlp
+            # keeps its own choice there.
+            "youtube_client": streaming.player_client() if is_track else None,
             "title": title,
             "uploader": uploader,
             "height_hint": height_hint,
