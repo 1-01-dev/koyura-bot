@@ -465,10 +465,44 @@ async def chart_data(
     range: str = "1D",
     user: str = Depends(require_auth),
 ) -> dict[str, Any]:
+    """Downloads over time, the two top-five lists, and the subscription series.
+
+    One request feeds the whole dashboard: the range switch above the chart is
+    the same switch the subscription KPI cells and their series read, so a page
+    never has two periods on screen at once. The subscription part is an empty
+    block — not a block of zeros — when the gate is off or the window has no
+    transitions, which is how the template knows not to draw it.
+    """
     valid_ranges = {"1D", "7D", "1M", "1Y"}
     if range not in valid_ranges:
         raise HTTPException(status_code=400, detail=f"Invalid range. Must be one of {valid_ranges}")
-    return await db.get_chart_data(range)
+    payload = await db.get_chart_data(range)
+    payload["subscriptions"] = await _subscription_block(range.lower())
+    return payload
+
+
+async def _subscription_block(period: str) -> dict[str, Any]:
+    """The dashboard's subscription panel: three cells, two series, a breakdown.
+
+    ``visible`` is the single decision the template and the script branch on:
+    the gate is on **and** the window holds at least one transition. Everything
+    else in the block is still present (an empty series, an empty list) so a
+    caller reading the JSON never has to test for a missing key.
+    """
+    stats = await db.get_subscription_stats(period)
+    channels = stats["channels"]
+    return {
+        "visible": bool(stats["enabled"] and stats["has_history"]),
+        "period": stats["period"],
+        "subscribed": stats["subscribed"],
+        "left": stats["left"],
+        "active": stats["active"],
+        "chart": stats["chart"],
+        "channels": channels,
+        # One channel is a single row that repeats the KPI cells; the panel
+        # shows only the total line in that case.
+        "single_channel": channels[0] if len(channels) == 1 else None,
+    }
 
 
 @router.get("/api/active-downloads")

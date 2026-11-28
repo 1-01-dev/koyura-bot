@@ -1586,39 +1586,72 @@ async def mark_left(user_id: int, channel_ids: list[int]) -> int:
     return written
 
 
-#: The three windows the Channels page offers, as (key, label, days).
-_SUBSCRIPTION_PERIODS: tuple[tuple[str, int | None], ...] = (
-    ("7d", 7),
-    ("30d", 30),
-    ("all", None),
+#: The windows the subscription statistics are offered in, as
+#: ``(key, days, day-label format)``. The keys are the dashboard's own range
+#: switch (``/api/chart-data?range=``), lowercased, so the page has **one**
+#: period selector: the downloads line and the subscription series always look
+#: at the same window. ``None`` means "all time".
+_SUBSCRIPTION_PERIODS: tuple[tuple[str, int | None, str], ...] = (
+    ("1d", 1, "%H:00"),
+    ("7d", 7, "%a %d"),
+    ("1m", 30, "%b %d"),
+    ("1y", 365, "%b %Y"),
+    ("all", None, "%b %d"),
 )
 
+#: The range switch this module defaults to, and the one the API answers with
+#: when it is handed something it does not know.
+DEFAULT_SUBSCRIPTION_PERIOD = "1m"
 
-def subscription_periods() -> tuple[tuple[str, int | None], ...]:
-    """``(key, days)`` for the period selector; ``None`` means "all time"."""
-    return _SUBSCRIPTION_PERIODS
+
+def normalise_subscription_period(value: object) -> str:
+    """One of the keys above; anything else falls back to the default.
+
+    Accepts either case, because the Charts API spells the same windows
+    ``1D``/``7D``/``1M``/``1Y`` and a caller should not have to remember which.
+    """
+    key = str(value or "").strip().lower()
+    return key if key in dict.fromkeys(p[0] for p in _SUBSCRIPTION_PERIODS) else (
+        DEFAULT_SUBSCRIPTION_PERIOD
+    )
+
+
+def _period_days(period: str) -> int | None:
+    """The window's length in days (``None`` for "all time")."""
+    return {key: days for key, days, _format in _SUBSCRIPTION_PERIODS}.get(
+        normalise_subscription_period(period), 30
+    )
+
+
+def subscription_plan(period: str, now: datetime | None = None) -> BucketPlan:
+    """The same ``(labels, keys, format, start)`` plan the charts use.
+
+    Delegating to ``_hourly_plan``/``_daily_plan``/``_monthly_plan`` is what
+    makes the two lines line up: one day is hourly buckets in both, a year is
+    twelve labelled months in both, and the ``start`` bound is the same instant
+    the downloads query uses.
+    """
+    moment = now or datetime.now(timezone.utc)
+    days = _period_days(period)
+    if days is None:
+        return _monthly_plan(moment)
+    if days <= 1:
+        return _hourly_plan(moment)
+    if days >= 365:
+        return _monthly_plan(moment)
+    label_format = {
+        key: label for key, _days, label in _SUBSCRIPTION_PERIODS
+    }.get(normalise_subscription_period(period), "%b %d")
+    return _daily_plan(moment, int(days), label_format)
 
 
 def _period_start(period: str) -> str | None:
     """The first timestamp inside a period, or ``None`` for "all time"."""
-    days = dict(_SUBSCRIPTION_PERIODS).get(str(period or ""), 30)
+    days = _period_days(period)
     if days is None:
         return None
     now = datetime.now(timezone.utc)
     return (now - timedelta(days=int(days))).strftime(_TIME_FORMAT)
-
-
-def subscription_chart_buckets(period: str) -> tuple[list[str], list[str], str]:
-    """Labels, bucket keys and the ``strftime`` format for the period."""
-    days = dict(_SUBSCRIPTION_PERIODS).get(str(period or ""), 30)
-    now = datetime.now(timezone.utc)
-    if days is None:
-        # "All time": show whole months (the plan's own window only decides
-        # which months are labelled, the counts below use no start at all).
-        labels, keys, bucket_format, _start = _monthly_plan(now)
-        return labels, keys, bucket_format
-    labels, keys, bucket_format, _start = _daily_plan(now, int(days), "%b %d")
-    return labels, keys, bucket_format
 
 
 def _latest_states(rows) -> dict[tuple[int, int], str]:
@@ -1718,8 +1751,12 @@ async def _latest_history() -> list[Any]:
     return list(rows)
 
 
-async def get_subscription_stats(period: str = "30d") -> dict[str, Any]:
-    """The Channels page's KPI cells, per-channel table and chart series.
+async def get_subscription_stats(
+    period: str = DEFAULT_SUBSCRIPTION_PERIOD,
+    *,
+    gate_enabled: bool | None = None,
+) -> dict[str, Any]:
+    """The subscription KPI cells, per-channel table and chart series.
 
     Definition of each number, because the words on the page are not enough:
 
@@ -1727,16 +1764,26 @@ async def get_subscription_stats(period: str = "30d") -> dict[str, Any]:
       inside the window. Because a row is written only on a change, these are
       real transitions and not observations;
     * **active now** — users whose *last* row is ``subscribed`` on **every**
-      enabled channel. A user who left one channel is not active, even if the
-      other channels are fine: the gate requires all of them;
+      enabled channel (and only channels the bot can verify). A user who left
+      one channel is not active, even if the other channels are fine: the gate
+      requires all of them;
     * the per-channel row uses the same period for its two counts and reports
       that channel's own active users (last row ``subscribed``).
 
-    All-time counts use no lower bound at all, so "all time" is literally
-    everything ever recorded — not the chart's one-year window.
+    The period is the dashboard's own range switch (``1d``/``7d``/``1m``/
+    ``1y``), so the subscriptions line is bucketed exactly like the downloads
+    line next to it. ``all`` is also accepted (no lower bound at all) for an
+    older link; its chart keeps the twelve-month axis.
+
+    ``has_history`` and ``enabled`` are what the dashboard renders from: a
+    panel with no transitions in the window, or with the gate switched off, is
+    not drawn at all rather than drawn empty. ``enabled`` is passed in by a
+    caller that has already read the switch, so a page can answer the same
+    question once.
     """
-    start = _period_start(period)
-    labels, bucket_keys, bucket_format = subscription_chart_buckets(period)
+    key = normalise_subscription_period(period)
+    start = _period_start(key)
+    labels, bucket_keys, bucket_format, _window_start = subscription_plan(key)
     channels = await list_required_channels(enabled_only=True)
     # "Active" means subscribed to every channel the gate actually asks for,
     # which is the same set the API hands the bot: enabled *and* one where the
@@ -1756,11 +1803,23 @@ async def get_subscription_stats(period: str = "30d") -> dict[str, Any]:
         if state == SUBSCRIBED:
             active_by_channel[channel_id] = active_by_channel.get(channel_id, 0) + 1
 
+    subscribed_total = sum(subscribed_by_channel.values())
+    left_total = sum(left_by_channel.values())
+    enabled = (
+        bool(gate_enabled) if gate_enabled is not None
+        else await subscriptions_enabled()
+    )
+
     return {
-        "period": str(period or "30d"),
-        "subscribed": sum(subscribed_by_channel.values()),
-        "left": sum(left_by_channel.values()),
+        "period": key,
+        "enabled": enabled,
+        "subscribed": subscribed_total,
+        "left": left_total,
         "active": _active_everywhere(latest, channel_ids),
+        # Nothing has ever been recorded: the panel has no number to show, and
+        # a row of zeros would read as "nobody subscribes" instead of "the
+        # history is empty".
+        "has_history": subscribed_total + left_total > 0,
         "channels": [
             {
                 "id": int(channel["id"]),
