@@ -19,6 +19,7 @@ import db
 import download_limits as limits_settings
 import egress
 import message_catalog
+import message_styles
 import message_templates
 import service_catalog
 import service_cookies
@@ -356,6 +357,7 @@ async def _templates_context(
     draft: dict | None = None,
     error: str | None = None,
     notice: str | None = None,
+    style_notice: str | None = None,
 ) -> dict:
     """Everything the Message templates section renders.
 
@@ -414,7 +416,7 @@ async def _templates_context(
         ]
         groups.append({"id": group["id"], "label": group["label"], "kinds": members})
 
-    return {
+    context = {
         "template_groups": groups,
         "template_kind": {
             "id": selected.id,
@@ -442,10 +444,48 @@ async def _templates_context(
         "template_error": error,
         "template_notice": notice,
     }
+    # The style row shares the panel's scope (``styles``, ``style_active``, …)
+    # rather than a nested key, so the partial and the tests name one thing.
+    context.update(await _style_context(style_notice=style_notice))
+    return context
+
+
+async def _style_context(*, style_notice: str | None = None) -> dict:
+    """The row of style buttons above the editor, and which one is active.
+
+    The active style is one ``settings`` row, ``templates.style``. Rows written
+    before this feature existed have no value, and they are not "custom" — they
+    are simply a set of manual edits — so the stored value is normalised, not
+    trusted: an unknown string would otherwise leave every button unlit.
+    """
+    stored = await db.get_settings(prefix=message_styles.SETTING_KEY)
+    raw = stored.get(message_styles.SETTING_KEY)
+    active = message_styles.normalise_style(raw)
+    return {
+        "styles": [
+            {
+                "id": preset.id,
+                "label": preset.label,
+                "tagline": preset.tagline,
+                "installed": message_styles.installed()[preset.id],
+            }
+            for preset in message_styles.STYLES
+        ],
+        "style_default": {"id": message_styles.DEFAULT_STYLE, "label": "Default"},
+        "style_custom": {"id": message_styles.CUSTOM_STYLE, "label": "Custom"},
+        "style_active": active,
+        "style_active_label": message_styles.label_of(active),
+        "style_notice": style_notice,
+    }
 
 
 def _templates_redirect(
-    kind: str, lang: str, *, template_id: int | None = None, notice: str | None = None
+    kind: str,
+    lang: str,
+    *,
+    template_id: int | None = None,
+    notice: str | None = None,
+    style_notice: str | None = None,
 ) -> RedirectResponse:
     """Back to the section with the same kind, language and template selected."""
     query = f"kind={kind}&lang={lang}"
@@ -453,6 +493,8 @@ def _templates_redirect(
         query += f"&template={int(template_id)}"
     if notice:
         query += f"&templates_notice={notice}"
+    if style_notice:
+        query += f"&templates_style_notice={style_notice}"
     return RedirectResponse(url=f"/admin/bot?{query}", status_code=303)
 
 
@@ -799,6 +841,7 @@ async def admin_section_page(
     lang: str | None = None,
     template: int | None = None,
     templates_notice: str | None = None,
+    templates_style_notice: str | None = None,
     added: int = 0,
     replaced: int = 0,
     deleted: int = 0,
@@ -875,6 +918,7 @@ async def admin_section_page(
         lang=lang,
         template_id=template,
         notice=templates_notice,
+        style_notice=templates_style_notice,
     ))
     context["languages_notice"] = (
         "Languages saved. The bot picks them up within a minute."
@@ -1071,6 +1115,22 @@ async def _template_request(
     return user, form
 
 
+async def _mark_style_custom() -> None:
+    """A hand edit after a preset leaves the set no longer that preset.
+
+    Called by every action that changes a stored body one pair at a time. When
+    the active style is already ``default`` or ``custom`` this is a no-op: the
+    first has no overrides to diverge from, and the second already says so.
+    """
+    stored = await db.get_settings(prefix=message_styles.SETTING_KEY)
+    current = message_styles.normalise_style(
+        stored.get(message_styles.SETTING_KEY)
+    )
+    if current in (message_styles.DEFAULT_STYLE, message_styles.CUSTOM_STYLE):
+        return
+    await db.save_settings({message_styles.SETTING_KEY: message_styles.CUSTOM_STYLE})
+
+
 @router.post("/admin/templates/save")
 async def save_message_template(request: Request) -> Response:
     """Validate and store a body, then make it the active one for its pair.
@@ -1113,6 +1173,7 @@ async def save_message_template(request: Request) -> Response:
         saved_id = await db.create_message_template(
             kind=kind, lang=lang, name=name, body=body, activate=True
         )
+    await _mark_style_custom()
 
     logging.getLogger("koyura.dashboard").info(
         "message template saved: %s/%s #%s (%d chars)",
@@ -1143,6 +1204,7 @@ async def activate_message_template(request: Request) -> Response:
             request, user, "That template no longer exists.", kind=None, lang=None
         )
     await db.activate_message_template(int(template_id))
+    await _mark_style_custom()
     return _templates_redirect(
         str(row["kind"]), str(row["lang"]), template_id=int(template_id),
         notice="Template activated.",
@@ -1200,6 +1262,9 @@ async def delete_message_template(request: Request) -> Response:
             request, user, "That template no longer exists.", kind=None, lang=None
         )
     await db.delete_message_template(int(template_id))
+    # Deleting a body is a hand edit too: the pair falls back to the default
+    # while the other 55 kinds keep the preset's voice.
+    await _mark_style_custom()
     return _templates_redirect(
         str(row["kind"]), str(row["lang"]), notice="Template deleted."
     )
@@ -1216,11 +1281,71 @@ async def reset_message_templates(request: Request) -> Response:
     kind = str(form.get("kind") or "")
     lang = message_templates.normalise_lang(form.get("lang"))
     removed = await db.reset_message_templates(kind, lang)
+    await _mark_style_custom()
     return _templates_redirect(
         kind,
         lang,
         notice=f"Reset to the built-in default ({removed} custom template(s) removed).",
     )
+
+
+@router.post("/admin/templates/apply-style")
+async def apply_template_style(request: Request) -> Response:
+    """Apply one preset to every kind and language at once, or clear them all.
+
+    ``Default`` is the same endpoint with ``style=default``: it deletes every
+    stored body so the bot renders ``message_kinds`` again. Any other value is
+    a preset: the file is read, every body is validated against the catalogue,
+    and the accepted ones are written in one transaction. Bodies that do not
+    validate are *skipped* and named in the notice — an operator who sees
+    "applied 54 of 56" can fix the file, which a silent all-or-nothing failure
+    would not tell them.
+    """
+    prologue = await _template_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    user, form = prologue
+
+    requested = str(form.get("style") or "").strip()
+    kind, lang = _template_defaults(
+        str(form.get("kind") or "") or None,
+        str(form.get("lang") or "") or None,
+    )
+
+    if requested == message_styles.DEFAULT_STYLE:
+        cleared = await db.clear_message_templates()
+        await db.save_settings({message_styles.SETTING_KEY: message_styles.DEFAULT_STYLE})
+        notice = message_styles.default_notice(cleared=cleared)
+        logging.getLogger("koyura.dashboard").info(
+            "message templates back to default (%d rows cleared by %s)", cleared, user
+        )
+        return _templates_redirect(kind, lang, style_notice=notice)
+
+    try:
+        plan = message_styles.plan(requested)
+    except message_styles.StyleError as exc:
+        return await _bot_page(
+            request,
+            user,
+            template_error=str(exc),
+            kind=kind,
+            lang=lang,
+            status_code=400,
+        )
+
+    names = dict.fromkeys(plan.bodies, plan.style.label)
+    written = await db.replace_message_templates(plan.bodies, names)
+    await db.save_settings({message_styles.SETTING_KEY: plan.style.id})
+    notice = message_styles.apply_notice(plan, cleared=int(written["replaced"]))
+    logging.getLogger("koyura.dashboard").info(
+        "message style %s applied by %s: %d kind(s), %d skipped, %d row(s)",
+        plan.style.id,
+        user,
+        plan.applied,
+        len(plan.skipped),
+        int(written["written"]),
+    )
+    return _templates_redirect(kind, lang, style_notice=notice)
 
 
 def _pretty_value(value: float) -> str:

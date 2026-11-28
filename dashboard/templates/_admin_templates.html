@@ -36,6 +36,63 @@
   <p class="form-notice" role="status" id="templates-notice">{{ template_notice }}</p>
   {% endif %}
 
+  {# The preset styles: one button each, the active one lit. Applying a style
+     is a whole-set write (every kind, both languages), so each is its own POST
+     with the CSRF token — a plain form, like every other action here. Default
+     clears the overrides so the bot renders its built-in texts again. #}
+  <div class="templates-styles" id="templates-styles"
+       data-active-style="{{ style_active }}">
+    <div class="templates-styles-head">
+      <span class="limits-label mono">Стиль шаблонов</span>
+      <span class="limits-meta mono" id="templates-style-active">
+        активен: {{ style_active_label }}
+        {%- if style_active == style_custom.id %} (набор правился вручную){% endif %}
+      </span>
+    </div>
+    <div class="templates-style-row" role="group" aria-label="Стили шаблонов">
+      {% for style in styles %}
+      <form method="post" action="/admin/templates/apply-style"
+            class="templates-style-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <input type="hidden" name="kind" value="{{ template_kind.id }}" />
+        <input type="hidden" name="lang" value="{{ template_lang }}" />
+        <input type="hidden" name="style" value="{{ style.id }}" />
+        <button type="submit"
+                class="templates-style{% if style.id == style_active %} is-active{% endif %}"
+                data-style="{{ style.id }}"
+                title="{{ style.tagline }}"
+                {% if not style.installed %}disabled{% endif %}>
+          {{ style.label }}{% if not style.installed %} · нет файла{% endif %}
+        </button>
+      </form>
+      {% endfor %}
+      <form method="post" action="/admin/templates/apply-style"
+            class="templates-style-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <input type="hidden" name="kind" value="{{ template_kind.id }}" />
+        <input type="hidden" name="lang" value="{{ template_lang }}" />
+        <input type="hidden" name="style" value="{{ style_default.id }}" />
+        <button type="submit"
+                class="templates-style{% if style_active == style_default.id %} is-active{% endif %}"
+                data-style="{{ style_default.id }}"
+                title="Заводские тексты: все свои шаблоны удаляются."
+                data-confirm="Вернуть заводские тексты и удалить все свои шаблоны?">
+          {{ style_default.label }}
+        </button>
+      </form>
+      {% if style_active == style_custom.id %}
+      <span class="templates-style templates-style-custom is-active"
+            data-style="{{ style_custom.id }}"
+            title="Набор правился вручную после применения стиля.">
+        {{ style_custom.label }}
+      </span>
+      {% endif %}
+    </div>
+    {% if style_notice %}
+    <p class="form-notice" role="status" id="templates-style-notice">{{ style_notice }}</p>
+    {% endif %}
+  </div>
+
   <div class="templates-layout">
     <nav class="templates-sidebar" aria-label="Виды сообщений">
       {% for group in template_groups %}

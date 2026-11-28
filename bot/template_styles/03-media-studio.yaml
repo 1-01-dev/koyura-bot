@@ -1,0 +1,657 @@
+_about: 'Koyura message templates - Media Studio. Edit only en:/ru: text; keep kinds, media and placeholders unchanged.'
+onboarding:
+  help:
+    media: text
+    placeholders:
+    - platforms
+    - version
+    en: 'How to use Koyura Bot:
+
+      1. Send a link (YouTube, TikTok, etc.)
+
+      2. Pick a format (MP4 or MP3)
+
+      3. Pick quality
+
+      4. The file arrives
+
+      Shortcuts:
+
+      /mp3 <link> - Direct MP3 download
+
+      /mp4 <link> - Best quality MP4
+
+      /best <link> - Best available quality
+
+      Preferences:
+
+      /setquality <best/720/480> - Default quality
+
+      /setformat <video/audio> - Default format
+
+      /settings - View your preferences
+
+      Other:
+
+      /platforms - Supported sites
+
+      /stats - Bot stats
+
+      /cancel - Cancel (coming soon)
+
+      Send several links at once and each one is handled in turn.'
+    ru: 'Как пользоваться Koyura Bot:
+
+      1. Пришлите ссылку (YouTube, TikTok и т.д.)
+
+      2. Выберите формат (MP4 или MP3)
+
+      3. Выберите качество
+
+      4. Файл придёт в этот чат
+
+      Быстрые команды:
+
+      /mp3 <ссылка> - сразу MP3
+
+      /mp4 <ссылка> - MP4 лучшего качества
+
+      /best <ссылка> - лучшее доступное качество
+
+      Настройки:
+
+      /setquality <best/720/480> - качество по умолчанию
+
+      /setformat <video/audio> - формат по умолчанию
+
+      /settings - ваши настройки
+
+      Другое:
+
+      /platforms - поддерживаемые сайты
+
+      /stats - статистика бота
+
+      /cancel - отмена (скоро)
+
+      Можно прислать несколько ссылок сразу — бот обработает их по очереди.'
+  language.prompt:
+    media: text
+    placeholders:
+    - languages
+    en: Choose the language of this chat.
+    ru: Выберите язык этого чата.
+  language.unknown:
+    media: text
+    placeholders: []
+    en: That language is not enabled on this bot.
+    ru: Этот язык не включён на этом боте.
+  platforms:
+    media: text
+    placeholders:
+    - platforms
+    - count
+    en: 'SUPPORTED SOURCES
+
+      Supported platforms:
+
+      and 1000+ more via yt-dlp'
+    ru: 'SUPPORTED SOURCES
+
+      Поддерживаемые платформы:
+
+      и ещё 1000+ сайтов через yt-dlp'
+  welcome:
+    media: text
+    placeholders:
+    - languages
+    - platforms
+    - version
+    en: 'Koyura | Media
+
+      Koyura Bot — a quiet downloader.
+
+      Send a video or audio link and the file arrives in this chat.
+
+      Supported platforms: YouTube, TikTok, Instagram, Twitter, Reddit, and 1000+ more.'
+    ru: 'Koyura | Media
+
+      Koyura Bot — тихий загрузчик.
+
+      Пришлите ссылку на видео или аудио — файл придёт в этот чат.
+
+      Поддерживаемые платформы: YouTube, TikTok, Instagram, Twitter, Reddit и ещё 1000+.'
+navigation:
+  format.invalid:
+    media: text
+    placeholders:
+    - options
+    en: 'Invalid format. Options: {options}'
+    ru: 'Неизвестный формат. Варианты: {options}'
+  format.saved:
+    media: text
+    placeholders:
+    - format
+    en: 'Default format set to: {format}'
+    ru: 'Формат по умолчанию: {format}'
+  format.usage:
+    media: text
+    placeholders: []
+    en: 'Usage: /setformat <video/audio>'
+    ru: 'Использование: /setformat <video/audio>'
+  mode.armed:
+    media: text
+    placeholders:
+    - mode
+    en: 'Mode: {mode}
+
+      Send the link — it downloads as {mode}.'
+    ru: 'Режим: {mode}
+
+      Пришлите ссылку — файл скачается как {mode}.'
+  mp3.started:
+    media: text
+    placeholders: []
+    en: Downloading MP3...
+    ru: Скачиваю MP3...
+  mp3.usage:
+    media: text
+    placeholders: []
+    en: 'Usage: /mp3 <link>
+
+      Or reply to a message containing a link.'
+    ru: 'Использование: /mp3 <ссылка>
+
+      Или ответьте на сообщение со ссылкой.'
+  mp4.started:
+    media: text
+    placeholders: []
+    en: Downloading MP4 (best quality)...
+    ru: Скачиваю MP4 (лучшее качество)...
+  mp4.usage:
+    media: text
+    placeholders: []
+    en: 'Usage: /mp4 <link>
+
+      Or reply to a message containing a link.'
+    ru: 'Использование: /mp4 <ссылка>
+
+      Или ответьте на сообщение со ссылкой.'
+  quality.invalid:
+    media: text
+    placeholders:
+    - options
+    en: 'Invalid quality. Options: {options}'
+    ru: 'Неизвестное качество. Варианты: {options}'
+  quality.saved:
+    media: text
+    placeholders:
+    - quality
+    en: 'Default quality set to: {quality}'
+    ru: 'Качество по умолчанию: {quality}'
+  quality.usage:
+    media: text
+    placeholders: []
+    en: 'Usage: /setquality <best/1080/720/480/360>'
+    ru: 'Использование: /setquality <best/1080/720/480/360>'
+  settings:
+    media: text
+    placeholders:
+    - quality
+    - format
+    - language
+    - mode
+    en: 'PREFERENCES
+
+      Your preferences:
+
+      Default quality
+
+      Default format
+
+      Language
+
+      Next link
+
+      not set
+
+      Change:
+
+      /setquality <best/720/480>
+
+      /setformat <video/audio>
+
+      Tap a language to switch.'
+    ru: 'PREFERENCES
+
+      Ваши настройки:
+
+      Качество по умолчанию
+
+      Формат по умолчанию
+
+      Язык
+
+      Следующая ссылка
+
+      не задан
+
+      Изменить:
+
+      /setquality <best/720/480>
+
+      /setformat <video/audio>
+
+      Нажмите язык, чтобы переключить.'
+download:
+  card:
+    media: caption
+    placeholders:
+    - title
+    - uploader
+    - channel
+    - followers
+    - duration
+    - views
+    - likes
+    - comments
+    - category
+    - uploaded
+    - source
+    - url
+    - meta
+    en: 'MEDIA PREVIEW
+
+      Untitled
+
+      Duration
+
+      Followers
+
+      Category
+
+      Uploaded
+
+      views
+
+      likes
+
+      comments
+
+      via Koyura'
+    ru: 'MEDIA PREVIEW
+
+      Без названия
+
+      Длительность
+
+      Подписчиков
+
+      Категория
+
+      Загружено
+
+      просмотров
+
+      лайков
+
+      комментариев
+
+      через Koyura'
+  done:
+    media: caption
+    placeholders:
+    - title
+    - quality
+    - size
+    - duration
+    - source
+    en: 'FILE READY
+
+      Download
+
+      via Koyura'
+    ru: 'FILE READY
+
+      Загрузка
+
+      через Koyura'
+  limit.all_too_big:
+    media: text
+    placeholders:
+    - limit
+    en: All available formats are over the send limit ({limit}). Try another link or MP3.
+    ru: Все доступные форматы больше лимита отправки ({limit}). Попробуйте другую ссылку или MP3.
+  limit.audio_too_big:
+    media: text
+    placeholders:
+    - limit
+    en: This audio is too large to send (limit {limit}).
+    ru: Это аудио слишком большое для отправки (лимит {limit}).
+  limit.quality_selected:
+    media: text
+    placeholders:
+    - quality
+    - skipped
+    en: 'Selected {quality}: {skipped} does not fit the send limit'
+    ru: 'Выбрано {quality}: {skipped} не влезает в лимит'
+  limit.video_too_big:
+    media: text
+    placeholders:
+    - limit
+    en: This video is too large to send (limit {limit}).
+    ru: Это видео слишком большое для отправки (лимит {limit}).
+  progress:
+    media: caption
+    placeholders:
+    - title
+    - stage
+    - quality
+    - bar
+    - percent
+    - size
+    - speed
+    - eta
+    - elapsed
+    - facts
+    en: 'TRANSFER
+
+      Starting…
+
+      Downloading…
+
+      Processing…
+
+      Uploading…
+
+      Converting…
+
+      ETA {eta}
+
+      {elapsed} elapsed'
+    ru: 'TRANSFER
+
+      Запускаю…
+
+      Скачиваю…
+
+      Обрабатываю…
+
+      Отправляю…
+
+      Конвертирую…
+
+      осталось {eta}
+
+      {elapsed} прошло'
+  queued:
+    media: caption
+    placeholders:
+    - title
+    - position
+    - wait
+    - hint
+    en: 'QUEUE STATUS
+
+      You can leave this chat — the file arrives here.
+
+      In queue
+
+      In queue №{position}
+
+      Estimated wait'
+    ru: 'QUEUE STATUS
+
+      Чат можно закрыть — файл придёт сюда.
+
+      В очереди
+
+      В очереди №{position}
+
+      Ожидание примерно'
+  stage.searching:
+    media: text
+    placeholders: []
+    en: 🔍
+    ru: 🔍
+  stage.starting:
+    media: text
+    placeholders: []
+    en: Starting…
+    ru: Запускаю…
+  transcode.ask:
+    media: caption
+    placeholders:
+    - title
+    - question
+    - quality
+    - codec
+    - note
+    en: 'Send {quality} ({codec}) as a file, or convert it?
+
+      AV1/VP9 may not play on iPhone — those formats arrive as a file, or can be converted to H.264.'
+    ru: 'Отправить {quality} ({codec}) файлом или конвертировать?
+
+      AV1/VP9 может не проигрываться на iPhone — такие форматы приходят файлом, а можно сконвертировать в H.264.'
+  transcode.document:
+    media: text
+    placeholders: []
+    en: 'Sent as a file: this codec plays as a video only on some phones.'
+    ru: 'Отправлено файлом: этот кодек проигрывается как видео не на всех телефонах.'
+errors:
+  card.render_failed:
+    media: text
+    placeholders: []
+    en: 'MEDIA PREVIEW
+
+      Could not render this link. Try /mp4 or /mp3 instead.'
+    ru: 'MEDIA PREVIEW
+
+      Не удалось показать эту ссылку. Попробуйте /mp4 или /mp3.'
+  download.already:
+    media: text
+    placeholders: []
+    en: Already downloading — wait for the file.
+    ru: Уже скачивается — дождитесь файла.
+  download.busy_service:
+    media: text
+    placeholders:
+    - when
+    en: The service is overloaded right now — try again in {when}.
+    ru: Сервис перегружен — повторите через {when}.
+  download.busy_user:
+    media: text
+    placeholders:
+    - when
+    en: You already have a download running. Try again in {when}.
+    ru: У вас уже идёт загрузка. Повторите через {when}.
+  download.file_missing:
+    media: text
+    placeholders: []
+    en: File not found after download.
+    ru: Файл не найден после загрузки.
+  download.session_expired:
+    media: text
+    placeholders: []
+    en: Session expired. Please send the link again.
+    ru: Сессия истекла. Пришлите ссылку заново.
+  download.timed_out:
+    media: text
+    placeholders: []
+    en: Download timed out.
+    ru: Загрузка превысила лимит времени.
+  download.unexpected:
+    media: text
+    placeholders: []
+    en: Download service returned an unexpected answer.
+    ru: Сервис загрузки ответил неожиданно.
+  download.unknown_error:
+    media: text
+    placeholders: []
+    en: Unknown error
+    ru: Неизвестная ошибка
+  download.upload_failed:
+    media: text
+    placeholders: []
+    en: Failed to upload file to Telegram.
+    ru: Не удалось отправить файл в Telegram.
+  engine.down:
+    media: text
+    placeholders: []
+    en: Download service temporarily unavailable.
+    ru: Сервис загрузки временно недоступен.
+  engine.error:
+    media: text
+    placeholders:
+    - error
+    en: Service is not supported at the moment.
+    ru: Сервис не поддерживается в данный момент.
+    customised: true
+    builtin_en: 'Error: {error}'
+    builtin_ru: 'Ошибка: {error}'
+  engine.info_failed:
+    media: text
+    placeholders:
+    - error
+    en: Service is not supported at the moment.
+    ru: Сервис не поддерживается в данный момент.
+    customised: true
+    builtin_en: 'Failed to fetch info: {error}'
+    builtin_ru: 'Не удалось получить данные: {error}'
+  error:
+    media: caption
+    placeholders:
+    - title
+    - error
+    - retry_hint
+    - url
+    - limit
+    en: Service is not supported at the moment.
+    ru: Сервис не поддерживается в данный момент.
+    customised: true
+    builtin_en: 'Download failed
+
+      Unknown error
+
+      Tap a format to try again.'
+    builtin_ru: 'Загрузка не удалась
+
+      Неизвестная ошибка
+
+      Нажмите формат, чтобы попробовать снова.'
+  intake.too_many:
+    media: text
+    placeholders:
+    - limit
+    en: Only the first {limit} links of a message are processed.
+    ru: Обрабатываются только первые {limit} ссылок из сообщения.
+  intake.unsafe:
+    media: text
+    placeholders: []
+    en: I can only download from public http(s) links. That link was skipped because it is not allowed.
+    ru: 'Я качаю только с публичных ссылок http(s). Эта ссылка пропущена: такой адрес запрещён.'
+privileged:
+  stats:
+    media: text
+    placeholders:
+    - uptime
+    - downloads
+    - errors
+    - cached
+    - disk
+    - sessions
+    - version
+    en: 'Koyura Bot Stats:
+
+      Uptime
+
+      Downloads
+
+      Errors
+
+      Cached files
+
+      Disk usage
+
+      Active sessions'
+    ru: 'Статистика Koyura Bot:
+
+      Аптайм
+
+      Загрузок
+
+      Ошибок
+
+      Файлов в кэше
+
+      Занято на диске
+
+      Активных сессий'
+buttons:
+  button.help:
+    media: text
+    placeholders: []
+    en: Help
+    ru: Помощь
+  button.mp3:
+    media: text
+    placeholders: []
+    en: MP3
+    ru: MP3
+  button.mp4:
+    media: text
+    placeholders: []
+    en: MP4
+    ru: MP4
+  button.platforms:
+    media: text
+    placeholders: []
+    en: 'SUPPORTED SOURCES
+
+      Platforms'
+    ru: 'SUPPORTED SOURCES
+
+      Платформы'
+  button.settings:
+    media: text
+    placeholders: []
+    en: 'PREFERENCES
+
+      Settings'
+    ru: 'PREFERENCES
+
+      Настройки'
+  button.stats:
+    media: text
+    placeholders: []
+    en: Stats
+    ru: Статистика
+  card.best_quality:
+    media: text
+    placeholders: []
+    en: 'MEDIA PREVIEW
+
+      Best quality'
+    ru: 'MEDIA PREVIEW
+
+      Лучшее качество'
+  nav.back:
+    media: text
+    placeholders: []
+    en: Back
+    ru: Назад
+  transcode.convert:
+    media: text
+    placeholders:
+    - eta
+    en: 'Convert ({eta})
+
+      Convert'
+    ru: 'Конвертировать ({eta})
+
+      Конвертировать'
+  transcode.send_as_file:
+    media: text
+    placeholders: []
+    en: Send as file
+    ru: Отправить файлом

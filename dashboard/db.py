@@ -940,6 +940,79 @@ async def reset_message_templates(kind: str, lang: str) -> int:
     return int(deleted)
 
 
+async def clear_message_templates() -> int:
+    """Delete every stored body: the whole bot is back on the factory texts.
+
+    This is the ``Default`` style. It deletes rows rather than inserting copies
+    of the built-in text, because a stored copy would freeze today's wording: an
+    upgraded panel would then keep sending the old sentences while the chat
+    forgets what "default" means.
+    """
+    async with _conn() as conn:
+        cursor = await conn.execute("DELETE FROM message_templates")
+        deleted = cursor.rowcount
+        await cursor.close()
+        await conn.commit()
+    return int(deleted)
+
+
+async def replace_message_templates(
+    bodies: dict[str, dict[str, str]], names: dict[str, str] | None = None
+) -> dict[str, int]:
+    """Make ``bodies`` the stored set, one active row per ``(kind, lang)``.
+
+    This is what applying a style does. For every pair it names, the previous
+    rows (active or not) are deleted and the new body inserted, so the templates
+    list shows exactly one row per message instead of a history of every style
+    ever applied. Rows for pairs outside ``bodies`` are left alone: a style that
+    could not fill a kind must not silently drop what the owner had there.
+
+    All of it is one transaction, so the chat never renders half of one voice
+    and half of the previous one.
+
+    Returns ``{"written": n, "replaced": m}`` where ``replaced`` counts the
+    pairs that already had a stored row.
+    """
+    moment = _utc_now()
+    labels = names or {}
+    written = 0
+    replaced = 0
+    async with _conn() as conn:
+        for kind, by_language in bodies.items():
+            for lang, body in by_language.items():
+                if not str(body or "").strip():
+                    continue
+                cursor = await conn.execute(
+                    "SELECT COUNT(*) FROM message_templates "
+                    "WHERE kind = ? AND lang = ?",
+                    (str(kind), str(lang)),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row and int(row[0]):
+                    replaced += 1
+                await conn.execute(
+                    "DELETE FROM message_templates WHERE kind = ? AND lang = ?",
+                    (str(kind), str(lang)),
+                )
+                await conn.execute(
+                    "INSERT INTO message_templates "
+                    "(kind, lang, name, body, is_active, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, 1, ?, ?)",
+                    (
+                        str(kind),
+                        str(lang),
+                        labels.get(kind, "Style"),
+                        str(body),
+                        moment,
+                        moment,
+                    ),
+                )
+                written += 1
+        await conn.commit()
+    return {"written": written, "replaced": replaced}
+
+
 # ---------------------------------------------------------------------------
 # Service cookies (the Storage page)
 # ---------------------------------------------------------------------------

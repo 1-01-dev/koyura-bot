@@ -5,3 +5,6 @@ aiosqlite>=0.20.0
 itsdangerous>=2.1.0
 httpx>=0.25.0
 python-multipart>=0.0.6
+# The preset message styles are YAML (bot/template_styles); the panel reads them
+# to build an apply plan, so it needs a parser of its own.
+pyyaml>=6.0

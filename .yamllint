@@ -1,0 +1,21 @@
+# yamllint settings for the repository.
+#
+# Only one family of files needs an exception: ``bot/template_styles/*.yaml``.
+# Those are not configuration — they are the four preset voices of the bot, and
+# every line in them is a sentence a user reads in Telegram. The panel imports
+# the bodies byte for byte, so:
+#
+# * ``line-length`` would force rewrapping the wording itself (the style files
+#   carry bodies of up to 185 characters on one line);
+# * ``indentation`` wants mapping sequences indented, while ``placeholders`` is
+#   written compact under its key because it reads as one block.
+#
+# They also ship without a ``---`` header, like the rest of this repository's
+# YAML. Exempting the directory keeps the rules strict for everything that *is*
+# configuration — the compose file, the workflows, the systemd assets.
+#
+# Run it from the repository root: ``yamllint .``
+extends: default
+
+ignore: |
+  bot/template_styles/
