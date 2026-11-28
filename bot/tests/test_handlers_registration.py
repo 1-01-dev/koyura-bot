@@ -27,6 +27,7 @@ from handlers import (  # noqa: E402
     commands,
     onboarding,
     register_handlers,
+    subscription,
     texts,
     url_flow,
 )
@@ -132,19 +133,20 @@ class TestRegistration:
         assert not text_filter.check_update(message_update(None))
 
     def test_every_callback_scheme_has_exactly_one_handler(self, registered):
-        """Three keyboards, three patterns; none of them can swallow another."""
+        """One pattern per keyboard; none of them can swallow another."""
         by_pattern = {
             pattern_of(h).pattern: h
             for h in registered
             if isinstance(h, CallbackQueryHandler)
         }
         assert set(by_pattern) == {
-            r"^(dl|fmt|qty):", r"^lang:", r"^welcome:", r"^nav:",
+            r"^(dl|fmt|qty):", r"^lang:", r"^welcome:", r"^nav:", r"^sub:",
         }
         assert by_pattern[r"^(dl|fmt|qty):"].callback is callbacks.on_format_button
         assert by_pattern[r"^lang:"].callback is onboarding.on_language_button
         assert by_pattern[r"^welcome:"].callback is onboarding.on_welcome_button
         assert by_pattern[r"^nav:"].callback is onboarding.on_nav_button
+        assert by_pattern[r"^sub:"].callback is subscription.on_subscription_button
 
     def test_the_legacy_card_pattern_is_unchanged(self, registered):
         card = [

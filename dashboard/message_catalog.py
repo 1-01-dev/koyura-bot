@@ -119,6 +119,8 @@ PLACEHOLDERS: dict[str, "Placeholder"] = {
     'platforms': Placeholder('platforms', 'Список поддерживаемых сервисов', 'YouTube, TikTok, Instagram, Twitter/X, Reddit'),
     'version': Placeholder('version', 'Версия бота', '1.0'),
     'count': Placeholder('count', 'Сколько сервисов в списке', '16'),
+    'channels': Placeholder('channels', 'Список каналов, по одному в строке', 'Koyura · @koyura_news'),
+    'missing': Placeholder('missing', 'Каналы, на которые подписки ещё нет', '@koyura_news, @koyura_chat'),
     'language': Placeholder('language', 'Язык этого чата', 'English'),
     'mode': Placeholder('mode', 'Формат, который включён кнопкой', 'MP3'),
     'quality': Placeholder('quality', 'Выбранное качество', '1080p'),
@@ -223,6 +225,42 @@ KINDS: tuple["Kind", ...] = (
         templates={
             'en': 'That language is not enabled on this bot.',
             'ru': 'Этот язык не включён на этом боте.',
+        },
+    ),
+    Kind(
+        id='subscription.gate',
+        category='onboarding',
+        media='text',
+        title='Гейт обязательной подписки',
+        i18n_keys=('subscription.title', 'subscription.body', 'subscription.hint'),
+        placeholders=('channels',),
+        templates={
+            'en': '*One more step:*\n\nTo use the bot, subscribe to these channels:\n\n{channels}\n\nTap a channel to open it, then tap “Check subscription”.',
+            'ru': '*Ещё один шаг:*\n\nЧтобы пользоваться ботом, подпишитесь на каналы:\n\n{channels}\n\nНажмите на канал, чтобы открыть его, затем нажмите «Проверить подписку».',
+        },
+    ),
+    Kind(
+        id='subscription.missing',
+        category='onboarding',
+        media='text',
+        title='Подписки всё ещё нет',
+        i18n_keys=('subscription.title', 'subscription.missing', 'subscription.hint'),
+        placeholders=('missing',),
+        templates={
+            'en': '*One more step:*\n\nYou are not subscribed yet: {missing}.\n\nTap a channel to open it, then tap “Check subscription”.',
+            'ru': '*Ещё один шаг:*\n\nВы ещё не подписаны на {missing}.\n\nНажмите на канал, чтобы открыть его, затем нажмите «Проверить подписку».',
+        },
+    ),
+    Kind(
+        id='subscription.error',
+        category='onboarding',
+        media='text',
+        title='Подписку не удалось проверить',
+        i18n_keys=('subscription.error',),
+        placeholders=(),
+        templates={
+            'en': 'Could not check the subscription. Please try again later.',
+            'ru': 'Не удалось проверить подписку. Попробуйте позже.',
         },
     ),
     Kind(
@@ -895,6 +933,30 @@ KINDS: tuple["Kind", ...] = (
         templates={
             'en': 'MP4',
             'ru': 'MP4',
+        },
+    ),
+    Kind(
+        id='button.subscription_check',
+        category='buttons',
+        media='text',
+        title='Кнопка «Проверить подписку»',
+        i18n_keys=('button.subscription_check',),
+        placeholders=(),
+        templates={
+            'en': 'Check subscription',
+            'ru': 'Проверить подписку',
+        },
+    ),
+    Kind(
+        id='button.subscription_open',
+        category='buttons',
+        media='text',
+        title='Кнопка «Открыть канал»',
+        i18n_keys=('button.subscription_open',),
+        placeholders=(),
+        templates={
+            'en': 'Open channel',
+            'ru': 'Открыть канал',
         },
     ),
     Kind(

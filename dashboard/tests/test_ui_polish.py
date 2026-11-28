@@ -119,7 +119,8 @@ def _without_token_blocks(css: str) -> str:
 @pytest.mark.parametrize(
     "path",
     ["/history", "/errors", "/",
-     "/admin/cookies", "/admin/limits", "/admin/bot", "/admin/system"],
+     "/admin/cookies", "/admin/channels", "/admin/limits", "/admin/bot",
+     "/admin/system"],
 )
 def test_every_page_carries_the_link_dialog(path: str):
     """One dialog in base.html: the tables share it, so it must exist
@@ -333,7 +334,10 @@ def test_the_hamburger_keeps_its_id_and_control_attributes():
 def test_admin_groups_its_blocks_into_separate_panels():
     """Every admin page is a stack of the same ``card panel``, and a panel
     belongs to exactly one page — that is what the split bought."""
-    pages = ("/admin/cookies", "/admin/limits", "/admin/bot", "/admin/system")
+    pages = (
+        "/admin/cookies", "/admin/channels", "/admin/limits", "/admin/bot",
+        "/admin/system",
+    )
     for path in pages:
         html = _page(path)
         assert 'class="panel-stack"' in html, path

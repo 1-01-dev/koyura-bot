@@ -45,6 +45,7 @@ copying a default and moving a piece around.
 | `@cached` | Сколько файлов лежит на диске | `7` |
 | `@category` | Категория ролика | `Образование` |
 | `@channel` | Канал и @ник одной строкой | `Кухня на каждый день · @kitchen` |
+| `@channels` | Список каналов, по одному в строке | `Koyura · @koyura_news` |
 | `@codec` | Название кодека | `AV1` |
 | `@comments` | Число комментариев | `312` |
 | `@count` | Сколько сервисов в списке | `16` |
@@ -64,6 +65,7 @@ copying a default and moving a piece around.
 | `@likes` | Число лайков | `8,4K` |
 | `@limit` | Лимит отправки Telegram | `2000 МБ` |
 | `@meta` | Готовая строка метаданных карточки | `Кухня на каждый день · @kitchen / Длительность: 12:34` |
+| `@missing` | Каналы, на которые подписки ещё нет | `@koyura_news, @koyura_chat` |
 | `@mode` | Формат, который включён кнопкой | `MP3` |
 | `@note` | Пояснение под вопросом | `AV1/VP9 может не проигрываться на iPhone.` |
 | `@options` | Допустимые значения команды | `best, 1080, 720, 480, 360` |
@@ -98,6 +100,9 @@ copying a default and moving a piece around.
 | Первое знакомство и справка | Справка (/help) | `help` | text | 4096 | `@platforms`, `@version` |
 | Первое знакомство и справка | Поддерживаемые платформы (/platforms) | `platforms` | text | 4096 | `@platforms`, `@count` |
 | Первое знакомство и справка | Язык выключен (всплывающее сообщение) | `language.unknown` | text | 4096 | — |
+| Первое знакомство и справка | Гейт обязательной подписки | `subscription.gate` | text | 4096 | `@channels` |
+| Первое знакомство и справка | Подписки всё ещё нет | `subscription.missing` | text | 4096 | `@missing` |
+| Первое знакомство и справка | Подписку не удалось проверить | `subscription.error` | text | 4096 | — |
 | Навигация и настройки | Режим MP3/MP4 включён | `mode.armed` | text | 4096 | `@mode` |
 | Навигация и настройки | Настройки (/settings) | `settings` | text | 4096 | `@quality`, `@format`, `@language`, `@mode` |
 | Навигация и настройки | Как пользоваться /setquality | `quality.usage` | text | 4096 | — |
@@ -154,6 +159,8 @@ copying a default and moving a piece around.
 | Тексты кнопок | Кнопка «Статистика» | `button.stats` | text | 4096 | — |
 | Тексты кнопок | Кнопка «MP3» | `button.mp3` | text | 4096 | — |
 | Тексты кнопок | Кнопка «MP4» | `button.mp4` | text | 4096 | — |
+| Тексты кнопок | Кнопка «Проверить подписку» | `button.subscription_check` | text | 4096 | — |
+| Тексты кнопок | Кнопка «Открыть канал» | `button.subscription_open` | text | 4096 | — |
 | Тексты кнопок | Кнопка «Лучшее качество» | `card.best_quality` | text | 4096 | — |
 | Тексты кнопок | Кнопка «Отправить файлом» | `transcode.send_as_file` | text | 4096 | — |
 | Тексты кнопок | Кнопка «Конвертировать» | `transcode.convert` | text | 4096 | `@eta` |
@@ -305,6 +312,74 @@ That language is not enabled on this bot.
 
 ```text
 Этот язык не включён на этом боте.
+```
+
+### Гейт обязательной подписки (`subscription.gate`)
+
+`text` · limit 4096 · i18n: `subscription.title`, `subscription.body`, `subscription.hint`
+
+#### en
+
+```text
+*One more step:*
+
+To use the bot, subscribe to these channels:
+
+{channels}
+
+Tap a channel to open it, then tap “Check subscription”.
+```
+
+#### ru
+
+```text
+*Ещё один шаг:*
+
+Чтобы пользоваться ботом, подпишитесь на каналы:
+
+{channels}
+
+Нажмите на канал, чтобы открыть его, затем нажмите «Проверить подписку».
+```
+
+### Подписки всё ещё нет (`subscription.missing`)
+
+`text` · limit 4096 · i18n: `subscription.title`, `subscription.missing`, `subscription.hint`
+
+#### en
+
+```text
+*One more step:*
+
+You are not subscribed yet: {missing}.
+
+Tap a channel to open it, then tap “Check subscription”.
+```
+
+#### ru
+
+```text
+*Ещё один шаг:*
+
+Вы ещё не подписаны на {missing}.
+
+Нажмите на канал, чтобы открыть его, затем нажмите «Проверить подписку».
+```
+
+### Подписку не удалось проверить (`subscription.error`)
+
+`text` · limit 4096 · i18n: `subscription.error`
+
+#### en
+
+```text
+Could not check the subscription. Please try again later.
+```
+
+#### ru
+
+```text
+Не удалось проверить подписку. Попробуйте позже.
 ```
 
 ### Режим MP3/MP4 включён (`mode.armed`)
@@ -1277,6 +1352,38 @@ MP4
 
 ```text
 MP4
+```
+
+### Кнопка «Проверить подписку» (`button.subscription_check`)
+
+`text` · limit 4096 · i18n: `button.subscription_check`
+
+#### en
+
+```text
+Check subscription
+```
+
+#### ru
+
+```text
+Проверить подписку
+```
+
+### Кнопка «Открыть канал» (`button.subscription_open`)
+
+`text` · limit 4096 · i18n: `button.subscription_open`
+
+#### en
+
+```text
+Open channel
+```
+
+#### ru
+
+```text
+Открыть канал
 ```
 
 ### Кнопка «Лучшее качество» (`card.best_quality`)

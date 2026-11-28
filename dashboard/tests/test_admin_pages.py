@@ -1,12 +1,12 @@
 """Admin split into sub-pages: the route map and the sidebar group.
 
-The page that used to be one long ``/admin`` is five pages now. These tests pin
+The page that used to be one long ``/admin`` is six pages now. These tests pin
 the two things the split can break and the other suites cannot see:
 
 * the route map — every section renders, ``/admin`` lands on one of them, and
   the query string of an old link follows it to the section that owns it
   (``?saved=1`` → limits, ``?kind=…&lang=…`` → bot);
-* the sidebar — Admin is a disclosure group with five children, the current
+* the sidebar — Admin is a disclosure group with six children, the current
   child is marked and its parent stays marked, and everything around it
   (Dashboard, History, Errors) is still a plain row.
 
@@ -44,6 +44,7 @@ STATIC = DASHBOARD_DIR / "static"
 #: Route → the heading the page must carry. Ordered like the sidebar.
 SECTIONS = {
     "/admin/cookies": ("Cookies", "cookies"),
+    "/admin/channels": ("Channels", "channels"),
     "/admin/proxy": ("Proxy", "proxy"),
     "/admin/limits": ("Limits", "limits"),
     "/admin/bot": ("Bot settings", "bot"),
@@ -228,17 +229,18 @@ def test_the_parent_stays_active_while_a_child_is_current(admin: TestClient):
     assert 'aria-current="true"' in parent
 
 
-def test_the_group_carries_the_five_children(admin: TestClient):
+def test_the_group_carries_the_six_children(admin: TestClient):
     group = _nav_group(admin.get("/admin/cookies").text)
     links = re.findall(r'<a href="(/admin/[a-z]+)"', group)
     assert links == [
         "/admin/cookies",
+        "/admin/channels",
         "/admin/proxy",
         "/admin/limits",
         "/admin/bot",
         "/admin/system",
     ]
-    for label in ("Cookies", "Proxy", "Limits", "Bot settings", "System"):
+    for label in ("Cookies", "Channels", "Proxy", "Limits", "Bot settings", "System"):
         assert label in group
 
 
