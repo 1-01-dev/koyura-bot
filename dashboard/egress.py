@@ -1,15 +1,20 @@
-"""Outbound egress: a manual proxy or a WireGuard tunnel, and who uses it.
+"""Outbound egress: the primitives a proxy connection is built from.
 
 Datacentre IPs are blocked by several sites (Reddit answers ``403 Blocked`` no
 matter which cookie jar is uploaded). The owner therefore chooses, in the panel,
-*how* the engine leaves the box and *which services* that applies to. This
-module is the panel's half of that bargain; the engine reads the result from
-``GET /api/egress`` (see ``koyura/egress.py``) and hands yt-dlp ``--proxy``.
+*how* the engine leaves the box and *which services* that applies to. The list
+itself — one row per proxy or tunnel, with the engine's order — lives in
+``proxy_connections.py`` and travels on ``GET /api/egress`` (see
+``koyura/egress.py``). This module is what those rows are made of: the proxy URL
+validator and its mask, the WireGuard config file, the watcher's status file and
+the ``curl`` check.
 
-Three pieces of state, and they are deliberately different things:
+Still three pieces of state, and they are deliberately different things:
 
-* **the settings** — mode, proxy URL and the assignment rule — live in the
-  dashboard's ``settings`` table (``egress.*``), next to the download limits;
+* **the rows** — kind, URL, assignment rule, enabled switch — live in the
+  dashboard's ``proxy_connections`` table; the retired single-rule form still
+  writes ``egress.*`` in ``settings`` and is migrated once by
+  ``proxy_connections``;
 * **the WireGuard config** is a *file*, ``EGRESS_PATH/wg0.conf`` (0600), because
   a root-owned watcher outside this container applies it and only a path can be
   watched; the panel never reads it back;
@@ -19,10 +24,11 @@ Three pieces of state, and they are deliberately different things:
 
 Two rules shape everything here:
 
-* **a secret never comes back.** The proxy password is stored (the engine needs
-  it) but is rendered as ``***`` in the form, in the page and in every log line;
-  the WireGuard private key is never read by this process at all — the panel
-  writes the uploaded bytes and forgets them.
+* **a secret never comes back.** A proxy password is written to
+  ``EGRESS_PATH/secrets/<id>.txt`` (0600) and only its reference is stored, so
+  nothing here has a password to render: the page shows ``***`` and every log
+  line goes through :func:`redact`. The WireGuard private key is never read by
+  this process at all — the panel writes the uploaded bytes and forgets them.
 * **nothing is guessed.** A proxy URL must name one of four schemes, a
   WireGuard file must look like one (two sections, three required keys, ≤64 KB),
   and an unreadable ``status.json`` is "down", never an exception that takes the
@@ -477,7 +483,12 @@ def assignment_options(selected: str) -> list[dict[str, object]]:
 
 @dataclass(frozen=True)
 class Egress:
-    """Mode, proxy and assignment rule — what the panel stores and the engine reads."""
+    """Mode, proxy and assignment rule — the one rule the retired form stores.
+
+    Kept because the old Proxy page still renders and saves exactly this; the
+    engine reads ``proxy_connections`` instead. ``proxy_connections`` migrates
+    these rows once.
+    """
 
     mode: str = "off"
     proxy_url: str = ""
