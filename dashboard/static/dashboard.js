@@ -11,6 +11,7 @@ import { initDashboardPage } from './js/report.js';
 import { initLinkModal } from './js/linkmodal.js';
 import { initTemplates } from './js/templates.js';
 import { initHelpBubbles } from './js/help.js';
+import { initSubscriptionChart } from './js/subscriptions.js';
 import {
   deleteSelected,
   openPurgeModal,
@@ -35,13 +36,15 @@ function bootDashboard() {
 }
 
 function bootAdmin() {
-  /* The admin page is four pages now: the file table and the purge dialog live
-     on /admin/system, the presets on /admin/limits, the editor on /admin/bot.
-     Each wiring starts on its own hook, so a page without that section costs
-     nothing and no section is skipped because one id is missing. */
+  /* The admin page is five pages now: the file table and the purge dialog live
+     on /admin/system, the presets on /admin/limits, the editor on /admin/bot,
+     the channel table and its chart on /admin/channels. Each wiring starts on
+     its own hook, so a page without that section costs nothing and no section
+     is skipped because one id is missing. */
   initAdminActions(ADMIN_ACTIONS);
   initSelectAll();
   if (document.getElementById('templates-card')) initTemplates();
+  if (document.getElementById('subscriptions-chart')) initSubscriptionChart();
 }
 
 function boot() {
