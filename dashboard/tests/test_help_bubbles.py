@@ -227,8 +227,10 @@ def test_every_panel_id_is_unique_and_resolves():
 def test_the_headings_stay_visible():
     """The "?" sits next to the title, it does not replace it."""
     proxy = _page("/admin/proxy")
-    assert '<h2 class="card-title">Outbound route</h2>' in proxy
-    assert '<h2 class="card-title">WireGuard</h2>' in proxy
+    # The page became a connection list; the headings say what the two cards
+    # hold now, and both keep their "?" beside the title.
+    assert '<h2 class="card-title">Connections</h2>' in proxy
+    assert '<h2 class="card-title">WireGuard config</h2>' in proxy
     assert '<h2 class="card-title">Cookie files</h2>' in _page("/admin/cookies")
     assert '<h2 class="card-title">Bot languages</h2>' in _page("/admin/bot")
 

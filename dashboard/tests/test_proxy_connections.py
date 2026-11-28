@@ -612,30 +612,57 @@ class TestInterval:
 
 
 # ---------------------------------------------------------------------------
-# The old form keeps steering the engine until the UI task replaces it
+# The editor's endpoints, and the retired form
 # ---------------------------------------------------------------------------
+#
+# The page owns the list now, so the endpoints the editor posts to are part of
+# the contract these tests pin: a save is a save, a second tunnel is refused with
+# a code the dialog can show, and the single-rule form that predated the list is
+# gone rather than silently half-working.
 
-class TestLegacyFormBridge:
-    def _save(self, client: TestClient, **overrides):
+class TestEditorEndpoints:
+    def _post(self, client: TestClient, action: str, **overrides):
         data = {
-            "mode": "manual",
-            "proxy_url": PROXY_WITH_CREDENTIALS,
+            "name": "Primary",
+            "kind": "socks5h",
+            "url": PROXY_URL,
+            "username": "",
+            "password": "",
             "assignment_mode": "all",
             "csrf_token": client.cookies.get("koyura_csrf") or "",
         }
         data.update(overrides)
-        return client.post("/admin/proxy", data=data, follow_redirects=False)
+        return client.post(
+            action, data=data, headers={"X-Requested-With": "fetch"}
+        )
 
-    def test_saving_the_form_creates_the_connection_the_engine_reads(self, admin):
-        assert self._save(admin).status_code == 303
+    def test_a_save_creates_the_connection_the_engine_reads(self, admin):
+        response = self._post(
+            admin, "/admin/proxy/connection", url=PROXY_WITH_CREDENTIALS
+        )
+        assert response.status_code == 201
         payload = _get("/api/egress")
         assert len(payload["connections"]) == 1
         assert payload["connections"][0]["url"] == PROXY_URL
         assert PROXY_PASSWORD not in json.dumps(payload)
 
-    def test_saving_again_updates_instead_of_duplicating(self, admin):
-        self._save(admin)
-        self._save(admin, assignment_mode="selected", services=["reddit"])
+    def test_a_save_answers_the_row_the_table_patches(self, admin):
+        body = self._post(admin, "/admin/proxy/connection").json()
+        assert body["ok"] is True
+        row = body["row"]
+        assert row["name"] == "Primary"
+        assert row["kind_label"] == "SOCKS5H"
+        assert row["status_badge"] == "badge"
+        assert row["assignment_label"] == "All services"
+
+    def test_an_edit_updates_instead_of_duplicating(self, admin):
+        created = self._post(admin, "/admin/proxy/connection").json()["row"]
+        self._post(
+            admin,
+            f"/admin/proxy/connection/{created['id']}",
+            assignment_mode="selected",
+            services=["reddit"],
+        )
         payload = _get("/api/egress")
         assert len(payload["connections"]) == 1
         assert payload["connections"][0]["assignment"] == {
@@ -643,21 +670,45 @@ class TestLegacyFormBridge:
             "services": ["reddit"],
         }
 
-    def test_off_removes_the_connection(self, admin):
-        self._save(admin)
-        self._save(admin, mode="off", proxy_url="")
-        assert _get("/api/egress")["connections"] == []
-        assert _run(db.list_proxy_connections()) == []
+    def test_a_second_tunnel_is_refused_with_a_code(self, admin):
+        self._post(admin, "/admin/proxy/connection", name="T1", kind="wireguard", url="")
+        response = self._post(
+            admin, "/admin/proxy/connection", name="T2", kind="wireguard", url=""
+        )
+        assert response.status_code == 400
+        assert response.json()["code"] == "OnlyOneWireGuard"
 
-    def test_saving_wireguard_creates_the_tunnel_row(self, admin):
-        assert self._save(admin, mode="wireguard", proxy_url="").status_code == 303
-        payload = _get("/api/egress")
-        assert payload["connections"][0]["kind"] == "wireguard"
-        assert payload["connections"][0]["url"] == ""
+    def test_a_plain_form_gets_a_redirect_not_json(self, admin):
+        response = admin.post(
+            "/admin/proxy/connection",
+            data={
+                "name": "Plain",
+                "kind": "socks5h",
+                "url": PROXY_URL,
+                "assignment_mode": "all",
+                "csrf_token": admin.cookies.get("koyura_csrf") or "",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/admin/proxy")
+
+    def test_the_retired_rule_form_no_longer_answers(self, admin):
+        response = admin.post(
+            "/admin/proxy",
+            data={
+                "mode": "manual",
+                "proxy_url": PROXY_WITH_CREDENTIALS,
+                "csrf_token": admin.cookies.get("koyura_csrf") or "",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code in (404, 405)
+        assert _get("/api/egress")["connections"] == []
 
     def test_removing_the_config_forgets_the_tunnel_row(self, admin):
         egress.write_wireguard(WG_CONFIG)
-        self._save(admin, mode="wireguard", proxy_url="")
+        self._post(admin, "/admin/proxy/connection", name="T", kind="wireguard", url="")
         response = admin.post(
             "/admin/proxy/wireguard/remove",
             data={"csrf_token": admin.cookies.get("koyura_csrf") or ""},
@@ -665,3 +716,113 @@ class TestLegacyFormBridge:
         )
         assert response.status_code == 303
         assert _get("/api/egress")["connections"] == []
+
+
+# ---------------------------------------------------------------------------
+# The automatic tests
+# ---------------------------------------------------------------------------
+
+class TestAutoTests:
+    def _enabled(self):
+        return _run(
+            proxy_connections.create_connection(
+                name="Sweep", kind="socks5h", url=PROXY_URL,
+                assignment_mode="all", services=[],
+            )
+        )
+
+    def _recorder(self, monkeypatch, calls: list[int]) -> None:
+        """A probe that records the row instead of opening a socket."""
+
+        async def _probe(connection_id):
+            calls.append(connection_id)
+
+        monkeypatch.setattr(proxy_connections, "test_connection", _probe)
+
+    def test_off_never_probes(self, monkeypatch):
+        self._enabled()
+        calls: list[int] = []
+        self._recorder(monkeypatch, calls)
+        assert _run(proxy_connections.run_due_tests()) == 0
+        assert calls == []
+
+    def test_a_due_row_is_probed_and_a_fresh_one_is_not(self, monkeypatch):
+        row = self._enabled()
+        calls: list[int] = []
+        self._recorder(monkeypatch, calls)
+        _run(proxy_connections.set_test_interval(30))
+        assert _run(proxy_connections.run_due_tests()) == 1
+        assert calls == [row["id"]]
+
+        # Now the row has just been tested: the same sweep leaves it alone.
+        calls.clear()
+        _run(
+            db.record_proxy_connection_test(
+                row["id"], status="ok", result="203.0.113.9"
+            )
+        )
+        assert _run(proxy_connections.run_due_tests()) == 0
+        assert calls == []
+
+    def test_an_old_verdict_comes_due_again(self, monkeypatch):
+        row = self._enabled()
+        _run(proxy_connections.set_test_interval(5))
+        _run(
+            db.record_proxy_connection_test(
+                row["id"],
+                status="ok",
+                result="203.0.113.9",
+                tested_at="2020-01-01 00:00:00",
+            )
+        )
+        self._recorder(monkeypatch, [])
+        assert _run(proxy_connections.run_due_tests()) == 1
+
+    def test_a_disabled_row_is_never_swept(self, monkeypatch):
+        row = self._enabled()
+        _run(proxy_connections.set_enabled(row["id"], False))
+        _run(proxy_connections.set_test_interval(5))
+        self._recorder(monkeypatch, [])
+        assert _run(proxy_connections.run_due_tests()) == 0
+
+    def test_the_environment_pins_the_interval_and_off_wins(self, monkeypatch):
+        _run(proxy_connections.set_test_interval(60))
+        monkeypatch.setenv(proxy_connections.TEST_INTERVAL_ENV, "off")
+        assert _run(proxy_connections.effective_test_interval()) == 0
+        assert _run(proxy_connections.run_due_tests()) == 0
+
+    def test_the_environment_can_shorten_the_interval(self, monkeypatch):
+        _run(proxy_connections.set_test_interval(180))
+        monkeypatch.setenv(proxy_connections.TEST_INTERVAL_ENV, "5")
+        assert _run(proxy_connections.effective_test_interval()) == 5
+
+    def test_a_nonsense_environment_value_falls_back_to_the_row(self, monkeypatch):
+        _run(proxy_connections.set_test_interval(15))
+        monkeypatch.setenv(proxy_connections.TEST_INTERVAL_ENV, "soon")
+        assert _run(proxy_connections.effective_test_interval()) == 15
+
+    def test_the_loop_sweeps_then_sleeps_for_the_tick(self, monkeypatch):
+        """One turn of the loop: a sweep, then a tick — and cancelling is clean."""
+        sweeps: list[int] = []
+        ticks: list[float] = []
+
+        async def _sweep():
+            sweeps.append(1)
+            return 1
+
+        async def _sleep(seconds):
+            ticks.append(seconds)
+            # Stand in for the cancellation a shutdown delivers: the loop has
+            # done one full turn, which is all this test asserts.
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(proxy_connections, "run_due_tests", _sweep)
+        monkeypatch.setattr(proxy_connections.asyncio, "sleep", _sleep)
+
+        async def _once():
+            with pytest.raises(asyncio.CancelledError):
+                await proxy_connections.auto_test_loop(tick_seconds=42)
+
+        asyncio.run(_once())
+        assert sweeps == [1]
+        assert ticks == [42]

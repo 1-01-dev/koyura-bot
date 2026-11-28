@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from starlette.datastructures import FormData
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 import auth
@@ -556,10 +556,18 @@ ADMIN_SECTION_PARAMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "proxy",
         (
-            "egress_saved",
+            "proxy_saved",
+            "proxy_deleted",
+            "proxy_toggled",
+            "proxy_tested",
+            "proxy_error",
             "wg_saved",
             "wg_removed",
             "status_refreshed",
+            "test_interval",
+            # The retired single-rule form's own parameter: an old bookmark or a
+            # redirect already in a browser still has to land on Proxy.
+            "egress_saved",
         ),
     ),
     (
@@ -632,95 +640,25 @@ def _human_size(value: int, *, gb_decimals: int = 1, kb_fallback: bool = False) 
 
 def _proxy_notice(
     *,
-    saved: int = 0,
     wg_saved: int = 0,
     wg_removed: int = 0,
-    refreshed: int = 0,
+    test_interval: str | None = None,
 ) -> str | None:
-    """The one-line notice under the Proxy page's panels."""
-    if saved:
-        return "Egress rule saved. The engine picks it up within a minute."
+    """The one-line notice above the Proxy page's table.
+
+    The page itself updates a row without a reload, so this notice answers the
+    two actions that *do* navigate (a tunnel upload, a disconnect) and the one
+    setting that is a plain form post (the automatic-test interval).
+    """
     if wg_saved:
         return "WireGuard config written. The server watcher applies the tunnel."
     if wg_removed:
-        return (
-            "WireGuard config removed. The engine is back to a direct connection."
-        )
-    if refreshed:
-        return "Tunnel status re-read from the server."
+        return "WireGuard config removed. The engine is back to a direct connection."
+    if test_interval:
+        if test_interval == "0":
+            return "Automatic tests off."
+        return f"Automatic tests every {test_interval} minutes."
     return None
-
-
-async def _proxy_context(
-    *,
-    stored: dict[str, str] | None = None,
-    error: str | None = None,
-    wg_error: str | None = None,
-    probe: dict | None = None,
-    form_values: tuple[str, str, list[str]] | None = None,
-) -> dict:
-    """Everything the Proxy page renders — never the proxy password.
-
-    The settings are read from the ``egress.*`` rows, the tunnel's state from the
-    watcher's ``status.json``, and both are turned into display values here: the
-    form carries a masked URL (``socks5h://***:***@host:port``), so a password
-    cannot reach the HTML even if a template were to print the field raw.
-
-    ``form_values`` echoes a rejected submission as ``(mode, assignment, names)``
-    so a radio button or a tick the operator just made is not lost.
-    """
-    rows = stored if stored is not None else await db.get_settings(
-        prefix=egress.SETTING_PREFIX
-    )
-    settings = egress.Egress.from_row(rows)
-    status = egress.read_status()
-    # The multiselect offers the same catalogue the Cookies page suggests, so an
-    # operator can only pick a name the engine can actually compute.
-    catalogue = list(service_catalog.service_names())
-    form = settings.as_form(catalogue)
-    mode = settings.mode
-    assignment = settings.assignment_mode
-    chosen = set(settings.services)
-    if form_values is not None:
-        mode, assignment, typed = form_values
-        if mode not in egress.MODES:
-            mode = settings.mode
-        if assignment not in egress.ASSIGNMENT_MODES:
-            assignment = settings.assignment_mode
-        chosen = {name.strip().lower() for name in typed if name.strip()}
-        unknown = sorted(chosen - set(catalogue))
-        form["services"] = [
-            {"name": name, "checked": name in chosen} for name in catalogue
-        ]
-        form["services"].extend(
-            {"name": name, "checked": True} for name in unknown
-        )
-        form["selected_count"] = len(chosen)
-    form["mode"] = mode
-    form["assignment_mode"] = assignment
-    form["mode_options"] = egress.mode_options(mode)
-    form["assignment_options"] = egress.assignment_options(assignment)
-    return {
-        "egress": form,
-        "egress_mask": settings,
-        "egress_status": status,
-        "egress_error": error,
-        "egress_wg_error": wg_error,
-        "egress_probe": probe,
-        "wg_present": egress.wireguard_present(),
-        "wg_max_kb": egress.MAX_WG_BYTES // 1024,
-        "egress_proxy_schemes": " · ".join(
-            f"{scheme}://" for scheme in egress.PROXY_SCHEMES
-        ),
-        "egress_path": str(egress.wireguard_path()),
-        # The current effective target, for the header line: the mask of the
-        # stored URL in manual mode, the tunnel's SOCKS address in WireGuard.
-        "egress_target": (
-            egress.mask_proxy_url(settings.proxy_url)
-            if settings.mode == "manual"
-            else (status.socks_url if settings.mode == "wireguard" else "")
-        ),
-    }
 
 
 def _system_context() -> dict:
@@ -1002,10 +940,14 @@ async def admin_section_page(
     checked: str | None = None,
     service: str | None = None,
     cookies_error: str | None = None,
-    egress_saved: int = 0,
+    proxy_saved: int = 0,
+    proxy_deleted: int = 0,
+    proxy_toggled: int = 0,
+    proxy_tested: int = 0,
+    proxy_error: str | None = None,
     wg_saved: int = 0,
     wg_removed: int = 0,
-    status_refreshed: int = 0,
+    test_interval: str | None = None,
     channel_period: str | None = None,
     channel_error: str | None = None,
     channel_notice: str | None = None,
@@ -1067,17 +1009,17 @@ async def admin_section_page(
         return _render_admin(request, section, context)
 
     if section == "proxy":
-        context.update(await _proxy_context())
-        # Only a *success* travels in the query string. A failure is rendered
-        # by its own POST, because the value that failed (a proxy URL with a
-        # password in it) must never end up in an access log or the browser's
+        # The page renders the list and one editor; only a *success* travels in
+        # the query string, because the value that failed (a proxy URL with a
+        # password in it) must never reach an access log or the browser's
         # history.
-        context["egress_notice"] = _proxy_notice(
-            saved=egress_saved,
+        context.update(await proxy_connections.page_context())
+        context["proxy_notice"] = _proxy_notice(
             wg_saved=wg_saved,
             wg_removed=wg_removed,
-            refreshed=status_refreshed,
+            test_interval=test_interval,
         )
+        context["proxy_error"] = proxy_error
         return _render_admin(request, section, context)
 
     if section == "limits":
@@ -1535,82 +1477,308 @@ def _pretty_value(value: float) -> str:
 # Admin: the Proxy page
 # ---------------------------------------------------------------------------
 #
-# Four POSTs, each a plain form: save the egress rule, upload a WireGuard config,
-# remove it, re-read its status, and check the manual proxy. They share one shape
-# — session, CSRF, then a redirect on success — and differ in the one thing that
-# can fail. A failure is rendered *in place* rather than redirected, because the
-# value that failed (a proxy URL with a password) must not enter a URL.
+# One page, one list. The table is rendered by the server and every action is a
+# plain form POST that redirects back to /admin/proxy; the browser-side module
+# (`js/proxy.js`) upgrades the same endpoints to `fetch` and patches the row it
+# changed, so the page works with JavaScript off and does not reload with it on.
+#
+# Why a form POST *and* fetch, rather than one of them: a form is the only thing
+# that works before the module loads (and if it fails to), and it costs ten
+# lines. The fetch path then reuses the same endpoint and the same validation —
+# there is no second implementation of "what a valid connection is" to drift.
+#
+# No URL carries a secret: a rejection re-renders the page with the message and
+# the id that failed, and a success redirects with a count. The value that
+# failed (a proxy URL with a password in it) must not enter an access log or the
+# browser's history.
 
-
+#: Where a proxy action sends the browser when it did not come from `fetch`.
 def _proxy_redirect(**params: object) -> RedirectResponse:
     query = "&".join(
-        f"{key}={value}" for key, value in params.items() if value not in (None, "", 0)
+        f"{key}={quote(str(value))}"
+        for key, value in params.items()
+        if value not in (None, "", 0)
     )
     target = "/admin/proxy" + (f"?{query}" if query else "")
     return RedirectResponse(url=target, status_code=303)
 
 
-async def _proxy_request(
-    request: Request,
-) -> tuple[str, FormData] | Response:
+async def _proxy_request(request: Request) -> tuple[str, FormData] | Response:
     """Session + CSRF for every proxy POST; a refusal is already a response."""
     user = _require_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     form = await request.form()
     if not auth.verify_csrf(request, str(form.get(auth.CSRF_FORM_FIELD, ""))):
-        context = await _proxy_context(
-            error="Your session expired. Reload the page and try again."
-        )
-        return _render_admin(request, "proxy", {"user": user, **context}, 403)
+        return _proxy_redirect(proxy_error="Your session expired. Reload the page.")
     return user, form
 
 
-@router.post("/admin/proxy")
-async def save_proxy(request: Request) -> Response:
-    """Store the mode, the proxy URL and the assignment rule.
+def _proxy_wants_json(request: Request) -> bool:
+    """Whether the caller was `js/proxy.js` rather than a plain form submit."""
+    return request.headers.get("X-Requested-With") == "fetch"
 
-    A blank proxy field keeps the stored URL: the page never renders a password
-    back, so an empty field is the normal case once one is saved. The engine
-    reads the result from ``GET /api/egress`` within a minute, so there is
-    nothing to push.
+
+def _proxy_row_answer(row: dict, status_code: int = 200) -> Response:
+    """One row for the table *and* for the editor, in one answer.
+
+    Two shapes, because they answer two questions: `row` is the formatted cell
+    values (what the table prints), `payload` is what the editor fills itself
+    with on the next edit — including the clean URL and the "a secret is
+    stored" flag.
+    The editor stores the second on the row it just patched, so a second edit
+    without a reload edits what was saved, not what was there before.
+    """
+    return _proxy_json(
+        {
+            "ok": True,
+            "row": proxy_connections.page_row(row),
+            "payload": proxy_connections.connection_json(row),
+        },
+        status_code=status_code,
+    )
+
+
+def _proxy_json(payload: dict, status_code: int = 200) -> Response:
+    """One JSON answer for the script; `no-store`, because it describes a row."""
+    response = JSONResponse(content=payload, status_code=status_code)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _proxy_form_payload(form: FormData) -> dict:
+    """The five editor fields, as `proxy_connections` expects them.
+
+    `password` stays `None` when the field is empty: that is the "keep the
+    stored secret" instruction, and it is why the field is rendered blank even
+    when a password is set.
+    """
+    return {
+        "name": form.get("name"),
+        "kind": form.get("kind"),
+        "url": form.get("url"),
+        "username": form.get("username"),
+        "password": form.get("password") or None,
+        "assignment_mode": form.get("assignment_mode"),
+        "services": [str(value) for value in form.getlist("services")],
+    }
+
+
+async def _proxy_error_answer(
+    request: Request, user: str, error: str, *, code: str, row: dict | None = None
+) -> Response:
+    """A refused save: JSON for the script, a re-rendered page for a plain form.
+
+    The page context is rebuilt, not just the message: with JavaScript off this
+    answer *is* the page, and it has to render the table and the tunnel card as
+    they are (the row that failed is still there, because nothing was written).
+    """
+    if _proxy_wants_json(request):
+        return _proxy_json(
+            {"ok": False, "code": code, "error": error}, status_code=400
+        )
+    context = await proxy_connections.page_context()
+    context.update({"user": user, "proxy_error": error, "proxy_error_code": code})
+    if row is not None:
+        context["proxy_edit_id"] = int(row["id"])
+    return _render_admin(request, "proxy", context, 400)
+
+
+@router.post("/admin/proxy/connection")
+async def create_proxy_connection(request: Request) -> Response:
+    """Add one connection from the editor.
+
+    A second WireGuard row is refused here with `OnlyOneWireGuard`, and the
+    refusal is *shown in the dialog* (the message travels back as JSON when the
+    script asked, or as a re-rendered page) rather than as a redirect: the
+    operator typed a name, a tunnel config and a service list, and losing it to a
+    reload would be the worst possible answer to a mistake about a single field.
     """
     prologue = await _proxy_request(request)
     if isinstance(prologue, Response):
         return prologue
     user, form = prologue
 
-    stored = egress.Egress.from_row(
-        await db.get_settings(prefix=egress.SETTING_PREFIX)
-    )
-    settings, errors = egress.parse_settings(
-        mode=form.get("mode"),
-        proxy_url=form.get("proxy_url"),
-        assignment_mode=form.get("assignment_mode"),
-        services=[str(value) for value in form.getlist("services")],
-        stored=stored,
-    )
-    if settings is None or errors:
-        context = await _proxy_context(error=" ".join(errors), form_values=(
-            str(form.get("mode") or stored.mode),
-            str(form.get("assignment_mode") or stored.assignment_mode),
-            [str(value) for value in form.getlist("services")],
-        ))
-        return _render_admin(request, "proxy", {"user": user, **context}, 400)
+    try:
+        row = await proxy_connections.create_connection(**_proxy_form_payload(form))
+    except proxy_connections.ProxyConnectionError as error:
+        return await _proxy_error_answer(request, user, str(error), code=error.code)
 
-    await db.save_settings(settings.as_stored())
-    # The connection list is what the engine reads now; this form predates it,
-    # so mirror the saved rule onto the one connection it owns until the UI task
-    # replaces the form. A failure here is logged, not rendered: the settings
-    # above are already stored and the next save retries.
-    await proxy_connections.sync_legacy_connection(settings)
-    # One line per save: the mode, the scope and the *masked* target.
     logging.getLogger("koyura.dashboard").info(
-        "egress rule updated by %s: %s -> %s",
-        user, stored.describe(), settings.describe(),
+        "proxy connection %s added by %s (%s)", row["id"], user, row["kind"]
     )
-    return _proxy_redirect(egress_saved=1)
+    if _proxy_wants_json(request):
+        return _proxy_row_answer(row, status_code=201)
+    return _proxy_redirect(proxy_saved=1)
 
+
+@router.post("/admin/proxy/connection/{connection_id}")
+async def update_proxy_connection(request: Request, connection_id: int) -> Response:
+    """Apply one edit; an empty password field keeps the stored secret."""
+    prologue = await _proxy_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    user, form = prologue
+
+    existing = await db.get_proxy_connection(connection_id)
+    if existing is None:
+        return await _proxy_error_answer(
+            request, user, "That connection no longer exists.", code="NotFound"
+        )
+    try:
+        row = await proxy_connections.update_connection(
+            connection_id, **_proxy_form_payload(form)
+        )
+    except proxy_connections.ProxyConnectionError as error:
+        return await _proxy_error_answer(
+            request, user, str(error), code=error.code, row=existing
+        )
+
+    logging.getLogger("koyura.dashboard").info(
+        "proxy connection %s updated by %s", connection_id, user
+    )
+    if _proxy_wants_json(request):
+        return _proxy_row_answer(row)
+    return _proxy_redirect(proxy_saved=1)
+
+
+@router.post("/admin/proxy/connection/{connection_id}/toggle")
+async def toggle_proxy_connection(request: Request, connection_id: int) -> Response:
+    """Switch one row on or off without touching its rule."""
+    prologue = await _proxy_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    user, form = prologue
+
+    enabled = str(form.get("enabled") or "").strip().lower() in {"1", "true", "on"}
+    changed = await proxy_connections.set_enabled(connection_id, enabled)
+    if not changed:
+        return await _proxy_error_answer(
+            request, user, "That connection no longer exists.", code="NotFound"
+        )
+    row = await db.get_proxy_connection(connection_id)
+    logging.getLogger("koyura.dashboard").info(
+        "proxy connection %s %s by %s",
+        connection_id,
+        "enabled" if enabled else "disabled",
+        user,
+    )
+    if _proxy_wants_json(request):
+        # The toggle changes the badge, the verb *and* the mode word, and the mode
+        # is derived from the whole list rather than from this row.
+        return _proxy_json(
+            {
+                "ok": True,
+                "row": proxy_connections.page_row(row or {}),
+                "payload": proxy_connections.connection_json(row or {}),
+                "mode": proxy_connections.mode_summary(
+                    await db.list_proxy_connections()
+                ),
+            }
+        )
+    return _proxy_redirect(proxy_toggled=1)
+
+
+@router.post("/admin/proxy/connection/{connection_id}/delete")
+async def delete_proxy_connection(request: Request, connection_id: int) -> Response:
+    """Delete one row and its secret file.
+
+    The page asks for a word before it gets here (the same confirmation the file
+    purge uses), and the server checks it again: a fetch from a stale tab must
+    not delete a row the operator never meant to remove.
+    """
+    prologue = await _proxy_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    user, form = prologue
+
+    if str(form.get("confirm") or "").strip().lower() != "delete":
+        return await _proxy_error_answer(
+            request,
+            user,
+            "Type DELETE to confirm removing this connection.",
+            code="NotConfirmed",
+        )
+    removed = await proxy_connections.delete_connection(connection_id)
+    if not removed:
+        return await _proxy_error_answer(
+            request, user, "That connection no longer exists.", code="NotFound"
+        )
+    logging.getLogger("koyura.dashboard").info(
+        "proxy connection %s deleted by %s", connection_id, user
+    )
+    if _proxy_wants_json(request):
+        return _proxy_json(
+            {
+                "ok": True,
+                "id": connection_id,
+                "mode": proxy_connections.mode_summary(
+                    await db.list_proxy_connections()
+                ),
+            }
+        )
+    return _proxy_redirect(proxy_deleted=1)
+
+
+@router.post("/admin/proxy/connection/{connection_id}/test")
+async def test_proxy_connection(request: Request, connection_id: int) -> Response:
+    """Probe one connection and answer with its new row.
+
+    The probe itself is `proxy_connections.test_connection`, i.e. the same code
+    `POST /api/egress/test/<id>` runs for the engine: the page must never be a
+    second, differently-behaving way to answer "what IP does this dial".
+    """
+    prologue = await _proxy_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    user, _form = prologue
+
+    try:
+        row = await proxy_connections.test_connection(connection_id)
+    except proxy_connections.ProxyConnectionError as error:
+        return await _proxy_error_answer(request, user, str(error), code=error.code)
+
+    logging.getLogger("koyura.dashboard").info(
+        "proxy connection %s tested by %s: %s",
+        connection_id,
+        user,
+        row.get("status"),
+    )
+    if _proxy_wants_json(request):
+        return _proxy_row_answer(row)
+    return _proxy_redirect(proxy_tested=1)
+
+
+@router.post("/admin/proxy/interval")
+async def save_proxy_interval(request: Request) -> Response:
+    """Store the automatic-test interval (minutes; 0 is off).
+
+    A plain form and a redirect, not a fetch: the value is one select, the page
+    does not show it anywhere else, and a reload is what makes the *next*
+    scheduled run obvious. The background loop reads the stored value on every
+    sweep, so no restart is needed.
+    """
+    prologue = await _proxy_request(request)
+    if isinstance(prologue, Response):
+        return prologue
+    user, form = prologue
+
+    try:
+        minutes = await proxy_connections.set_test_interval(form.get("test_interval"))
+    except proxy_connections.ProxyConnectionError as error:
+        return _proxy_redirect(proxy_error=str(error))
+    logging.getLogger("koyura.dashboard").info(
+        "automatic egress tests set to %s min by %s", minutes, user
+    )
+    return _proxy_redirect(test_interval=minutes)
+
+
+# --- the WireGuard config ---------------------------------------------------
+#
+# The tunnel is one file and one watcher: uploading it is a separate action from
+# editing a row, because the file exists before (and after) the row that dials
+# it. `wireguard` in the editor only *names* the tunnel; these two endpoints
+# write and delete the config the host applies.
 
 @router.post("/admin/proxy/wireguard")
 async def upload_wireguard(request: Request) -> Response:
@@ -1628,16 +1796,12 @@ async def upload_wireguard(request: Request) -> Response:
     upload = form.get("wg_file")
     filename = getattr(upload, "filename", None)
     if not upload or not filename or isinstance(upload, str):
-        context = await _proxy_context(
-            wg_error="Choose a WireGuard .conf file to upload."
-        )
-        return _render_admin(request, "proxy", {"user": user, **context}, 400)
+        return _proxy_redirect(proxy_error="Choose a WireGuard .conf file to upload.")
     data = await upload.read()
     try:
         egress.write_wireguard(data)
     except egress.EgressError as error:
-        context = await _proxy_context(wg_error=str(error))
-        return _render_admin(request, "proxy", {"user": user, **context}, 400)
+        return _proxy_redirect(proxy_error=str(error))
 
     logging.getLogger("koyura.dashboard").info(
         "WireGuard config written by %s (%d bytes)", user, len(data)
@@ -1647,16 +1811,21 @@ async def upload_wireguard(request: Request) -> Response:
 
 @router.post("/admin/proxy/wireguard/remove")
 async def remove_wireguard(request: Request) -> Response:
-    """Delete the config so the watcher brings the tunnel down."""
+    """Delete the config so the watcher brings the tunnel down.
+
+    The row that dials the tunnel goes with it: a `wireguard` connection whose
+    file is gone would answer `""` on every dial and shadow the rows after it.
+    """
     prologue = await _proxy_request(request)
     if isinstance(prologue, Response):
         return prologue
     user, _form = prologue
 
     removed = egress.remove_wireguard()
-    if removed:
-        # The tunnel row would point at a file nobody wrote any more.
-        await proxy_connections.drop_legacy_wireguard()
+    rows = await db.list_proxy_connections()
+    for row in rows:
+        if str(row.get("kind") or "") == proxy_connections.WIREGUARD_KIND:
+            await proxy_connections.delete_connection(int(row["id"]))
     logging.getLogger("koyura.dashboard").info(
         "WireGuard config %s by %s", "removed" if removed else "was already absent", user
     )
@@ -1664,42 +1833,12 @@ async def remove_wireguard(request: Request) -> Response:
 
 
 @router.post("/admin/proxy/status")
-async def refresh_status(request: Request) -> Response:
+async def refresh_wireguard_status(request: Request) -> Response:
     """Re-read ``status.json`` and show it (the page itself is the report)."""
     prologue = await _proxy_request(request)
     if isinstance(prologue, Response):
         return prologue
-    _user, _form = prologue
     return _proxy_redirect(status_refreshed=1)
-
-
-@router.post("/admin/proxy/check")
-async def check_proxy(request: Request) -> Response:
-    """Ask ``api.ipify.org`` through the submitted (or stored) proxy.
-
-    The answer is the external IP or the error text, and both are redacted of
-    the proxy's credentials before they reach the page or the log — curl echoes
-    the proxy it could not use. The result is rendered on the page rather than
-    redirected, because the URL under test is a secret.
-    """
-    prologue = await _proxy_request(request)
-    if isinstance(prologue, Response):
-        return prologue
-    user, form = prologue
-
-    stored = egress.Egress.from_row(
-        await db.get_settings(prefix=egress.SETTING_PREFIX)
-    )
-    candidate = str(form.get("proxy_url") or "").strip() or stored.proxy_url
-    if not candidate:
-        context = await _proxy_context(
-            probe={"ok": False, "detail": "Enter a proxy URL to check first."}
-        )
-        return _render_admin(request, "proxy", {"user": user, **context}, 400)
-
-    ok, detail = egress.probe_proxy(candidate)
-    context = await _proxy_context(probe={"ok": ok, "detail": detail})
-    return _render_admin(request, "proxy", {"user": user, **context})
 
 
 # ---------------------------------------------------------------------------

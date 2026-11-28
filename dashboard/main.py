@@ -133,15 +133,24 @@ async def _lifespan(app: FastAPI):
     # The single ``egress.*`` rule predates the connection list: migrate it once
     # and log what is stored, so a restart names the egress in force.
     await proxy_connections.apply_saved_connections()
-    task = asyncio.create_task(_disk_snapshot_loop())
+    tasks = [
+        asyncio.create_task(_disk_snapshot_loop()),
+        # The page's automatic tests: a sweep every minute, which re-probes only
+        # the rows whose last check is older than the stored interval (and does
+        # nothing at all when the interval is off). Same shape as the disk loop:
+        # one task, cancelled on shutdown, never fatal.
+        asyncio.create_task(proxy_connections.auto_test_loop()),
+    ]
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 def create_app() -> FastAPI:

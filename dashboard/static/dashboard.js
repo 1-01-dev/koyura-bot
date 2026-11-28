@@ -11,6 +11,7 @@ import { initDashboardPage } from './js/report.js';
 import { initLinkModal } from './js/linkmodal.js';
 import { initTemplates } from './js/templates.js';
 import { initHelpBubbles } from './js/help.js';
+import { initProxyPage } from './js/proxy.js';
 import {
   deleteSelected,
   openPurgeModal,
@@ -44,6 +45,9 @@ function bootAdmin() {
   initAdminActions(ADMIN_ACTIONS);
   initSelectAll();
   if (document.getElementById('templates-card')) initTemplates();
+  /* The Proxy page owns a table, two dialogs and a menu of its own; every hook
+     it reads is an id that page renders, so another section costs one lookup. */
+  if (document.getElementById('proxy-card')) initProxyPage();
 }
 
 function boot() {

@@ -45,7 +45,9 @@ STATIC = DASHBOARD_DIR / "static"
 SECTIONS = {
     "/admin/cookies": ("Cookies", "cookies"),
     "/admin/channels": ("Channels", "channels"),
-    "/admin/proxy": ("Proxy", "proxy"),
+    # The owner's name for the page: it is a list of connections with routing
+    # rules, not a single proxy switch.
+    "/admin/proxy": ("Connections and routing rules", "proxy"),
     "/admin/limits": ("Limits", "limits"),
     "/admin/bot": ("Bot settings", "bot"),
     "/admin/system": ("System", "system"),

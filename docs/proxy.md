@@ -105,11 +105,47 @@ The rule is applied per job and per metadata lookup — the preview
 (`POST /api/info`) leaves through the same address the download would, so a page
 that only renders from the right IP is not refused on its card.
 
+## The page
+
+**Admin → Proxy** is *Connections and routing rules*: one table of connections
+(`Name · Status · Protocol · Applied to · Last test`), a `⋯` menu for the
+automatic-test interval beside **+ Add connection**, and one dialog that both
+adds and edits. Each row carries **Test** (dial it now, store the verdict),
+**Enable/Disable** (keep the row, stop dialling it), **Edit** and **Delete**
+(which asks for the word `DELETE` first).
+
+Every action is a real form POST, so the page works before its script loads and
+if the script fails; `js/proxy.js` upgrades Test and Enable/Disable to `fetch`
+and patches the row in place, so a table of ten connections does not reload ten
+times. Adding a connection re-fetches the table body, because a row's id — and
+every form action inside it — only exists after the insert.
+
+The dialog renders the password field **empty, always**. A row carries
+`has_password` (true/false) and the hint under the field says "set — blank keeps
+it" or "never shown back"; the value itself stays in
+`EGRESS_PATH/secrets/<id>.txt`. A refusal (`OnlyOneWireGuard` for a second
+tunnel, a URL the engine cannot dial) is shown inside the dialog and nothing
+typed is lost.
+
+### Automatic tests
+
+The `⋯` menu stores an interval — every 5, 15 or 30 minutes, every hour, every
+3 hours, or off (the default). The panel runs the checks itself: a sweep task in
+the lifespan re-probes the enabled rows whose `last_test_at` is older than the
+interval, once a minute. Because "due" is a comparison against the stored
+timestamp rather than a countdown, a restart neither loses nor repeats a check.
+
+`PROXY_TEST_INTERVAL` pins the interval from the environment and wins over the
+stored setting — including `off`, which is the switch an operator needs when a
+page must not be able to re-arm the probes. The interval is stored in
+`settings` under `proxy.test_interval`; the first API build used
+`egress.test_interval` and that key is still read as a fallback.
+
 ## Manual proxy
 
 The URL must start with one of:
 
-```
+```text
 socks5://    socks5h://    http://    https://
 ```
 
@@ -121,16 +157,19 @@ never work.
 `socks5h://` is the one to prefer for this problem: it lets the **proxy** resolve
 the site's name, so a blocked DNS answer on this server stops mattering.
 
-**Check** sends one request to `https://api.ipify.org` through the URL
-(10 s timeout, server-side) and prints the external IP, or the error text. Use
-it before saving a proxy: a typo and a dead proxy both look like "the download
-failed" until you do.
+**Quick test** (in the dialog) and **Test** (on a row) send one request to
+`https://api.ipify.org` through the URL — 10 s timeout, server-side, in a worker
+thread so the panel keeps answering — and show the external IP, or the error
+text. A row keeps its verdict: the badge says `ok`, `fail` or `unknown`, and the
+detail under it is the IP or the redacted error. Use it before saving a proxy: a
+typo and a dead proxy both look like "the download failed" until you do.
 
 The password is written to `EGRESS_PATH/secrets/<id>.txt` (mode `0600`) and is
-**never rendered back**: the form shows `socks5h://***:***@host:port`, and
-leaving the field blank on a later save keeps the stored secret. Pasting a URL
-that still carries `user:pass@` is accepted — the login is split out before the
-row is written, so it never lands in the `url` column.
+**never rendered back**: the row keeps `scheme://host:port`, the page says
+"set — blank keeps it", and leaving the field blank on a later save keeps the
+stored secret. Pasting a URL that still carries `user:pass@` is accepted — the
+login is split out before the row is written, so it never lands in the `url`
+column.
 
 ## WireGuard
 
@@ -280,8 +319,8 @@ it once: `mode=manual` becomes a connection named `Default` (kind from the URL's
 scheme, login split into `username` + the secret file), `mode=wireguard` becomes
 a `wireguard` row when `wg0.conf` exists, and every other key is ignored. A
 marker in `settings` (`egress.migrated`) makes the next start a no-op, so a row
-you delete does not come back. Until the page itself is replaced, the old form
-keeps editing that one `Default` connection.
+you delete does not come back. The old single-rule form is gone: the connection
+list is the only place a route is edited.
 
 ## Environment
 
@@ -290,6 +329,7 @@ keeps editing that one `Default` connection.
 | `KOYURA_DASHBOARD_URL` | *(empty)* | Panel address the engine asks for the list. Wins over `DASHBOARD_URL`. |
 | `DASHBOARD_URL` | `http://dashboard:8080` | Panel address, shared with the bot. Native runs must set it (`http://127.0.0.1:8090`). |
 | `EGRESS_PATH` | `/var/lib/koyura2/egress` | Where `wg0.conf` and `secrets/<id>.txt` are written and `status.json` is read. Shared by the panel and the engine, and mounted by the host watcher. |
+| `PROXY_TEST_INTERVAL` | *(the stored setting)* | Minutes between the panel's automatic tests; `off`/`0` disables them even when the page set an interval. |
 
 The connections live in the panel's database (`proxy_connections`), not in the
 environment: they are an operator decision, changed from the page. The engine

@@ -31,16 +31,19 @@ Three rules shape the storage:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
 import db
 import egress
+import service_catalog
 
 logger = logging.getLogger("koyura.dashboard")
 
@@ -64,15 +67,34 @@ SECRETS_DIRNAME = "secrets"
 #: The name the migration gives the one connection it creates.
 DEFAULT_NAME = "Default"
 
-#: ``settings`` keys: the migration flag and the row the legacy form edits.
+#: ``settings`` key of the migration flag: the retired single-rule form is
+#: read once, turned into rows, and never read again.
 MIGRATED_KEY = "egress.migrated"
-LEGACY_CONNECTION_KEY = "egress.connection_id"
 
-#: How often the panel should re-test the list, in minutes (0 = never). Stored
-#: here so the UI task has one place to read and write it.
-TEST_INTERVAL_KEY = "egress.test_interval"
+#: How often the panel re-tests the list, in minutes (0 = never). The page owns
+#: this setting and writes ``proxy.test_interval``; ``egress.test_interval`` is
+#: the key the first API build used and is still read as a fallback, so an
+#: install that set an interval before this page existed keeps it.
+TEST_INTERVAL_KEY = "proxy.test_interval"
+LEGACY_TEST_INTERVAL_KEY = "egress.test_interval"
 DEFAULT_TEST_INTERVAL_MINUTES = 0
 MAX_TEST_INTERVAL_MINUTES = 1440
+
+#: The intervals the page offers, in minutes. ``0`` is the off switch, and it
+#: is the default: a background probe is an operator decision, not a surprise.
+TEST_INTERVAL_CHOICES: tuple[tuple[int, str], ...] = (
+    (0, "Off"),
+    (5, "Every 5 min"),
+    (15, "Every 15 min"),
+    (30, "Every 30 min"),
+    (60, "Every hour"),
+    (180, "Every 3 hours"),
+)
+
+#: The environment variable that overrides the stored interval. ``off`` (or
+#: ``0``) disables the background tests even when a setting says otherwise —
+#: the operator needs one switch that a page cannot undo.
+TEST_INTERVAL_ENV = "PROXY_TEST_INTERVAL"
 
 
 class ProxyConnectionError(ValueError):
@@ -635,42 +657,340 @@ async def set_enabled(connection_id: int, enabled: bool) -> bool:
 # ---------------------------------------------------------------------------
 
 async def test_connection(connection_id: int) -> dict:
-    """Probe one connection, store the verdict and return the updated row."""
+    """Probe one connection, store the verdict and return the updated row.
+
+    The probe itself is a synchronous ``curl`` with a 10 s timeout, so it runs in
+    a worker thread: this coroutine is called from a request handler and from the
+    background sweep, and blocking the event loop for ten seconds would freeze
+    every other page the panel is serving at the time.
+    """
     row = await db.get_proxy_connection(connection_id)
     if row is None:
         raise ProxyConnectionError("NotFound", "That connection no longer exists.")
-    url = dial_url(row)
-    if not url:
-        status = egress.read_status()
-        if str(row.get("kind") or "") == WIREGUARD_KIND:
-            detail = status.error or (
-                "The WireGuard tunnel is not up."
-                if status.available
-                else "The host watcher has not reported the tunnel yet."
-            )
-        else:
-            detail = "The connection has no proxy URL."
-        ok = False
-    else:
-        ok, detail = egress.probe_proxy(url)
-        detail = egress.redact(detail, url)
+    ok, detail = await asyncio.to_thread(_probe_row, row)
     await db.record_proxy_connection_test(
         connection_id, status="ok" if ok else "fail", result=detail
     )
     return await db.get_proxy_connection(connection_id) or row
 
 
+def _probe_row(row: dict) -> tuple[bool, str]:
+    """The blocking half of :func:`test_connection`: dial and describe.
+
+    Separated so the caller can hand it to a thread, and so the two failure
+    shapes — a tunnel that is not up, and a proxy with nothing to dial — stay in
+    one place instead of in the middle of an async function.
+    """
+    url = dial_url(row)
+    if url:
+        ok, detail = egress.probe_proxy(url)
+        return ok, egress.redact(detail, url)
+    status = egress.read_status()
+    if str(row.get("kind") or "") == WIREGUARD_KIND:
+        detail = status.error or (
+            "The WireGuard tunnel is not up."
+            if status.available
+            else "The host watcher has not reported the tunnel yet."
+        )
+    else:
+        detail = "The connection has no proxy URL."
+    return False, detail
+
+
 # ---------------------------------------------------------------------------
-# The legacy settings: migrate once, and keep the old form working
+# The page: what a row looks like in the table, and in the editor
+# ---------------------------------------------------------------------------
+#
+# Everything the template prints comes from here, never from a raw row. The two
+# reasons are a secret and a phone: ``password_ref`` must not reach the HTML, and
+# a timestamp from SQLite has to be readable without a Jinja filter that a later
+# edit could drop.
+
+KIND_LABELS: dict[str, str] = {
+    "socks5": "SOCKS5",
+    "socks5h": "SOCKS5H",
+    "http": "HTTP",
+    "https": "HTTPS",
+    "wireguard": "WireGuard",
+}
+
+#: ``status`` → the badge a row shows. ``unknown`` is a plain badge: it is the
+#: state of a row nobody has checked yet, not a failure.
+STATUS_BADGES: dict[str, str] = {
+    "ok": "badge badge-success",
+    "fail": "badge badge-danger",
+    "unknown": "badge",
+}
+
+MODE_LABELS: dict[str, str] = {"all": "All services", "selected": "Selected", "except": "All except"}
+
+
+def kind_label(kind: object) -> str:
+    """The protocol as the page spells it (``socks5h`` → ``SOCKS5H``)."""
+    text = str(kind or "")
+    return KIND_LABELS.get(text, text.upper() or "—")
+
+
+def format_when(value: object) -> str:
+    """``2026-01-31 12:00:03`` → ``2026-01-31 12:00``, or ``—``."""
+    text = str(value or "").strip()
+    if not text:
+        return "—"
+    return text[:16]
+
+
+def assignment_label(row: dict) -> str:
+    """The ``Applied to`` cell: the mode, plus the count for the two lists."""
+    mode = str(row.get("assignment_mode") or "all")
+    names = services_of(row)
+    label = MODE_LABELS.get(mode, mode)
+    if mode == "all" or not names:
+        return label
+    return f"{label} · {len(names)}"
+
+
+def enabled_label(row: dict) -> str:
+    """The word the switch says, so a screen reader hears the state."""
+    return "Enabled" if row.get("enabled") else "Disabled"
+
+
+def status_label(row: dict) -> str:
+    """The word in the status badge, and the tooltip's reason."""
+    return str(row.get("status") or "unknown")
+
+
+def page_row(row: dict) -> dict:
+    """One table row, already formatted, with no secret in it.
+
+    ``has_password`` is the only thing the editor needs to know about the
+    secret: whether to say "set" under the empty password field. The value
+    itself stays in ``EGRESS_PATH/secrets/<id>.txt`` and never enters the page.
+    """
+    url = str(row.get("url") or "")
+    return {
+        "id": int(row["id"]),
+        "name": str(row.get("name") or ""),
+        "kind": str(row.get("kind") or ""),
+        "kind_label": kind_label(row.get("kind")),
+        "is_wireguard": str(row.get("kind") or "") == WIREGUARD_KIND,
+        "url": egress.mask_proxy_url(url),
+        "assignment_mode": str(row.get("assignment_mode") or "all"),
+        "assignment_label": assignment_label(row),
+        "services": services_of(row),
+        "enabled": bool(row.get("enabled")),
+        "enabled_label": enabled_label(row),
+        "status": status_label(row),
+        "status_badge": STATUS_BADGES.get(status_label(row), "badge"),
+        "last_test_at": format_when(row.get("last_test_at")),
+        "last_test_result": str(row.get("last_test_result") or ""),
+        "has_password": bool(str(row.get("password_ref") or "")),
+        "created_at": format_when(row.get("created_at")),
+    }
+
+
+def connection_json(row: dict) -> dict:
+    """The same row for the editor, as the ``data-connection`` JSON payload.
+
+    One payload per row instead of a form per row: the editor fills itself from
+    the attribute (``js/proxy.js``) and the row's menu names the id. It carries
+    the masked URL, never the secret.
+    """
+    view = page_row(row)
+    return {
+        "id": view["id"],
+        "name": view["name"],
+        "kind": view["kind"],
+        "url": str(row.get("url") or ""),
+        "url_masked": view["url"],
+        "auth": bool(str(row.get("username") or "")),
+        "has_password": view["has_password"],
+        "mode": view["assignment_mode"],
+        "services": view["services"],
+        "enabled": view["enabled"],
+        "status": view["status"],
+    }
+
+
+def mode_summary(rows: list[dict]) -> str:
+    """``Mode: Manual``, ``Mode: WireGuard`` or ``Mode: Off`` for the header.
+
+    It is a reading of the list, not a stored setting: what the engine will do
+    is decided by which rows are enabled, so the page derives the word from
+    them instead of keeping a fourth source of truth.
+    """
+    live = [row for row in rows if row.get("enabled")]
+    if not live:
+        return "Off"
+    if any(str(row.get("kind") or "") == WIREGUARD_KIND for row in live):
+        return "WireGuard"
+    return "Manual"
+
+
+def interval_choices(stored: int) -> list[dict]:
+    """The interval selector: the six options with the stored one marked.
+
+    A value outside the list (an env override, or a hand-edited row) is added
+    once so the selector always shows the interval actually in force.
+    """
+    choices = list(TEST_INTERVAL_CHOICES)
+    if stored not in {minutes for minutes, _label in choices}:
+        choices.append((stored, f"Every {stored} min"))
+    return [
+        {
+            "minutes": minutes,
+            "value": str(minutes),
+            "label": label,
+            "selected": minutes == stored,
+        }
+        for minutes, label in choices
+    ]
+
+
+async def page_context() -> dict:
+    """Everything ``/admin/proxy`` renders: the rows, the interval, the tunnel.
+
+    The interval comes from the environment first (``PROXY_TEST_INTERVAL``),
+    the stored setting second: an operator who disabled the background tests on
+    the server must not have them re-armed by a page. The effective value is
+    what the selector shows and what the loop schedules against.
+    """
+    rows = await db.list_proxy_connections()
+    stored = await test_interval_minutes()
+    interval = await effective_test_interval()
+    tunnel = [
+        row for row in rows if str(row.get("kind") or "") == WIREGUARD_KIND
+    ]
+    return {
+        "proxy_rows": [page_row(row) for row in rows],
+        "proxy_payloads": {
+            int(row["id"]): connection_json(row) for row in rows
+        },
+        "proxy_count": len(rows),
+        "proxy_live_count": len([row for row in rows if row.get("enabled")]),
+        "proxy_mode": mode_summary(rows),
+        "proxy_interval": interval,
+        "proxy_interval_stored": stored,
+        "proxy_interval_choices": interval_choices(interval),
+        "proxy_interval_env": _env_interval(),
+        "proxy_has_wireguard": bool(tunnel),
+        "proxy_wireguard_name": str(tunnel[0].get("name") or "") if tunnel else "",
+        # The tunnel's own report, so the modal can show a real state line
+        # instead of a second status panel on the page.
+        "proxy_status": egress.read_status(),
+        "proxy_wg_present": egress.wireguard_present(),
+        "proxy_wg_max_kb": egress.MAX_WG_BYTES // 1024,
+        "proxy_wg_path": str(egress.wireguard_path()),
+        # The catalogue the "Apply to" picker lists: the same names the Cookies
+        # page suggests, so a ticked service is one the engine can compute.
+        "proxy_services": list(service_catalog.service_names()),
+        "proxy_kinds": [
+            {"value": kind, "label": KIND_LABELS[kind]} for kind in KINDS
+        ],
+        "proxy_assignment_options": [
+            {"value": mode, "label": label}
+            for mode, label in egress.ASSIGNMENT_LABELS.items()
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# The re-test interval and its background task
 # ---------------------------------------------------------------------------
 
-async def _marker_id(connection_id: object) -> int:
-    """A numeric id, or 0 for a marker that was hand-edited into nonsense."""
-    try:
-        return int(str(connection_id).strip())
-    except (TypeError, ValueError):
+def _env_interval() -> int | None:
+    """``PROXY_TEST_INTERVAL`` as minutes, ``None`` when it is not set.
+
+    ``off``/``0``/an empty string is a deliberate zero: the switch exists so a
+    server can pin the tests off. A value that is not a number is ignored (and
+    logged once) rather than silently read as "off", because a typo in an env
+    file should not look like a decision.
+    """
+    raw = (os.environ.get(TEST_INTERVAL_ENV) or "").strip().lower()
+    if not raw:
+        return None
+    if raw in {"off", "never", "false", "no"}:
         return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not a number of minutes; using the stored interval",
+            TEST_INTERVAL_ENV,
+            raw,
+        )
+        return None
+    return max(0, min(MAX_TEST_INTERVAL_MINUTES, value))
 
+
+async def effective_test_interval() -> int:
+    """The interval the page shows and the loop schedules: env wins over the row."""
+    override = _env_interval()
+    if override is not None:
+        return override
+    return await test_interval_minutes()
+
+
+async def run_due_tests(now: datetime | None = None) -> int:
+    """Re-test every enabled row whose last check is older than the interval.
+
+    Run by the background loop and by the tests. "Due" is a comparison against
+    ``last_test_at`` rather than a second timer, so a panel that restarts does
+    not lose track: a row checked two minutes ago is not checked again because
+    the process came up. Returns how many rows were probed.
+    """
+    interval = await effective_test_interval()
+    if interval <= 0:
+        return 0
+    moment = now or datetime.now(timezone.utc)
+    cutoff = (moment - timedelta(minutes=interval)).strftime("%Y-%m-%d %H:%M:%S")
+    probed = 0
+    for row in await db.list_proxy_connections():
+        if not row.get("enabled"):
+            continue
+        last = str(row.get("last_test_at") or "")
+        if last and last > cutoff:
+            continue
+        try:
+            await test_connection(int(row["id"]))
+        except ProxyConnectionError as error:
+            # A refused row (a deleted tunnel, say) must not stop the sweep.
+            logger.info("Egress auto-test skipped %s: %s", row.get("id"), error)
+            continue
+        except Exception:  # pragma: no cover - a probe must not kill the loop
+            logger.exception("Egress auto-test failed for connection %s", row.get("id"))
+            continue
+        probed += 1
+    if probed:
+        logger.info("Egress auto-test: checked %d connection(s)", probed)
+    return probed
+
+
+#: How often the loop wakes up. One minute is the granularity of the shortest
+#: interval the page offers (5 min), and a wake-up that finds nothing due costs
+#: one SQLite read.
+AUTO_TEST_TICK_SECONDS = 60
+
+
+async def auto_test_loop(*, tick_seconds: int = AUTO_TEST_TICK_SECONDS) -> None:
+    """Background task: run the due checks once per ``tick_seconds``, forever.
+
+    Cancellation is the only way out (``main.py`` cancels it on shutdown), and a
+    failing sweep is logged and then waited out — a broken proxy is the normal
+    case this feature exists to report, not a reason to stop reporting it.
+    """
+    while True:
+        try:
+            await run_due_tests()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - never let one sweep end the loop
+            logger.exception("Egress auto-test sweep failed")
+        await asyncio.sleep(tick_seconds)
+
+
+# ---------------------------------------------------------------------------
+# The old settings: migrate once
+# ---------------------------------------------------------------------------
 
 async def migrate_legacy_settings() -> int:
     """Turn the stored ``egress.*`` settings into connections, once.
@@ -689,7 +1009,7 @@ async def migrate_legacy_settings() -> int:
     try:
         if settings.mode == "manual" and settings.proxy_url:
             clean, username, password = split_credentials(settings.proxy_url)
-            row = await create_connection(
+            await create_connection(
                 name=DEFAULT_NAME,
                 url=clean,
                 username=username,
@@ -697,16 +1017,14 @@ async def migrate_legacy_settings() -> int:
                 assignment_mode=settings.assignment_mode,
                 services=list(settings.services),
             )
-            await db.save_settings({LEGACY_CONNECTION_KEY: str(row["id"])})
             created = 1
         elif settings.mode == "wireguard" and egress.wireguard_present():
-            row = await create_connection(
+            await create_connection(
                 name=DEFAULT_NAME,
                 kind=WIREGUARD_KIND,
                 assignment_mode=settings.assignment_mode,
                 services=list(settings.services),
             )
-            await db.save_settings({LEGACY_CONNECTION_KEY: str(row["id"])})
             created = 1
     except ProxyConnectionError as error:
         # A stored value this build refuses must not stop the panel from
@@ -718,125 +1036,83 @@ async def migrate_legacy_settings() -> int:
     return created
 
 
-async def sync_legacy_connection(settings: egress.Egress) -> int | None:
-    """Keep the one connection the *old* Proxy form edits in step with it.
-
-    The page still posts a single mode/URL/assignment triple; until the UI task
-    replaces it, that form must keep steering the engine. The bridge is one row
-    named ``Default`` (the same one the migration creates), remembered in
-    ``settings`` so a rename by a future UI does not orphan it.
-    Returns the row id it wrote, or ``None`` when the form says "off".
-    """
-    marker = await db.get_setting(LEGACY_CONNECTION_KEY)
-    marker_id = await _marker_id(marker) if marker else 0
-    existing = await db.get_proxy_connection(marker_id) if marker_id else None
-    if settings.mode == "off":
-        if existing is not None:
-            await delete_connection(int(existing["id"]))
-        await db.save_settings({LEGACY_CONNECTION_KEY: ""})
-        return None
-    if settings.mode == "manual":
-        clean, username, password = split_credentials(settings.proxy_url)
-        fields = {
-            "name": str(existing["name"]) if existing else DEFAULT_NAME,
-            "kind": "",
-            "url": clean,
-            "username": username,
-            "password": password or None,
-            "assignment_mode": settings.assignment_mode,
-            "services": list(settings.services),
-        }
-    else:
-        fields = {
-            "name": str(existing["name"]) if existing else DEFAULT_NAME,
-            "kind": WIREGUARD_KIND,
-            "url": "",
-            "username": "",
-            "password": None,
-            "assignment_mode": settings.assignment_mode,
-            "services": list(settings.services),
-        }
-    try:
-        if existing is not None:
-            row = await update_connection(int(existing["id"]), **fields)
-        else:
-            row = await create_connection(enabled=True, **fields)
-    except ProxyConnectionError as error:
-        logger.warning("Could not apply the egress form to a connection: %s", error)
-        return None
-    await db.save_settings({LEGACY_CONNECTION_KEY: str(row["id"])})
-    return int(row["id"])
-
-
-async def drop_legacy_wireguard() -> bool:
-    """Forget the tunnel row when its config file was deleted."""
-    marker = await db.get_setting(LEGACY_CONNECTION_KEY)
-    marker_id = await _marker_id(marker) if marker else 0
-    if not marker_id:
-        return False
-    row = await db.get_proxy_connection(marker_id)
-    if row is None or str(row.get("kind") or "") != WIREGUARD_KIND:
-        return False
-    await delete_connection(int(row["id"]))
-    await db.save_settings({LEGACY_CONNECTION_KEY: ""})
-    return True
-
-
 async def apply_saved_connections() -> None:
     """Startup: migrate the old settings, then log the list (never a secret)."""
     try:
         await migrate_legacy_settings()
         rows = await db.list_proxy_connections()
+        interval = await effective_test_interval()
     except Exception:  # pragma: no cover - a log line must never stop startup
         logger.exception("Could not read the stored proxy connections")
         return
     if not rows:
         logger.info("Egress: no proxy connections (direct connection)")
-        return
-    summary = ", ".join(
-        f"{row['name']}[{row['kind']},{row['status']},"
-        f"{'on' if row['enabled'] else 'off'}]"
-        for row in rows
+    else:
+        summary = ", ".join(
+            f"{row['name']}[{row['kind']},{row['status']},"
+            f"{'on' if row['enabled'] else 'off'}]"
+            for row in rows
+        )
+        logger.info("Egress: %d connection(s): %s", len(rows), summary)
+    logger.info(
+        "Egress auto-tests: %s",
+        f"every {interval} min" if interval else "off",
     )
-    logger.info("Egress: %d connection(s): %s", len(rows), summary)
 
 
 __all__ = [
     "ASSIGNMENT_MODES",
+    "AUTO_TEST_TICK_SECONDS",
     "DEFAULT_NAME",
     "DEFAULT_TEST_INTERVAL_MINUTES",
     "Draft",
     "KINDS",
-    "LEGACY_CONNECTION_KEY",
+    "KIND_LABELS",
     "MAX_NAME_LENGTH",
+    "MAX_TEST_INTERVAL_MINUTES",
     "MIGRATED_KEY",
+    "MODE_LABELS",
     "ProxyConnectionError",
     "SECRETS_DIRNAME",
     "STATUSES",
+    "STATUS_BADGES",
+    "TEST_INTERVAL_CHOICES",
+    "TEST_INTERVAL_ENV",
     "TEST_INTERVAL_KEY",
     "WIREGUARD_KIND",
     "apply_saved_connections",
+    "assignment_label",
+    "auto_test_loop",
+    "connection_json",
     "create_connection",
     "credential_for",
     "delete_connection",
     "delete_secret",
     "dial_url",
-    "drop_legacy_wireguard",
+    "effective_test_interval",
+    "enabled_label",
     "engine_payload",
+    "format_when",
+    "interval_choices",
     "kind_for_url",
+    "kind_label",
     "list_connections",
     "migrate_legacy_settings",
+    "mode_summary",
     "move_connection",
+    "page_context",
+    "page_row",
     "parse_draft",
     "public_view",
     "read_secret",
+    "run_due_tests",
     "secret_path",
     "secret_ref",
     "services_of",
     "set_enabled",
     "set_test_interval",
     "split_credentials",
-    "sync_legacy_connection",
+    "status_label",
     "test_connection",
     "test_interval_minutes",
     "write_secret",
