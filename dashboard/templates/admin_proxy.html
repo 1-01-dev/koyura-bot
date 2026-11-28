@@ -9,8 +9,10 @@
   <div>
     <h1 class="page-title">Connections and routing rules</h1>
     <p class="page-meta mono" id="proxy-mode-line">
-      {{ proxy_count }} connection{{ "" if proxy_count == 1 else "s" }} ·
-      Mode: <span id="proxy-mode">{{ proxy_mode }}</span>
+      <span id="proxy-summary-count">
+        {{ proxy_count }} connection{{ "" if proxy_count == 1 else "s" }}
+      </span>
+      · Mode: <span id="proxy-mode">{{ proxy_mode }}</span>
     </p>
   </div>
 </div>

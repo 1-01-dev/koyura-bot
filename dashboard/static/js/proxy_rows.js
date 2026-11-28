@@ -9,6 +9,12 @@
    needs a new row is re-fetched from the server, which renders it through
    `_proxy_row.html` — the same template that produced the first one. */
 
+/*: The element ids the page and the editor both name. They are constants rather
+  than string literals in three files, because a typo in one of them is a dialog
+  that never opens and no error anywhere. */
+export const MODAL = 'proxy-modal';
+export const DELETE_MODAL = 'proxy-delete-modal';
+
 /** The dashboard's CSRF token, from the meta tag every page carries. */
 export function csrfToken() {
   const meta = document.querySelector('meta[name="csrf-token"]');
@@ -66,11 +72,28 @@ export function refreshCount() {
   if (count) {
     count.textContent = `${rows.length} connection${rows.length === 1 ? '' : 's'}`;
   }
+  const summary = document.getElementById('proxy-summary-count');
+  if (summary) {
+    summary.textContent = `${rows.length} connection${rows.length === 1 ? '' : 's'}`;
+  }
   const empty = document.getElementById('proxy-empty');
   if (empty) empty.hidden = rows.length > 0;
   const line = document.getElementById('proxy-mode-line');
   if (line) line.hidden = rows.length === 0;
   refreshMode();
+}
+
+/**
+ * Remember the editor's copy of a row, from a save or a toggle.
+ *
+ * The row's `data-payload` is what "Edit" fills the dialog from, so it has to
+ * follow a write: a second edit without a reload must start from what was just
+ * saved, not from what the page was rendered with.
+ */
+export function storePayload(payload) {
+  if (!payload || payload.id === undefined) return;
+  const row = rowById(payload.id);
+  if (row) row.dataset.payload = JSON.stringify(payload);
 }
 
 /**
@@ -149,4 +172,22 @@ export async function refreshTable() {
   } catch (error) {
     console.error('proxy table refresh failed', error);
   }
+}
+
+/* ------------------------------------------------------------ the menu */
+
+export function closeMenu() {
+  const menu = document.getElementById('proxy-menu');
+  const button = document.getElementById('proxy-menu-toggle');
+  if (menu) menu.hidden = true;
+  if (button) button.setAttribute('aria-expanded', 'false');
+}
+
+export function toggleMenu() {
+  const menu = document.getElementById('proxy-menu');
+  const button = document.getElementById('proxy-menu-toggle');
+  if (!menu || !button) return;
+  const open = menu.hidden;
+  menu.hidden = !open;
+  button.setAttribute('aria-expanded', open ? 'true' : 'false');
 }

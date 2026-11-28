@@ -14,7 +14,8 @@
      (`proxy_rows.js`); a row that does not exist yet is fetched from the
      server, which renders it through the same template as the first render.
 
-   The editor and the delete confirmation live in `proxy_editor.js`. */
+   The editor dialog lives in `proxy_editor.js`; the delete confirmation lives
+   here, next to the row menu that opens it. */
 
 import {
   DELETE_MODAL,
@@ -25,9 +26,10 @@ import {
   postBody,
   refreshCount,
   rowById,
+  storePayload,
   toggleMenu,
 } from './proxy_rows.js';
-import { initProxyEditor, openDelete, openEditor } from './proxy_editor.js';
+import { initProxyEditor, openEditor } from './proxy_editor.js';
 import { showToast } from './toast.js';
 
 /** What the live region says after one row action. */
@@ -60,6 +62,7 @@ async function runRowAction(button) {
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
     if (!data.row) return;
     patchRow(data.row);
+    storePayload(data.payload);
     announce(resultLine(action, data.row));
   } catch (error) {
     /* One fallback for both cases: the form does exactly this action, it just
@@ -72,6 +75,25 @@ async function runRowAction(button) {
       button.setAttribute('aria-busy', 'false');
     }
   }
+}
+
+export function openDelete(button) {
+  const dialog = document.getElementById('proxy-delete-modal');
+  if (!dialog) return;
+  const form = document.getElementById('proxy-delete-form');
+  if (form) form.action = `/admin/proxy/connection/${button.dataset.connection}/delete`;
+  const body = document.getElementById('proxy-delete-body');
+  if (body) {
+    body.textContent =
+      `"${button.dataset.name}" and its stored secret are removed. ` +
+      'The engine stops using it on the next job.';
+  }
+  const confirm = document.getElementById('proxy-delete-confirm');
+  if (confirm) {
+    confirm.value = '';
+    confirm.focus();
+  }
+  dialog.hidden = false;
 }
 
 /** Delete: the confirmation's own form, so the word is checked server-side too. */
@@ -153,6 +175,19 @@ export function initProxyPage() {
 
   const deleteForm = document.getElementById('proxy-delete-form');
   if (deleteForm) deleteForm.addEventListener('submit', submitDelete);
+  const deleteCancel = document.getElementById('proxy-delete-cancel');
+  if (deleteCancel) {
+    deleteCancel.addEventListener('click', () => {
+      const dialog = document.getElementById(DELETE_MODAL);
+      if (dialog) dialog.hidden = true;
+    });
+  }
+  const deleteDialog = document.getElementById(DELETE_MODAL);
+  if (deleteDialog) {
+    deleteDialog.addEventListener('click', (event) => {
+      if (event.target === deleteDialog) deleteDialog.hidden = true;
+    });
+  }
 
   // The "Add connection" buttons are the editor's, but they belong to this card.
   ['proxy-add', 'proxy-empty-add'].forEach((id) => {

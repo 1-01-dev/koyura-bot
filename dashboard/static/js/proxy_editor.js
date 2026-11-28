@@ -1,36 +1,31 @@
 /* Proxy connections: the editor dialog and the delete confirmation.
 
-   One form does both jobs. "Add" posts to `/admin/proxy/connection`, "Edit" posts
-   to `/admin/proxy/connection/<id>`, and the only differences are the action,
-   the title and the values filled in — so there is one set of fields, one
-   validation path and one place a mistake can appear.
+   One form does both jobs: "Add" posts to `/admin/proxy/connection`, "Edit" to
+   `/admin/proxy/connection/<id>`, and the only differences are the action, the
+   title and the values filled in — one set of fields, one validation path, one
+   place a mistake can appear.
 
-   Three things this module is careful about:
-
-   - **the secret never comes back.** The row's payload carries
-     `has_password: true|false`, and the password field is always rendered empty.
-     "blank keeps it" is the server's rule; this module only says so.
-   - **a refusal keeps the dialog open.** `OnlyOneWireGuard` (a second tunnel) or
-     a bad URL arrives as `{ok: false, error, code}`; the message goes into the
-     dialog's own alert and nothing typed is lost.
-   - **the protocol changes the fields, not the form.** WireGuard hides the proxy
-     inputs and shows the config upload; switching back restores them. No second
-     form, no markup built here. */
+   The secret never comes back: the payload carries `has_password`, the field is
+   always empty, and a blank field keeps the stored credential (the server's
+   rule). A refusal — `OnlyOneWireGuard`, a bad URL — arrives as
+   `{ok: false, error, code}` and lands in the dialog's own alert with everything
+   typed still in place. Switching the protocol hides the proxy inputs and shows
+   the tunnel upload; the form itself never changes. */
 
 import {
+  MODAL,
   announce,
   patchRow,
   postBody,
   refreshTable,
   rowById,
+  storePayload,
 } from './proxy_rows.js';
 import {
   checkServices,
   initProxyPicker,
   syncPickerVisibility,
 } from './proxy_picker.js';
-
-const MODAL = 'proxy-modal';
 
 /** The stored payload of one row, from its `data-payload` attribute. */
 function payloadFor(id) {
@@ -49,6 +44,30 @@ function setError(text) {
   if (!box) return;
   box.textContent = text || '';
   box.hidden = !text;
+}
+
+/** One field's value, by id — the dialog has a dozen and none of them is worth
+ *  three lines each. */
+function setValue(id, value) {
+  const input = document.getElementById(id);
+  if (input) input.value = value;
+}
+
+/** Proxy fields or the tunnel's, driven by the protocol select. */
+function syncFields() {
+  const kind = document.getElementById('proxy-kind');
+  const wireguard = Boolean(kind && kind.value === 'wireguard');
+  const proxyFields = document.getElementById('proxy-fields');
+  const wgFields = document.getElementById('proxy-wg-fields');
+  if (proxyFields) proxyFields.hidden = wireguard;
+  if (wgFields) wgFields.hidden = !wireguard;
+  /* The URL is required for a proxy and refused for a tunnel: the server's rule,
+     mirrored here so the browser stops the submit before a round trip. */
+  const url = document.getElementById('proxy-url');
+  if (url) url.required = !wireguard;
+  const wgFile = document.getElementById('proxy-wg-file');
+  if (wgFile) wgFile.disabled = !wireguard;
+  syncPickerVisibility();
 }
 
 /** Fill the dialog from a payload; `null` means "Add". */
@@ -72,19 +91,14 @@ function fill(connection) {
     ? `/admin/proxy/connection/${connection.id}`
     : '/admin/proxy/connection';
 
-  const set = (id, value) => {
-    const input = document.getElementById(id);
-    if (input) input.value = value;
-  };
-  set('proxy-name', editing ? connection.name : '');
-  set('proxy-kind', editing ? connection.kind : 'socks5h');
-  set('proxy-url', editing ? connection.url || '' : '');
-  // The username is not a secret and is not rendered on the page, so an edit
-  // starts empty; leaving it empty with the URL intact keeps the stored login
-  // only when a password is also blank — which the hint under the field says.
-  set('proxy-username', '');
-  set('proxy-password', '');
-  set('proxy-assignment', editing ? connection.mode : 'all');
+  setValue('proxy-name', editing ? connection.name : '');
+  setValue('proxy-kind', editing ? connection.kind : 'socks5h');
+  setValue('proxy-url', editing ? connection.url || '' : '');
+  setValue('proxy-assignment', editing ? connection.mode : 'all');
+  // Neither credential field is ever rendered back into the page, so both start
+  // empty. Blank means "keep the stored secret"; the hint under the field says so.
+  setValue('proxy-username', '');
+  setValue('proxy-password', '');
 
   const state = document.getElementById('proxy-password-state');
   if (state) {
@@ -112,7 +126,7 @@ function closeEditor() {
   if (dialog) dialog.hidden = true;
 }
 
-/** Quick test: probe the stored connection, not the fields being typed. */
+/** Quick test: probe the connection the dialog is editing, not the typed fields. */
 async function quickTest() {
   const button = document.getElementById('proxy-quick-test');
   const result = document.getElementById('proxy-test-result');
@@ -131,14 +145,14 @@ async function quickTest() {
   button.disabled = true;
   result.textContent = 'Testing…';
   try {
-    const body = new FormData();
-    const res = await fetch(`/admin/proxy/connection/${id}/test`, postBody(body));
+    const res = await fetch(`/admin/proxy/connection/${id}/test`, postBody(new FormData()));
     const data = await res.json();
     if (!res.ok || !data.ok) {
       result.textContent = data.error || 'The check failed.';
       return;
     }
     patchRow(data.row);
+    storePayload(data.payload);
     result.textContent =
       data.row.status === 'ok'
         ? `External IP: ${data.row.last_test_result}`
@@ -173,32 +187,17 @@ async function submitEditor(event) {
     /* Editing patches the row in place. A new row's id is only known after the
        insert (every form action in it names that id), so the body is re-fetched
        and re-rendered by the server rather than assembled here. */
-    if (patchRow(data.row) === null) await refreshTable();
+    if (patchRow(data.row) === null) {
+      await refreshTable();
+    } else {
+      storePayload(data.payload);
+    }
   } catch (error) {
     console.error('proxy save failed', error);
     form.submit();
   } finally {
     if (save) save.disabled = false;
   }
-}
-
-export function openDelete(button) {
-  const dialog = document.getElementById('proxy-delete-modal');
-  if (!dialog) return;
-  const form = document.getElementById('proxy-delete-form');
-  if (form) form.action = `/admin/proxy/connection/${button.dataset.connection}/delete`;
-  const body = document.getElementById('proxy-delete-body');
-  if (body) {
-    body.textContent =
-      `"${button.dataset.name}" and its stored secret are removed. ` +
-      'The engine stops using it on the next job.';
-  }
-  const confirm = document.getElementById('proxy-delete-confirm');
-  if (confirm) {
-    confirm.value = '';
-    confirm.focus();
-  }
-  dialog.hidden = false;
 }
 
 function bind(id, event, handler) {
@@ -214,17 +213,10 @@ export function initProxyEditor() {
   bind('proxy-cancel', 'click', closeEditor);
   bind('proxy-kind', 'change', syncFields);
   bind('proxy-quick-test', 'click', quickTest);
-  bind('proxy-delete-cancel', 'click', () => {
-    const dialog = document.getElementById('proxy-delete-modal');
-    if (dialog) dialog.hidden = true;
-  });
-
   /* An overlay click closes the dialog it is the backdrop of — the same
      behaviour the other dialogs on the panel have. */
-  [MODAL, 'proxy-delete-modal'].forEach((id) => {
-    bind(id, 'click', (event) => {
-      if (event.target === event.currentTarget) event.currentTarget.hidden = true;
-    });
+  bind(MODAL, 'click', (event) => {
+    if (event.target === event.currentTarget) closeEditor();
   });
 
   /* Escape closes whichever dialog is open. Bound here (not in proxy.js) because

@@ -2983,6 +2983,85 @@ tr[data-enabled='false'] .proxy-off-badge {
   }
 }
 
+/* The WireGuard card's status cells: four facts in one hairline grid, one
+   column on a phone. */
+.proxy-status {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  margin: 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.proxy-status-cell {
+  min-width: 0;
+  padding: 10px 16px;
+  border-right: 1px solid var(--line);
+}
+
+.proxy-status-cell:last-child {
+  border-right: 0;
+}
+
+.proxy-status-cell dd {
+  margin: 2px 0 0;
+}
+
+.proxy-status-value {
+  font-size: 12px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* The upload row: a file field and its button, the button sized to its label
+   rather than to the row. */
+.wireguard-upload {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  padding: 14px 16px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.wireguard-upload .cookies-add-btn {
+  min-width: 96px;
+}
+
+/* One service in the picker: the box and its name on one line. */
+.proxy-service {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  cursor: pointer;
+}
+
+.proxy-service-name {
+  font-size: 11px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .proxy-status-cell {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .proxy-status-cell:last-child {
+    border-bottom: 0;
+  }
+
+  .wireguard-upload {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .wireguard-upload .cookies-add-btn {
+    width: 100%;
+  }
+}
+
 /* ----- Help bubbles (the "?" beside a heading) ---------------------------
    One component for every long explanation a panel used to print in full: a
    1px-bordered mono square next to the heading and a compact panel that starts

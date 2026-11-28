@@ -1519,6 +1519,26 @@ def _proxy_wants_json(request: Request) -> bool:
     return request.headers.get("X-Requested-With") == "fetch"
 
 
+def _proxy_row_answer(row: dict, status_code: int = 200) -> Response:
+    """One row for the table *and* for the editor, in one answer.
+
+    Two shapes, because they answer two questions: `row` is the formatted cell
+    values (what the table prints), `payload` is what the editor fills itself
+    with on the next edit — including the clean URL and the "a secret is
+    stored" flag.
+    The editor stores the second on the row it just patched, so a second edit
+    without a reload edits what was saved, not what was there before.
+    """
+    return _proxy_json(
+        {
+            "ok": True,
+            "row": proxy_connections.page_row(row),
+            "payload": proxy_connections.connection_json(row),
+        },
+        status_code=status_code,
+    )
+
+
 def _proxy_json(payload: dict, status_code: int = 200) -> Response:
     """One JSON answer for the script; `no-store`, because it describes a row."""
     response = JSONResponse(content=payload, status_code=status_code)
@@ -1544,15 +1564,21 @@ def _proxy_form_payload(form: FormData) -> dict:
     }
 
 
-def _proxy_error_answer(
+async def _proxy_error_answer(
     request: Request, user: str, error: str, *, code: str, row: dict | None = None
 ) -> Response:
-    """A refused save: JSON for the script, a re-rendered page for a plain form."""
+    """A refused save: JSON for the script, a re-rendered page for a plain form.
+
+    The page context is rebuilt, not just the message: with JavaScript off this
+    answer *is* the page, and it has to render the table and the tunnel card as
+    they are (the row that failed is still there, because nothing was written).
+    """
     if _proxy_wants_json(request):
         return _proxy_json(
             {"ok": False, "code": code, "error": error}, status_code=400
         )
-    context: dict = {"user": user, "proxy_error": error, "proxy_error_code": code}
+    context = await proxy_connections.page_context()
+    context.update({"user": user, "proxy_error": error, "proxy_error_code": code})
     if row is not None:
         context["proxy_edit_id"] = int(row["id"])
     return _render_admin(request, "proxy", context, 400)
@@ -1576,15 +1602,13 @@ async def create_proxy_connection(request: Request) -> Response:
     try:
         row = await proxy_connections.create_connection(**_proxy_form_payload(form))
     except proxy_connections.ProxyConnectionError as error:
-        return _proxy_error_answer(request, user, str(error), code=error.code)
+        return await _proxy_error_answer(request, user, str(error), code=error.code)
 
     logging.getLogger("koyura.dashboard").info(
         "proxy connection %s added by %s (%s)", row["id"], user, row["kind"]
     )
     if _proxy_wants_json(request):
-        return _proxy_json(
-            {"ok": True, "row": proxy_connections.page_row(row)}, status_code=201
-        )
+        return _proxy_row_answer(row, status_code=201)
     return _proxy_redirect(proxy_saved=1)
 
 
@@ -1598,7 +1622,7 @@ async def update_proxy_connection(request: Request, connection_id: int) -> Respo
 
     existing = await db.get_proxy_connection(connection_id)
     if existing is None:
-        return _proxy_error_answer(
+        return await _proxy_error_answer(
             request, user, "That connection no longer exists.", code="NotFound"
         )
     try:
@@ -1606,7 +1630,7 @@ async def update_proxy_connection(request: Request, connection_id: int) -> Respo
             connection_id, **_proxy_form_payload(form)
         )
     except proxy_connections.ProxyConnectionError as error:
-        return _proxy_error_answer(
+        return await _proxy_error_answer(
             request, user, str(error), code=error.code, row=existing
         )
 
@@ -1614,7 +1638,7 @@ async def update_proxy_connection(request: Request, connection_id: int) -> Respo
         "proxy connection %s updated by %s", connection_id, user
     )
     if _proxy_wants_json(request):
-        return _proxy_json({"ok": True, "row": proxy_connections.page_row(row)})
+        return _proxy_row_answer(row)
     return _proxy_redirect(proxy_saved=1)
 
 
@@ -1629,7 +1653,7 @@ async def toggle_proxy_connection(request: Request, connection_id: int) -> Respo
     enabled = str(form.get("enabled") or "").strip().lower() in {"1", "true", "on"}
     changed = await proxy_connections.set_enabled(connection_id, enabled)
     if not changed:
-        return _proxy_error_answer(
+        return await _proxy_error_answer(
             request, user, "That connection no longer exists.", code="NotFound"
         )
     row = await db.get_proxy_connection(connection_id)
@@ -1640,10 +1664,13 @@ async def toggle_proxy_connection(request: Request, connection_id: int) -> Respo
         user,
     )
     if _proxy_wants_json(request):
+        # The toggle changes the badge, the verb *and* the mode word, and the mode
+        # is derived from the whole list rather than from this row.
         return _proxy_json(
             {
                 "ok": True,
                 "row": proxy_connections.page_row(row or {}),
+                "payload": proxy_connections.connection_json(row or {}),
                 "mode": proxy_connections.mode_summary(
                     await db.list_proxy_connections()
                 ),
@@ -1666,7 +1693,7 @@ async def delete_proxy_connection(request: Request, connection_id: int) -> Respo
     user, form = prologue
 
     if str(form.get("confirm") or "").strip().lower() != "delete":
-        return _proxy_error_answer(
+        return await _proxy_error_answer(
             request,
             user,
             "Type DELETE to confirm removing this connection.",
@@ -1674,7 +1701,7 @@ async def delete_proxy_connection(request: Request, connection_id: int) -> Respo
         )
     removed = await proxy_connections.delete_connection(connection_id)
     if not removed:
-        return _proxy_error_answer(
+        return await _proxy_error_answer(
             request, user, "That connection no longer exists.", code="NotFound"
         )
     logging.getLogger("koyura.dashboard").info(
@@ -1709,7 +1736,7 @@ async def test_proxy_connection(request: Request, connection_id: int) -> Respons
     try:
         row = await proxy_connections.test_connection(connection_id)
     except proxy_connections.ProxyConnectionError as error:
-        return _proxy_error_answer(request, user, str(error), code=error.code)
+        return await _proxy_error_answer(request, user, str(error), code=error.code)
 
     logging.getLogger("koyura.dashboard").info(
         "proxy connection %s tested by %s: %s",
@@ -1718,7 +1745,7 @@ async def test_proxy_connection(request: Request, connection_id: int) -> Respons
         row.get("status"),
     )
     if _proxy_wants_json(request):
-        return _proxy_json({"ok": True, "row": proxy_connections.page_row(row)})
+        return _proxy_row_answer(row)
     return _proxy_redirect(proxy_tested=1)
 
 
