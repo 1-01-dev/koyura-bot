@@ -84,6 +84,61 @@
   </div>
 </div>
 
+{#- Subscriptions: three cells, one two-series line and a per-channel table.
+
+    The whole block is written by report.js from /api/chart-data, and it is
+    removed from the page entirely when the gate is off or the selected window
+    holds no transition — an empty row of zeros would read as "nobody
+    subscribes" instead of "nothing to count yet". The markup is the skeleton;
+    `hidden` keeps it out of the flow until there is something to show. -#}
+<div class="subs-block" id="subscriptions-block" hidden>
+  <div class="kpi-grid kpi-grid--three" id="subscription-kpis">
+    <div class="kpi-card kpi-card--accent">
+      <div class="kpi-label">Subscriptions · <span id="kpi-subscribed-period">--</span></div>
+      <div class="kpi-value" id="kpi-subscribed">--</div>
+      <div class="kpi-trend">joins in the period</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Unsubscriptions · <span id="kpi-left-period">--</span></div>
+      <div class="kpi-value" id="kpi-left">--</div>
+      <div class="kpi-trend">left in the period</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Active subscribers</div>
+      <div class="kpi-value" id="kpi-active-subscribers">--</div>
+      <div class="kpi-trend">in every channel now</div>
+    </div>
+  </div>
+
+  <div class="card section-card subs-card" id="subscriptions-chart-card">
+    <div class="card-header">
+      <h2 class="card-title">Subscriptions over time</h2>
+    </div>
+    <div class="chart-wrap chart-wrap--short">
+      <canvas id="subscriptions-chart"></canvas>
+    </div>
+  </div>
+
+  <div class="card section-card subs-card" id="subscriptions-breakdown">
+    <div class="card-header">
+      <h2 class="card-title">Subscriptions by channel</h2>
+    </div>
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Channel</th>
+            <th class="num">Subscriptions</th>
+            <th class="num">Unsubscriptions</th>
+            <th class="num">Active</th>
+          </tr>
+        </thead>
+        <tbody id="subscriptions-by-channel"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <!-- Active Downloads: no row, no panel. active.js drops the card from the
      flow whenever the engine reports an empty list. -->
 <div class="card active-card" id="active-downloads" hidden>

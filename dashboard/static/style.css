@@ -709,6 +709,47 @@
   -webkit-overflow-scrolling: touch;
 }
 
+/* --- Subscriptions on the dashboard -------------------------------------
+   The block follows the platform/top-users grid and continues the same ruled
+   page: the KPI row supplies its own top and left hairlines, so the cards below
+   it drop their top border and only the left edge is worth drawing. Nothing
+   here paints a colour of its own — the accent cell is .kpi-card--accent. */
+.subs-block {
+  margin-top: 28px;
+}
+
+.subs-block[hidden],
+.subs-card[hidden] {
+  display: none;
+}
+
+.subs-block .kpi-card {
+  /* Three cells, not four: the number stays loud but keeps its share of the
+     row instead of stretching the serif face to the four-cell size. */
+  padding: 14px;
+}
+
+.subs-block .kpi-value {
+  font-size: clamp(26px, 4vw, 44px);
+}
+
+/* The two cards under the cells are one column of the same ruled page. */
+.subs-card {
+  border-left: 1px solid var(--line);
+}
+
+/* A link inside the breakdown is a channel, not a row action: it keeps the
+   table's ink and underlines on hover, like every other link on the page. */
+.subs-card .data-table td a {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+
+.subs-card .data-table td a:hover {
+  border-bottom-color: currentColor;
+}
+
 .col-check {
   width: 36px;
   text-align: center !important;
