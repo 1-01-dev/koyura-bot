@@ -123,6 +123,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_service_cookies_file
 CREATE INDEX IF NOT EXISTS idx_service_cookies_order
     ON service_cookies(service, position);
 
+-- Outbound proxy connections, in the order the engine tries them. This table
+-- replaces the single ``egress.*`` setting set: one row per proxy or tunnel,
+-- and the engine walks the list per service. No column ever holds a password:
+-- ``password_ref`` names the file under EGRESS_PATH/secrets (0600) that the
+-- engine reads, and ``username`` is the non-secret half of the login.
+-- ``services`` is a JSON array of service names; ``position`` is 0-based and
+-- renumbered on every move/delete, like the cookie rows.
+CREATE TABLE IF NOT EXISTS proxy_connections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'socks5h',
+    url TEXT NOT NULL DEFAULT '',
+    username TEXT,
+    password_ref TEXT,
+    config_path TEXT,
+    assignment_mode TEXT NOT NULL DEFAULT 'all',
+    services TEXT NOT NULL DEFAULT '[]',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    position INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    last_test_at TEXT,
+    last_test_result TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_proxy_connections_order
+    ON proxy_connections(position, id);
+
 -- The channels the bot asks a new user to subscribe to before it does anything.
 -- ``position`` is 0-based and renumbered on every move, like the cookie jars;
 -- ``bot_is_admin`` is the verdict of the last "Check" (``getChatMember`` for
@@ -1785,3 +1813,250 @@ async def get_subscription_stats(period: str = "30d") -> dict[str, Any]:
         ],
         "chart": _chart_series(history, labels, bucket_keys, bucket_format),
     }
+
+
+# ---------------------------------------------------------------------------
+# Proxy connections (the Proxy page and the engine's egress rule)
+# ---------------------------------------------------------------------------
+#
+# One row per proxy or tunnel, in the order the engine tries them. ``position``
+# is 0-based and kept dense by every writer here, so a reader never has to sort
+# around holes. Nothing in this section stores or returns a password: the row
+# keeps a reference to the file the engine reads, and nothing else.
+
+async def list_proxy_connections() -> list[dict[str, Any]]:
+    """Every connection, in the engine's order."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM proxy_connections ORDER BY position ASC, id ASC"
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+    return [dict(row) for row in rows]
+
+
+async def get_proxy_connection(connection_id: int) -> dict[str, Any] | None:
+    """One connection by id, or ``None`` when it was deleted meanwhile."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM proxy_connections WHERE id = ?", (int(connection_id),)
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+    return dict(row) if row else None
+
+
+async def count_proxy_connections(kind: str | None = None) -> int:
+    """How many rows exist, optionally of one kind ("only one WireGuard")."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM proxy_connections WHERE (:kind IS NULL OR kind = :kind)",
+            {"kind": kind},
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+    return int(row[0]) if row else 0
+
+
+async def _next_connection_position(conn: aiosqlite.Connection) -> int:
+    """One past the last position (0 for a new list)."""
+    cursor = await conn.execute("SELECT MAX(position) FROM proxy_connections")
+    row = await cursor.fetchone()
+    await cursor.close()
+    highest = row[0] if row and row[0] is not None else -1
+    return int(highest) + 1
+
+
+async def _renumber_connections(conn: aiosqlite.Connection) -> None:
+    """Rewrite the positions as 0..n-1 in their current order."""
+    cursor = await conn.execute(
+        "SELECT id FROM proxy_connections ORDER BY position ASC, id ASC"
+    )
+    ids = [int(row["id"]) for row in await cursor.fetchall()]
+    await cursor.close()
+    for position, connection_id in enumerate(ids):
+        cursor = await conn.execute(
+            "UPDATE proxy_connections SET position = ? WHERE id = ?",
+            (position, connection_id),
+        )
+        await cursor.close()
+
+
+async def create_proxy_connection(
+    *,
+    name: str,
+    kind: str,
+    url: str,
+    username: str | None,
+    password_ref: str | None,
+    config_path: str | None,
+    assignment_mode: str,
+    services: str,
+    enabled: bool = True,
+) -> dict[str, Any]:
+    """Append one connection (last in the engine's order).
+
+    ``services`` arrives as the JSON text the caller already validated; this
+    layer never interprets a service name.
+    """
+    async with _conn() as conn:
+        position = await _next_connection_position(conn)
+        cursor = await conn.execute(
+            "INSERT INTO proxy_connections (name, kind, url, username, "
+            "password_ref, config_path, assignment_mode, services, enabled, "
+            "position, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown', ?)",
+            (
+                str(name),
+                str(kind),
+                str(url),
+                username,
+                password_ref,
+                config_path,
+                str(assignment_mode),
+                str(services),
+                1 if enabled else 0,
+                position,
+                _utc_now(),
+            ),
+        )
+        connection_id = cursor.lastrowid
+        await cursor.close()
+        await conn.commit()
+    return dict(await get_proxy_connection(int(connection_id or 0)) or {})
+
+
+async def update_proxy_connection(
+    connection_id: int,
+    *,
+    name: str | None = None,
+    kind: str | None = None,
+    url: str | None = None,
+    username: str | None = None,
+    password_ref: str | None = None,
+    config_path: str | None = None,
+    assignment_mode: str | None = None,
+    services: str | None = None,
+) -> dict[str, Any] | None:
+    """Change the fields given (``None`` leaves the stored value alone).
+
+    ``password_ref`` is the one field an empty string can clear (a proxy that
+    no longer needs a login); every other column keeps its value when the
+    argument is ``None``.
+    """
+    row = await get_proxy_connection(connection_id)
+    if row is None:
+        return None
+    cleared_ref = None if password_ref == "" else password_ref
+    updated = {
+        "name": str(row["name"]) if name is None else str(name),
+        "kind": str(row["kind"]) if kind is None else str(kind),
+        "url": str(row["url"]) if url is None else str(url),
+        "username": row["username"] if username is None else username,
+        "password_ref": row["password_ref"] if password_ref is None else cleared_ref,
+        "config_path": row["config_path"] if config_path is None else config_path,
+        "assignment_mode": (
+            str(row["assignment_mode"])
+            if assignment_mode is None
+            else str(assignment_mode)
+        ),
+        "services": str(row["services"]) if services is None else str(services),
+    }
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "UPDATE proxy_connections SET name = ?, kind = ?, url = ?, "
+            "username = ?, password_ref = ?, config_path = ?, "
+            "assignment_mode = ?, services = ? WHERE id = ?",
+            (
+                updated["name"],
+                updated["kind"],
+                updated["url"],
+                updated["username"],
+                updated["password_ref"],
+                updated["config_path"],
+                updated["assignment_mode"],
+                updated["services"],
+                int(connection_id),
+            ),
+        )
+        await cursor.close()
+        await conn.commit()
+    return await get_proxy_connection(connection_id)
+
+
+async def set_proxy_connection_enabled(connection_id: int, enabled: bool) -> bool:
+    """Turn one connection on or off without touching its rule."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "UPDATE proxy_connections SET enabled = ? WHERE id = ?",
+            (1 if enabled else 0, int(connection_id)),
+        )
+        changed = cursor.rowcount
+        await cursor.close()
+        await conn.commit()
+    return bool(changed)
+
+
+async def move_proxy_connection(connection_id: int, delta: int) -> bool:
+    """Move one connection up (``-1``) or down (``+1``) and renumber.
+
+    A move at the edge is a no-op that still answers ``True``: the operator
+    pressed a button that exists, so the page must not show an error for it.
+    """
+    row = await get_proxy_connection(connection_id)
+    if row is None:
+        return False
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT id FROM proxy_connections ORDER BY position ASC, id ASC"
+        )
+        order = [int(entry["id"]) for entry in await cursor.fetchall()]
+        await cursor.close()
+        if int(connection_id) not in order:
+            return False
+        index = order.index(int(connection_id))
+        target = index + int(delta)
+        if target < 0 or target >= len(order):
+            return True
+        order.insert(target, order.pop(index))
+        for position, entry_id in enumerate(order):
+            cursor = await conn.execute(
+                "UPDATE proxy_connections SET position = ? WHERE id = ?",
+                (position, entry_id),
+            )
+            await cursor.close()
+        await conn.commit()
+    return True
+
+
+async def delete_proxy_connection(connection_id: int) -> dict[str, Any] | None:
+    """Delete one row and renumber what is left; returns the deleted row."""
+    row = await get_proxy_connection(connection_id)
+    if row is None:
+        return None
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM proxy_connections WHERE id = ?", (int(connection_id),)
+        )
+        await cursor.close()
+        await _renumber_connections(conn)
+        await conn.commit()
+    return row
+
+
+async def record_proxy_connection_test(
+    connection_id: int,
+    *,
+    status: str,
+    result: str,
+    tested_at: str | None = None,
+) -> None:
+    """Store the verdict of one proxy check (``ok``/``fail`` and its detail)."""
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "UPDATE proxy_connections SET status = ?, last_test_at = ?, "
+            "last_test_result = ? WHERE id = ?",
+            (str(status), tested_at or _utc_now(), str(result), int(connection_id)),
+        )
+        await cursor.close()
+        await conn.commit()
