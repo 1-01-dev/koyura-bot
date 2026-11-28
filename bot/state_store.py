@@ -31,7 +31,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_DB_PATH = "/data/koyura_bot_state.db"
 DEFAULTS = {"quality": "best", "format": "video"}
 
+#: The original pair, in the order ``get_prefs`` reads it. Its return shape is a
+#: contract (``/settings`` and the download flow read it), so the extras below
+#: must not leak into it. Derived from ``DEFAULTS`` so the SELECT, the schema and
+#: the returned dict cannot disagree about which columns exist.
+PREFS_COLUMNS = tuple(DEFAULTS)
+
 #: Preferences that are *not* part of ``DEFAULTS``; ``None`` means "not set".
+#: ``get_extras`` selects exactly these, in this order, and then reads the row by
+#: the same names, so the two can never drift apart again.
 EXTRA_COLUMNS = ("language", "pending_format", "subscription_passed_at")
 
 _SCHEMA = """
@@ -113,14 +121,19 @@ def get_prefs(user_id: int) -> dict[str, str]:
     prefs = dict(DEFAULTS)
     try:
         with _connect() as conn:
+            # Both readers build the column list from the constant they then
+            # iterate by name. A hand-written list drifts from it, and
+            # ``row[name]`` then raises ``IndexError`` on every message of a user
+            # we have a row for. The constants hold literal column names; the
+            # only value in the statement is the bound ``user_id`` parameter.
             row = conn.execute(
-                "SELECT quality, format FROM user_prefs WHERE user_id=?", (user_id,)
+                "SELECT " + ", ".join(PREFS_COLUMNS) + " FROM user_prefs WHERE user_id=?",
+                (user_id,),
             ).fetchone()
         if row is not None:
-            if row["quality"]:
-                prefs["quality"] = row["quality"]
-            if row["format"]:
-                prefs["format"] = row["format"]
+            for name in PREFS_COLUMNS:
+                if row[name]:
+                    prefs[name] = row[name]
     except (sqlite3.Error, OSError) as exc:
         _warn_once(f"Could not read bot preferences ({exc}); using defaults")
 
@@ -167,7 +180,7 @@ def _stamp() -> str:
 # ---------------------------------------------------------------------------
 
 def get_extras(user_id: int) -> dict[str, str | None]:
-    """``{language, pending_format}`` for one user; ``None`` means "not set"."""
+    """One ``EXTRA_COLUMNS`` key per preference; ``None`` means "not set"."""
     with _cache_lock:
         cached = _extras.get(user_id)
     if cached is not None:
@@ -177,7 +190,7 @@ def get_extras(user_id: int) -> dict[str, str | None]:
     try:
         with _connect() as conn:
             row = conn.execute(
-                "SELECT language, pending_format FROM user_prefs WHERE user_id=?",
+                "SELECT " + ", ".join(EXTRA_COLUMNS) + " FROM user_prefs WHERE user_id=?",
                 (user_id,),
             ).fetchone()
         if row is not None:
