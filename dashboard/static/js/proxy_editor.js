@@ -157,6 +157,9 @@ async function quickTest() {
       data.row.status === 'ok'
         ? `External IP: ${data.row.last_test_result}`
         : `Check failed: ${data.row.last_test_result}`;
+    /* The verdict belongs on the page as well as in the dialog: a Quick test
+       from an edited row may have just closed it. */
+    announce(`${data.row.name}: ${result.textContent}`);
   } catch (error) {
     console.error('proxy quick test failed', error);
     result.textContent = 'The check could not run. See the console.';
