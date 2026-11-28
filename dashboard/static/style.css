@@ -2567,6 +2567,9 @@
 }
 
 .help-panel {
+  /* A span is inline and would ignore max-width; the comment is the reason the
+     rule exists, not decoration. */
+  display: block;
   max-width: 68ch;
   margin: 10px 0 0;
   padding: 8px 10px;

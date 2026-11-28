@@ -332,12 +332,34 @@ def test_opening_one_bubble_closes_the_others_in_its_group():
     source = HELP_MODULE.read_text()
     assert "data-help-group" in source
     assert "closeSiblings" in source
-    assert 'querySelectorAll("[data-help-group]")' in source or (
-        "closest('[data-help-group]')" in source
-    )
+    assert "closest('[data-help-group]')" in source
     # The groups exist in the markup, otherwise the JS silently does nothing.
     for path in EXPECTED_PANELS:
         assert "data-help-group" in _page(path), path
+
+
+def test_the_group_is_the_page_not_an_individual_card():
+    """A group per header would never close anything.
+
+    /admin/proxy carries three bubbles in three different headers; grouping each
+    one on its own header (the first version of this markup) left all three open
+    on a phone at once. The container is the group.
+    """
+    for path, container in (
+        ("/admin/proxy", "panel-stack"),
+        ("/admin/cookies", "panel-stack"),
+        ("/admin/limits", "panel-stack"),
+        ("/admin/bot", "panel-stack"),
+    ):
+        html = _page(path)
+        assert re.search(
+            r'class="' + container + r'" data-help-group="[a-z]+"', html
+        ), f"{path}: the help group is not on the page container"
+        headers = re.findall(r'<div class="card-header panel-head"([^>]*)>', html)
+        for attrs in headers:
+            assert "data-help-group" not in attrs, (
+                f"{path}: a card header owns its own group, so bubbles never close"
+            )
 
 
 def test_the_module_only_flips_hidden_and_aria_expanded():
@@ -372,6 +394,11 @@ def _rule(selector: str) -> str:
 
 def test_the_hidden_panel_is_display_none():
     assert "display: none" in _rule(".help-panel[hidden]")
+
+
+def test_an_open_panel_is_a_block_so_max_width_applies():
+    """A span is inline: the first build rendered the note 68ch wide anyway."""
+    assert "display: block" in _rule(".help-panel")
 
 
 def test_the_button_is_a_one_pixel_mono_square_in_the_panel_tokens():

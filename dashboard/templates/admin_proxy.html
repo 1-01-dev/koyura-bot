@@ -11,14 +11,14 @@
 {% include "_admin_tabs.html" %}
 {% from "_help.html" import help_toggle, help_panel %}
 
-<div class="panel-stack">
+<div class="panel-stack" data-help-group="proxy">
 
 <!-- Mode and assignment ---------------------------------------------------
      One form for the three-way choice and the rule that applies it. Plain
      radios and checkboxes: the page works with JavaScript off, and the server
      is the only authority on what a valid combination is. -->
 <section class="card panel" id="proxy-card">
-  <div class="card-header panel-head" data-help-group="proxy">
+  <div class="card-header panel-head">
     <span class="help-row">
       <h2 class="card-title">Outbound route</h2>
       {{ help_toggle("proxy-note", "Why route through a proxy instead of a direct connection") }}
@@ -92,7 +92,7 @@
     </fieldset>
 
     <!-- Assignment -------------------------------------------------------- -->
-    <fieldset class="proxy-fieldset" id="proxy-assignment" data-help-group="proxy">
+    <fieldset class="proxy-fieldset" id="proxy-assignment">
       <legend class="limits-label mono">
         <span class="help-row">
           Apply to
@@ -188,7 +188,7 @@
      a watcher outside this container owns `wg0.conf` and writes `status.json`
      back. Nothing on this page ever reads the private key. -->
 <section class="card panel" id="wireguard-card">
-  <div class="card-header panel-head" data-help-group="proxy">
+  <div class="card-header panel-head">
     <span class="help-row">
       <h2 class="card-title">WireGuard</h2>
       {{ help_toggle("wireguard-note", "What the panel does with a WireGuard config") }}

@@ -11,7 +11,7 @@
 {% include "_admin_tabs.html" %}
 {% from "_help.html" import help_toggle, help_panel %}
 
-<div class="panel-stack">
+<div class="panel-stack" data-help-group="cookies">
 
 <!-- Add a service and its first file -------------------------------------
      One form does both jobs: the search field picks (or creates) the service
@@ -20,7 +20,7 @@
      work with JavaScript off and the field still accepts a name the list does
      not carry. -->
 <section class="card panel" id="cookies-card">
-  <div class="card-header panel-head" data-help-group="cookies">
+  <div class="card-header panel-head">
     <span class="help-row">
       <h2 class="card-title">Cookie files</h2>
       {{ help_toggle("cookies-note", "What a cookie file is and how several are tried") }}

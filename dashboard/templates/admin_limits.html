@@ -11,11 +11,11 @@
 {% include "_admin_tabs.html" %}
 {% from "_help.html" import help_toggle, help_panel %}
 
-<div class="panel-stack">
+<div class="panel-stack" data-help-group="limits">
 
 <!-- Download limits -->
 <section class="card panel" id="limits-card">
-  <div class="card-header panel-head" data-help-group="limits">
+  <div class="card-header panel-head">
     <span class="help-row">
       <h2 class="card-title">Download limits</h2>
       {{ help_toggle("per-user-hint", "How per-user active slots change the queue for everyone") }}
