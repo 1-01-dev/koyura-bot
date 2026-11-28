@@ -834,18 +834,9 @@ async def _bot_page(
 # Admin: Channels (the subscription gate)
 # ---------------------------------------------------------------------------
 
-#: The period selector of the Channels page, in the order it is offered.
-CHANNEL_PERIODS: tuple[dict[str, str], ...] = (
-    {"key": "7d", "label": "7 days"},
-    {"key": "30d", "label": "30 days"},
-    {"key": "all", "label": "All time"},
-)
-
-
-def normalise_period(value: object) -> str:
-    """One of ``7d``/``30d``/``all``; anything else is the default (30 days)."""
-    key = str(value or "").strip().lower()
-    return key if key in {entry["key"] for entry in CHANNEL_PERIODS} else "30d"
+#: The admin tab strip's Channels row, in the order it is offered. The
+#: statistics that used to live here moved to the dashboard, so this page has
+#: no period of its own any more — the dashboard's range switch owns it.
 
 
 def _channels_notice(
@@ -931,15 +922,17 @@ def _channel_rows(rows: list[dict], gate_enabled: bool) -> list[dict]:
 
 async def _channels_context(
     *,
-    period: object = None,
     error: str | None = None,
     notice: str | None = None,
 ) -> dict:
-    """Everything the Channels page renders: the switch, the table and the KPIs."""
-    current_period = normalise_period(period)
+    """Everything the Channels page renders: the switch and the channel table.
+
+    The statistics moved to the dashboard (the owner reads them next to the
+    download numbers, and one page must not own two copies of the same KPI
+    row), so this page carries a link to them and no numbers of its own.
+    """
     gate_enabled = await db.subscriptions_enabled()
     rows = await db.list_required_channels()
-    stats = await db.get_subscription_stats(current_period)
     working = [row for row in rows if row["enabled"] and row["bot_is_admin"]]
     return {
         "channels_enabled": gate_enabled,
@@ -947,12 +940,6 @@ async def _channels_context(
         "channels_working": len(working),
         "channels_total": len(rows),
         "gate_live": bool(gate_enabled and working),
-        "channel_period": current_period,
-        "channel_periods": [
-            {**entry, "active": entry["key"] == current_period}
-            for entry in CHANNEL_PERIODS
-        ],
-        "channel_stats": stats,
         "channel_error": error,
         "channel_notice": notice,
     }
@@ -967,11 +954,14 @@ async def _channels_page(
     period: object = None,
     status_code: int = 200,
 ) -> Response:
-    """Render /admin/channels with an optional error and notice."""
+    """Render /admin/channels with an optional error and notice.
+
+    ``period`` is still accepted — and ignored — because a bookmarked
+    ``?channel_period=7d`` must keep working instead of answering a 422; the
+    period selector lives on the dashboard now.
+    """
     context: dict = {"user": user}
-    context.update(
-        await _channels_context(period=period, error=error, notice=notice)
-    )
+    context.update(await _channels_context(error=error, notice=notice))
     return _render_admin(request, "channels", context, status_code=status_code)
 
 
@@ -1063,7 +1053,6 @@ async def admin_section_page(
     if section == "channels":
         context.update(
             await _channels_context(
-                period=channel_period,
                 error=channel_error,
                 notice=channel_notice or _channels_notice(
                     added=channel_added,
@@ -1985,7 +1974,6 @@ async def delete_cookie_service(request: Request) -> Response:
 
 def _channels_redirect(
     *,
-    period: str | None = None,
     notice: str | None = None,
     error: str | None = None,
     **flags: object,
@@ -1995,7 +1983,7 @@ def _channels_redirect(
     A notice and an error never travel together: the page shows the first
     sentence that explains what happened, and two would contradict each other.
     """
-    params: dict[str, object] = {"channel_period": normalise_period(period)}
+    params: dict[str, object] = {}
     if error:
         params["channel_error"] = error
     elif notice:
@@ -2008,7 +1996,7 @@ def _channels_redirect(
 
 
 async def _channels_request(
-    request: Request, *, period: str | None = None
+    request: Request,
 ) -> tuple[str, FormData] | RedirectResponse:
     """Session + CSRF for every channel POST; a refusal is already a response."""
     user = _require_user(request)
@@ -2018,8 +2006,7 @@ async def _channels_request(
     submitted = str(form.get(auth.CSRF_FORM_FIELD, ""))
     if not auth.verify_csrf(request, submitted):
         return _channels_redirect(
-            period=period,
-            error="Your session expired. Reload the page and try again.",
+            error="Your session expired. Reload the page and try again."
         )
     return user, form
 
@@ -2053,7 +2040,6 @@ async def toggle_subscription_gate(request: Request) -> Response:
         # Honest about what "on" means right now: with no channel the bot can
         # verify, the gate is not in force even though the switch is on.
         return _channels_redirect(
-            period=None,
             notice=(
                 "Subscription gate on, but no channel is working yet — add one and "
                 "check it, otherwise the bot does not ask anyone to subscribe."
@@ -2108,7 +2094,6 @@ async def add_channel(request: Request) -> Response:
     )
     if not verdict.get("ok"):
         return _channels_redirect(
-            period=None,
             error=(
                 f"@{username} added, but it does not work yet: "
                 f"{subscriptions.check_error_label(verdict.get('error'))}. "

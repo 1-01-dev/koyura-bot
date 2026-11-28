@@ -1,118 +1,130 @@
-/* The Channels page's chart: subscriptions and unsubscriptions per day.
+/* The dashboard's subscription panel: three KPI cells, a two-series line and
+   the per-channel table.
 
-   A second, independent Chart.js panel — the dashboard's `charts.js` owns the
-   downloads line and the platform bars, and this one must not fight it for the
-   same canvas. Both read the same palette tokens, so a theme switch paints the
-   same ink in both places.
+   Everything arrives with the charts request (`/api/chart-data?range=…`), so
+   the page never issues a second call for the same window, and the range
+   buttons above the downloads chart drive both. The API decides visibility
+   (`visible`): the gate is on *and* the window holds at least one transition.
+   When it is false this module removes the block from the layout instead of
+   leaving three cells reading "0" — an empty panel claims nobody subscribes,
+   which is a different fact from "nothing recorded".
 
-   The numbers arrive in a JSON island (`#subscription-chart-data`) rather than
-   from an API call: the page is server-rendered, the period is a link, and a
-   round trip would only be a second way to read the same rows. */
+   Two series, one axis: subscriptions in ink, unsubscriptions in the accent,
+   no fills. The accent is already on the errors cell and on the first of these
+   cells, so the chart's second series reuses it deliberately: it is the same
+   "this one needs attention" meaning, not a second colour vocabulary. */
 
-const prefersReducedMotion = Boolean(
-  window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-);
+import { count } from './format.js';
+import {
+  animation,
+  applyDefaults,
+  axis,
+  countsAxis,
+  palette,
+  tooltip,
+} from './chartkit.js';
 
-const MONO = "'JetBrains Mono', ui-monospace, monospace";
-
-function token(name, fallback) {
-  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return value || fallback;
+/** The style the KPI labels use for the period: 1D, 7D, 1M, 1Y. */
+function periodLabel(period) {
+  return String(period || '').toUpperCase();
 }
 
-function palette() {
-  return {
-    ink: token('--ink', '#17140f'),
-    dim: token('--dim', '#6a6355'),
-    red: token('--red', '#d4361c'),
-    bg: token('--bg', '#ece6d8'),
-    line: token('--line', 'rgba(23,20,15,.28)'),
+function renderKpis(block) {
+  const period = periodLabel(block.period);
+  const periods = document.querySelectorAll('#kpi-subscribed-period, #kpi-left-period');
+  for (const node of periods) node.textContent = period;
+
+  const values = {
+    'kpi-subscribed': block.subscribed,
+    'kpi-left': block.left,
+    'kpi-active-subscribers': block.active,
   };
-}
-
-function axis(theme) {
-  return {
-    grid: { color: theme.line, drawTicks: false, lineWidth: 1 },
-    border: { color: theme.ink, width: 1 },
-    ticks: {
-      color: theme.dim,
-      maxRotation: 0,
-      autoSkipPadding: 12,
-      font: { family: MONO, size: 10 },
-    },
-  };
-}
-
-function countsAxis(theme) {
-  const base = axis(theme);
-  return {
-    ...base,
-    beginAtZero: true,
-    ticks: { ...base.ticks, precision: 0 },
-  };
-}
-
-function tooltip(theme) {
-  return {
-    backgroundColor: theme.bg,
-    borderColor: theme.ink,
-    borderWidth: 1,
-    cornerRadius: 0,
-    displayColors: false,
-    titleColor: theme.ink,
-    bodyColor: theme.dim,
-    titleFont: { family: MONO, size: 11, weight: '500' },
-    bodyFont: { family: MONO, size: 11 },
-    padding: 10,
-  };
-}
-
-function readData() {
-  const island = document.getElementById('subscription-chart-data');
-  if (!island) return { labels: [], subscribed: [], left: [] };
-  try {
-    const parsed = JSON.parse(island.textContent || '{}');
-    return {
-      labels: Array.isArray(parsed.labels) ? parsed.labels : [],
-      subscribed: Array.isArray(parsed.subscribed) ? parsed.subscribed : [],
-      left: Array.isArray(parsed.left) ? parsed.left : [],
-    };
-  } catch (err) {
-    console.warn('Subscription chart data is not JSON', err);
-    return { labels: [], subscribed: [], left: [] };
+  for (const [id, value] of Object.entries(values)) {
+    const node = document.getElementById(id);
+    if (node) node.textContent = count(value);
   }
 }
 
-function build(canvas, theme) {
+/** One row per channel; a single channel would only repeat the KPI cells. */
+function renderBreakdown(block) {
+  const card = document.getElementById('subscriptions-breakdown');
+  const body = document.getElementById('subscriptions-by-channel');
+  if (!body) return;
+
+  const channels = Array.isArray(block.channels) ? block.channels : [];
+  if (card) card.hidden = channels.length < 2;
+
+  body.replaceChildren();
+  if (channels.length < 2) return;
+
+  for (const channel of channels) {
+    const tr = document.createElement('tr');
+
+    const nameCell = document.createElement('td');
+    const label = channel.title || channel.username || 'channel';
+    if (channel.link) {
+      const link = document.createElement('a');
+      link.href = channel.link;
+      link.rel = 'noopener noreferrer';
+      link.target = '_blank';
+      link.textContent = label;
+      nameCell.append(link);
+    } else {
+      nameCell.textContent = label;
+    }
+
+    const numbers = [channel.subscribed, channel.left, channel.active].map((value) => {
+      const cell = document.createElement('td');
+      cell.className = 'num mono';
+      cell.textContent = count(value);
+      return cell;
+    });
+
+    tr.append(nameCell, ...numbers);
+    body.append(tr);
+  }
+}
+
+function build(canvas, theme, animate) {
   return new window.Chart(canvas, {
-    type: 'bar',
+    type: 'line',
     data: {
       labels: [],
       datasets: [
         {
-          label: 'Subscribed',
+          label: 'Subscriptions',
           data: [],
-          backgroundColor: theme.ink,
           borderColor: theme.ink,
-          borderWidth: 0,
-          borderRadius: 0,
+          backgroundColor: theme.ink,
+          borderWidth: 2,
+          pointRadius: 2,
+          pointHoverRadius: 4,
+          pointBackgroundColor: theme.ink,
+          pointBorderColor: theme.ink,
+          tension: 0,
+          fill: false,
         },
         {
-          label: 'Unsubscribed',
+          label: 'Unsubscriptions',
           data: [],
-          backgroundColor: theme.red,
           borderColor: theme.red,
-          borderWidth: 0,
-          borderRadius: 0,
+          backgroundColor: theme.red,
+          borderWidth: 2,
+          pointRadius: 2,
+          pointHoverRadius: 4,
+          pointBackgroundColor: theme.red,
+          pointBorderColor: theme.red,
+          tension: 0,
+          fill: false,
         },
       ],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      animation: prefersReducedMotion ? false : { duration: 400, easing: 'easeOut' },
+      animation: animate ? animation() : false,
       interaction: { mode: 'index', intersect: false },
-      /* Two series need a legend: the dashboard's single-series panels do not. */
+      /* Two series need a legend; the one-series panels above do not. */
       plugins: {
         legend: {
           display: true,
@@ -121,7 +133,7 @@ function build(canvas, theme) {
             boxWidth: 10,
             boxHeight: 10,
             color: theme.dim,
-            font: { family: MONO, size: 10 },
+            font: { family: "'JetBrains Mono', ui-monospace, monospace", size: 10 },
           },
         },
         tooltip: tooltip(theme),
@@ -131,29 +143,67 @@ function build(canvas, theme) {
   });
 }
 
-function paint(chart, data) {
-  chart.data.labels = data.labels;
-  chart.data.datasets[0].data = data.subscribed;
-  chart.data.datasets[1].data = data.left;
-  chart.update('none');
+function destroyCharts(state) {
+  if (state.chart) state.chart.destroy();
+  state.chart = null;
 }
 
-export function initSubscriptionChart() {
+function paint(state, block) {
+  if (!state.chart) return;
+  const series = block.chart || {};
+  state.chart.data.labels = Array.isArray(series.labels) ? series.labels : [];
+  state.chart.data.datasets[0].data = Array.isArray(series.subscribed)
+    ? series.subscribed : [];
+  state.chart.data.datasets[1].data = Array.isArray(series.left) ? series.left : [];
+  state.chart.update('none');
+}
+
+/**
+ * Wire the subscription panel. Returns a controller the page drives with the
+ * `subscriptions` block of `/api/chart-data`.
+ */
+export function createSubscriptionPanel() {
+  const root = document.getElementById('subscriptions-block');
   const canvas = document.getElementById('subscriptions-chart');
-  if (!canvas || !window.Chart) return;
+  if (!root || !canvas) {
+    return { update: () => {}, syncTheme: () => {} };
+  }
 
-  window.Chart.defaults.font.family = MONO;
-  window.Chart.defaults.font.size = 10;
+  let state = { chart: null, block: null };
 
-  let chart = build(canvas, palette());
-  paint(chart, readData());
+  /** Chart.js is absent when the CDN is unreachable: numbers still render. */
+  function ensureChart(animate) {
+    if (state.chart || !window.Chart) return;
+    const theme = palette();
+    applyDefaults(window.Chart, theme);
+    state.chart = build(canvas, theme, animate);
+  }
 
-  /* A theme switch repaints every live chart; rebuilding is the only reliable
-     way to drop the previous ink from the canvas (see charts.js). */
-  document.documentElement.addEventListener('koyura:theme', () => {
-    const data = readData();
-    chart.destroy();
-    chart = build(canvas, palette());
-    paint(chart, data);
-  });
+  return {
+    update(block = {}) {
+      const visible = Boolean(block && block.visible);
+      state.block = visible ? block : null;
+      root.hidden = !visible;
+      if (!visible) {
+        /* Dropping the canvas means the next period asks for a fresh instance
+           rather than a chart inside a hidden container, which measures its
+           own height as zero. */
+        destroyCharts(state);
+        return;
+      }
+
+      renderKpis(block);
+      renderBreakdown(block);
+      ensureChart(true);
+      paint(state, block);
+    },
+
+    /* Theme switch: same numbers, new ink, no growth animation (see charts.js). */
+    syncTheme() {
+      destroyCharts(state);
+      if (!state.block) return;
+      ensureChart(false);
+      paint(state, state.block);
+    },
+  };
 }

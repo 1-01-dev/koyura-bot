@@ -215,88 +215,26 @@
   {% endif %}
 </section>
 
-<!-- Statistics --------------------------------------------------------- -->
-<section class="card panel" id="channel-stats-card">
+<!-- Statistics live on the Dashboard -----------------------------------
+     The numbers moved to `/`, next to the download KPIs: one page owns them,
+     and this page keeps only what it is for — the switch, the channel list and
+     the checks. The link carries no period, because the period belongs to the
+     dashboard's own range switch. -->
+<section class="card panel" id="channel-stats-link-card">
   <div class="card-header panel-head">
     <h2 class="card-title">Statistics</h2>
-    <div class="range-buttons" role="group" aria-label="Statistics period">
-      {% for entry in channel_periods %}
-      <a class="range-btn{% if entry.active %} active{% endif %}"
-         href="/admin/channels?channel_period={{ entry.key }}"
-         aria-pressed="{{ 'true' if entry.active else 'false' }}">{{ entry.label }}</a>
-      {% endfor %}
-    </div>
   </div>
-
-  <div class="kpi-grid kpi-grid--three" id="channel-kpis">
-    <div class="kpi-card">
-      <div class="kpi-label">Subscribed · {{ channel_period }}</div>
-      <div class="kpi-value" id="kpi-subscribed">{{ channel_stats.subscribed }}</div>
-      <div class="kpi-trend">transitions in the period</div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-label">Unsubscribed · {{ channel_period }}</div>
-      <div class="kpi-value" id="kpi-left">{{ channel_stats.left }}</div>
-      <div class="kpi-trend">subscribed → left</div>
-    </div>
-    <div class="kpi-card kpi-card--accent">
-      <div class="kpi-label">Active now</div>
-      <div class="kpi-value" id="kpi-active">{{ channel_stats.active }}</div>
-      <div class="kpi-trend">subscribed on every channel</div>
-    </div>
-  </div>
-
-  <div class="chart-wrap chart-wrap--short">
-    <canvas id="subscriptions-chart"></canvas>
-  </div>
-
-  <div class="table-scroll">
-    <table class="data-table" id="channel-stats-table">
-      <thead>
-        <tr>
-          <th>Channel</th>
-          <th class="num">Subscribed</th>
-          <th class="num">Unsubscribed</th>
-          <th class="num">Active</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% if channel_stats.channels %}
-          {% for row in channel_stats.channels %}
-          <tr>
-            <td>
-              {% if row.link %}
-              <a href="{{ row.link }}" rel="noopener noreferrer" target="_blank">
-                {{ row.title or row.username }}
-              </a>
-              {% else %}
-              {{ row.title or row.username }}
-              {% endif %}
-            </td>
-            <td class="num mono">{{ row.subscribed }}</td>
-            <td class="num mono">{{ row.left }}</td>
-            <td class="num mono">{{ row.active }}</td>
-          </tr>
-          {% endfor %}
-        {% else %}
-          <tr>
-            <td colspan="4" class="empty-state">No enabled channel to break down.</td>
-          </tr>
-        {% endif %}
-      </tbody>
-    </table>
-  </div>
-
-  <p class="limits-note panel-body mono" id="channel-stats-note">
-    Subscribed and unsubscribed count state <em>transitions</em> in the period;
-    active is the number of users subscribed to every enabled channel right now.
+  <p class="limits-note panel-body" id="channel-stats-link-note">
+    Subscriptions, unsubscriptions and the number of active subscribers are on
+    the dashboard, with the same period switch as the download charts. The
+    three cells and the chart used to be repeated here; they are not any more,
+    so there is one place to read them and one number to trust.
+  </p>
+  <p class="limits-actions">
+    <a class="btn btn-secondary" href="/" id="channel-stats-link">Statistics — on Dashboard</a>
   </p>
 </section>
 
 </div>
 <!-- /panel-stack -->
-
-<script type="application/json" id="subscription-chart-data">
-  {{ channel_stats.chart | tojson }}
-</script>
 {% endblock %}

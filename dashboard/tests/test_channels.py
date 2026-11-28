@@ -419,18 +419,32 @@ class TestTheStatistics:
         assert rows[0]["active"] == 3
         assert rows[0]["link"] == "https://t.me/koyura_news"
 
-    def test_the_page_renders_the_kpis_and_the_table(self, admin: TestClient):
+    def test_the_page_no_longer_repeats_the_statistics(self, admin: TestClient):
+        """The numbers live on the dashboard now; this page must not keep a copy.
+
+        Two pages rendering the same KPI row means two places to read the same
+        number, and one of them eventually shows a different period.
+        """
         self._seed()
         body = admin.get("/admin/channels").text
         for element in ("kpi-subscribed", "kpi-left", "kpi-active",
-                        "channel-stats-table", "subscriptions-chart"):
-            assert f'id="{element}"' in body, element
-        assert "https://t.me/koyura_news" in body
+                        "channel-kpis", "channel-stats-table",
+                        "subscriptions-chart", "subscription-chart-data"):
+            assert f'id="{element}"' not in body, f"{element} is duplicated on Channels"
+        # ... and it says where they went, with a link that goes there.
+        assert "Statistics — on Dashboard" in body
+        assert 'href="/"' in body
 
-    def test_the_period_selector_offers_three_windows(self, admin: TestClient):
+    def test_the_page_keeps_no_period_selector(self, admin: TestClient):
+        """One period switch on the panel: the dashboard's own range buttons."""
         body = admin.get("/admin/channels").text
-        for key in ("7d", "30d", "all"):
-            assert f"channel_period={key}" in body, key
+        assert "channel_period=" not in body
+
+    def test_an_old_period_link_still_opens_the_page(self, admin: TestClient):
+        """A bookmark with ``?channel_period=7d`` must not answer a 422."""
+        response = admin.get("/admin/channels?channel_period=7d")
+        assert response.status_code == 200
+        assert 'id="channel-table"' in response.text or "channels-empty" in response.text
 
     def test_the_period_changes_the_numbers(self, admin: TestClient):
         """A transition older than 7 days is in "all" but not in "7d"."""
@@ -454,14 +468,11 @@ class TestTheStatistics:
         assert everything["subscribed"] == 2
         assert recent["subscribed"] < everything["subscribed"]
 
-    def test_the_period_reaches_the_page(self, admin: TestClient):
-        body = admin.get("/admin/channels?channel_period=7d").text
-        assert "Subscribed · 7d" in body
-        assert 'aria-pressed="true"' in body
-
     def test_an_unknown_period_falls_back_to_thirty_days(self, admin: TestClient):
-        body = admin.get("/admin/channels?channel_period=nonsense").text
-        assert "Subscribed · 30d" in body
+        _channel_id = self._seed()
+        stats = asyncio.run(db.get_subscription_stats("nonsense"))
+        assert stats["period"] == "1m"
+        assert stats["subscribed"] == 4
 
     def test_the_chart_series_has_both_datasets(self, admin: TestClient):
         self._seed()

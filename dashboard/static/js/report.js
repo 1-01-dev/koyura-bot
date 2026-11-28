@@ -7,6 +7,7 @@
 import { count } from './format.js';
 import { renderKpis } from './kpi.js';
 import { createCharts } from './charts.js';
+import { createSubscriptionPanel } from './subscriptions.js';
 import { renderActiveDownloads } from './active.js';
 
 const REFRESH_MS = 30_000;
@@ -69,7 +70,7 @@ function renderTopUsers(users) {
   }
 }
 
-function initRangeButtons(charts) {
+function initRangeButtons(charts, subscriptions) {
   const buttons = Array.from(document.querySelectorAll('.range-btn'));
 
   const load = async (range) => {
@@ -78,6 +79,9 @@ function initRangeButtons(charts) {
       if (!payload) return;
       charts.update(payload);
       renderTopUsers(payload.top_users);
+      /* The same window, the same request: the subscription cells and their
+         series never show a period the downloads line is not on. */
+      subscriptions.update(payload.subscriptions);
     } catch (err) {
       console.warn('Chart refresh failed', err);
     }
@@ -107,10 +111,14 @@ function initMarquee() {
 /** Entry point for the dashboard page. */
 export function initDashboardPage() {
   const charts = createCharts();
-  initRangeButtons(charts);
+  const subscriptions = createSubscriptionPanel();
+  initRangeButtons(charts, subscriptions);
   initMarquee();
 
-  document.documentElement.addEventListener('koyura:theme', () => charts.syncTheme());
+  document.documentElement.addEventListener('koyura:theme', () => {
+    charts.syncTheme();
+    subscriptions.syncTheme();
+  });
 
   refreshKpis();
   refreshActive();

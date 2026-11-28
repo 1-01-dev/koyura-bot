@@ -1,71 +1,18 @@
 /* Chart.js panels: downloads over time (line) and downloads by platform (bar).
 
    Chart.js is loaded as a UMD bundle before this module runs, so it arrives as
-   `window.Chart`. The palette is read from the CSS custom properties instead of
-   being repeated here: one token source, and a theme switch is a repaint, not a
-   second colour table. */
+   `window.Chart`. The palette, the axes and the tooltip come from chartkit.js:
+   the subscriptions panel next to these two draws in the same ink, and one
+   palette cannot drift from itself. */
 
-const prefersReducedMotion = Boolean(
-  window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-);
-
-const MONO = "'JetBrains Mono', ui-monospace, monospace";
-
-function token(name, fallback) {
-  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return value || fallback;
-}
-
-function palette() {
-  return {
-    ink: token('--ink', '#17140f'),
-    dim: token('--dim', '#6a6355'),
-    red: token('--red', '#d4361c'),
-    bg: token('--bg', '#ece6d8'),
-    line: token('--line', 'rgba(23,20,15,.28)'),
-  };
-}
-
-function axis(theme) {
-  return {
-    grid: { color: theme.line, drawTicks: false, lineWidth: 1 },
-    border: { color: theme.ink, width: 1 },
-    ticks: {
-      color: theme.dim,
-      maxRotation: 0,
-      autoSkipPadding: 12,
-      font: { family: MONO, size: 10 },
-    },
-  };
-}
-
-function countsAxis(theme) {
-  const base = axis(theme);
-  return {
-    ...base,
-    beginAtZero: true,
-    ticks: { ...base.ticks, precision: 0 },
-  };
-}
-
-function tooltip(theme) {
-  return {
-    backgroundColor: theme.bg,
-    borderColor: theme.ink,
-    borderWidth: 1,
-    cornerRadius: 0,
-    displayColors: false,
-    titleColor: theme.ink,
-    bodyColor: theme.dim,
-    titleFont: { family: MONO, size: 11, weight: '500' },
-    bodyFont: { family: MONO, size: 11 },
-    padding: 10,
-  };
-}
-
-function animation() {
-  return prefersReducedMotion ? false : { duration: 400, easing: 'easeOut' };
-}
+import {
+  animation,
+  applyDefaults,
+  axis,
+  countsAxis,
+  palette,
+  tooltip,
+} from './chartkit.js';
 
 function lineChart(canvas, theme, animate) {
   return new window.Chart(canvas, {
@@ -130,11 +77,7 @@ function barChart(canvas, theme, animate) {
 
 function build(canvases, animate) {
   const theme = palette();
-
-  window.Chart.defaults.font.family = MONO;
-  window.Chart.defaults.font.size = 10;
-  window.Chart.defaults.color = theme.dim;
-  window.Chart.defaults.borderColor = theme.line;
+  applyDefaults(window.Chart, theme);
 
   return {
     downloads: canvases.line ? lineChart(canvases.line, theme, animate) : null,

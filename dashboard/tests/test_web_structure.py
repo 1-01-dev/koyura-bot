@@ -47,6 +47,8 @@ MODULE_EXPORTS = {
     "toast.js": ["export function showToast"],
     "kpi.js": ["export function renderKpis"],
     "charts.js": ["export function createCharts"],
+    "chartkit.js": ["export function palette", "export function tooltip"],
+    "subscriptions.js": ["export function createSubscriptionPanel"],
     "active.js": ["export function renderActiveDownloads"],
     "admin.js": [
         "export async function deleteSelected",
