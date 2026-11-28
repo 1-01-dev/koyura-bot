@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 
+{% from "_help.html" import help_toggle, help_panel %}
+
 {% block title %} — admin · channels{% endblock %}
 
 {% block content %}
@@ -10,7 +12,9 @@
 
 {% include "_admin_tabs.html" %}
 
-<div class="panel-stack">
+{# One group: opening the gate's "?" closes any other bubble on the page, so a
+   phone cannot collect two open panels at once. #}
+<div class="panel-stack" data-help-group="channels">
 
 <!-- The master switch comes first: it decides whether anything below is in
      force. A proper switch (role="switch", aria-checked) rather than a
@@ -44,19 +48,20 @@
       </button>
     </form>
 
-    <details class="hint" id="gate-switch-help">
-      <summary class="hint-mark" aria-label="What does this do?">
-        <span aria-hidden="true">?</span>
-      </summary>
-      <p class="hint-body">
-        When it is <strong>off</strong> the bot behaves as if this page did not
-        exist: no screen, no check, no delay for anyone. When it is
-        <strong>on</strong> a new user is asked to subscribe to every
-        <em>enabled</em> channel below before the bot does anything for them.
-        Changes reach the bot within a minute — no restart.
-      </p>
-    </details>
+    {{ help_toggle("gate-switch-help", "What the subscription gate does") }}
   </div>
+
+  {% call help_panel("gate-switch-help") %}
+    <p>
+      <strong>Off</strong> — the bot behaves as if this page did not exist: no
+      screen, no check, no delay for anyone.
+    </p>
+    <p>
+      <strong>On</strong> — a new user is asked to subscribe to every
+      <em>enabled</em> channel below before the bot does anything for them.
+      Changes reach the bot within a minute; no restart.
+    </p>
+  {% endcall %}
 
   <p class="limits-note panel-body mono" id="gate-summary">
     {% if not channels_enabled %}

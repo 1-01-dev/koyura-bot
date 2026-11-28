@@ -161,8 +161,11 @@ class TestTheMasterSwitch:
 
     def test_the_switch_state_is_spelled_out_in_words(self, admin: TestClient):
         body = admin.get("/admin/channels").text
+        # The label says what the control does, and the state badge beside it
+        # says whether it is doing it — two words, not a colour alone.
         assert "Subscription gate is off" in body
-        assert ">off<" in body
+        badge = body.split('id="gate-state"')[1].split("</span>")[0]
+        assert "off" in badge
 
     def test_the_switch_needs_no_script(self, admin: TestClient):
         """Space/Enter come from the button; the CSP forbids an inline handler."""

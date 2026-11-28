@@ -1333,47 +1333,10 @@
   color: var(--ink);
 }
 
-/* The "?" disclosure: a bare summary marker, deliberately tiny. */
-.hint {
-  display: inline-block;
-}
-
-.hint-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: 1px solid var(--line);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--dim);
-  cursor: pointer;
-  list-style: none;
-}
-
-.hint-mark::-webkit-details-marker {
-  display: none;
-}
-
-.hint-mark:hover {
-  color: var(--ink);
-  border-color: var(--ink);
-}
-
-.hint[open] .hint-mark {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: var(--bg);
-}
-
-.hint-body {
-  max-width: 62ch;
-  margin: 8px 0 0;
-  padding: 10px 12px;
-  border-left: 2px solid var(--line);
-  font-size: 13px;
-  color: var(--dim);
+/* The "?" is the shared help component (js/help.js + _help.html), not a
+   second skin: only its placement in the switch row is page-specific. */
+#gate-card > .help-panel {
+  margin: 0 16px 14px;
 }
 
 .gate-state {

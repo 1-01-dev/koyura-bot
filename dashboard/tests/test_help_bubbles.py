@@ -59,6 +59,7 @@ EXPECTED_PANELS = {
     "/admin/cookies": ["cookies-note"],
     "/admin/limits": ["per-user-hint"],
     "/admin/bot": ["languages-note", "templates-note"],
+    "/admin/channels": ["gate-switch-help"],
 }
 
 #: The text each panel hides. Asserted so a future edit cannot empty a panel
@@ -72,6 +73,7 @@ PANEL_TEXT = {
     "languages-note": "The bot offers only the languages enabled here",
     "templates-note": "Один активный шаблон",
     "per-user-hint": "the fairest choice when more than one person uses the bot",
+    "gate-switch-help": "behaves as if this page did not exist",
 }
 
 
