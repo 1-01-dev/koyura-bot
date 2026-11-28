@@ -11,19 +11,61 @@ ERROR: HTTP Error 403: Blocked
 and a fresh cookie file does not change that — the site is refusing *the IP*,
 not the session. Routing the engine through another address does.
 
-## The three modes
+## The connections
 
-| Mode | What the engine does |
+The engine no longer has one route: it has a **list of connections**, tried in
+the order the page shows them. Each one is a row in the panel's
+`proxy_connections` table:
+
+| Column | Meaning |
 | --- | --- |
-| **Off** (default) | Connects directly, exactly as every release before this page existed. |
-| **Manual proxy** | `yt-dlp --proxy <url>` with the URL you typed. |
-| **WireGuard** | `yt-dlp --proxy socks5h://<socks>` — the SOCKS address the tunnel reports. |
+| `id` | Primary key; also the name of the secret file. |
+| `name` | What the list shows you. |
+| `kind` | `socks5`, `socks5h`, `http`, `https` or `wireguard`. For a proxy the URL's scheme *is* the kind. |
+| `url` | `scheme://host:port`, **never** with a login in it. |
+| `username` | The non-secret half of the login. |
+| `password_ref` | `secrets/<id>.txt` — a reference, never the password. |
+| `config_path` | For `wireguard`, the tunnel's `wg0.conf`. |
+| `assignment_mode` | `all`, `selected`, `except`. |
+| `services` | JSON array of service names for the two list modes. |
+| `enabled` | An off row is never dialled but keeps its place. |
+| `position` | 0-based order, kept dense. |
+| `status` | `ok`, `fail` or `unknown` — the last check's verdict. |
+| `last_test_at`, `last_test_result` | When the check ran and what it said (the external IP, or a redacted error). |
+| `created_at` | When the row was added. |
 
-Only one mode is active at a time. The rule is applied per job and per metadata
-lookup — the preview (`POST /api/info`) leaves through the same address the
-download would, so a page that only renders from the right IP is not refused on
-its card — and the panel's answer is cached by the engine for 45 s, so a change
-reaches the next job within a minute.
+For a service, the engine walks the list and dials **the first** row that is
+`enabled`, whose rule covers the service and whose `status` is not `fail`. If
+only failed rows qualify, it dials the first of those — the last chance beats a
+guaranteed refusal. No qualifying row means a direct connection, exactly as
+before this page existed. The list is cached for 45 s, so a change reaches the
+next job within a minute.
+
+## Where the password lives
+
+Not in the database. The password is written to
+`/var/lib/koyura2/egress/secrets/<id>.txt` with mode `0600` (owner `koyura2`),
+and the row keeps only the reference. The engine mounts that tree read-only and
+pastes the credential into the URL when it dials, so the password never travels
+over `GET /api/egress` and never reaches a page, a log line or a JSON response.
+Deleting a connection deletes its file; clearing the username removes it.
+
+The engine reads the file on every dial, so a rotated password applies to the
+next job without a restart.
+
+## The three shapes of a check
+
+`POST /api/egress/test/<id>` runs `curl --proxy … https://api.ipify.org`
+(10 s timeout) and stores the verdict:
+
+* **ok** — the answer was a bare IP; `last_test_result` is that address;
+* **fail** — curl failed, or the answer was not an IP; the error text is kept
+  with the proxy's password taken out of it;
+* **a tunnel that is not up** — `fail`, with the watcher's own message from
+  `status.json`.
+
+A `fail` row is still in the list (and still the last chance when nothing else
+qualifies); it is simply skipped while a healthy one covers the same service.
 
 ## How the engine finds the panel
 
@@ -55,9 +97,13 @@ read 3 times in a row (Connection refused); the engine keeps using off. Check
 that the panel is running and that KOYURA_DASHBOARD_URL / DASHBOARD_URL names it.
 ```
 
-A proxy that "does nothing" while `GET /api/egress` on the engine still answers
-`{"mode": "off"}` is almost always that line: the engine is asking the wrong
-host. Fix the variable, not the proxy.
+A list that "does nothing" while `GET /api/egress` on the engine still answers
+`{"connections": [], "test_interval": 0}` is almost always that line: the
+engine is asking the wrong host. Fix the variable, not the proxy.
+
+The rule is applied per job and per metadata lookup — the preview
+(`POST /api/info`) leaves through the same address the download would, so a page
+that only renders from the right IP is not refused on its card.
 
 ## Manual proxy
 
@@ -80,9 +126,11 @@ the site's name, so a blocked DNS answer on this server stops mattering.
 it before saving a proxy: a typo and a dead proxy both look like "the download
 failed" until you do.
 
-The password is stored in the panel's database (the engine needs it) and is
+The password is written to `EGRESS_PATH/secrets/<id>.txt` (mode `0600`) and is
 **never rendered back**: the form shows `socks5h://***:***@host:port`, and
-leaving the field blank on a later save keeps the stored URL.
+leaving the field blank on a later save keeps the stored secret. Pasting a URL
+that still carries `user:pass@` is accepted — the login is split out before the
+row is written, so it never lands in the `url` column.
 
 ## WireGuard
 
@@ -113,8 +161,13 @@ the SOCKS address, the timestamp and, for `error`, the watcher's message.
 
 A config with fake keys reaches the watcher and comes back as `error` — that is
 the expected result of testing with dummy values, and it is a report, not a
-crash. In WireGuard mode the engine uses the tunnel's SOCKS address, so a dead
-tunnel means **direct**, never a half-configured proxy.
+crash. The `wireguard` connection has no URL of its own: the engine reads the
+tunnel's SOCKS address from `status.json`, so a dead tunnel means **direct**
+(or the next connection in the list), never a half-configured proxy.
+
+**One tunnel, one row.** The watcher owns a single interface and the config is a
+single file, so a second `kind=wireguard` connection is refused with
+`OnlyOneWireGuard`.
 
 **Disconnect** deletes the config; the watcher tears the tunnel down and the
 engine returns to a direct connection.
@@ -193,15 +246,51 @@ address, the proxy is not being used; if it times out, the tunnel is down (see
 * **One tunnel at a time.** The watcher owns a single interface (`wg0`); a
   second config replaces the first.
 
+## The endpoint the engine reads
+
+`GET /api/egress` (internal, `X-Internal-Token`) answers:
+
+```json
+{
+  "connections": [
+    {
+      "id": 1,
+      "name": "Primary",
+      "kind": "socks5h",
+      "url": "socks5h://10.0.0.5:1080",
+      "assignment": {"mode": "selected", "services": ["reddit"]},
+      "enabled": true,
+      "status": "unknown"
+    }
+  ],
+  "test_interval": 0
+}
+```
+
+No username, no password, no `password_ref`, no `config_path` — the engine gets
+the URL and reads the credential from the shared secrets tree itself.
+`test_interval` is the re-test period in minutes (`0` = never); it is stored for
+the page to schedule against, not enforced by the engine.
+
+## Upgrading from the single-rule panel
+
+Before the list, the page stored one rule as `egress.mode`, `egress.proxy_url`,
+`egress.assignment` and `egress.services`. On the first start the panel migrates
+it once: `mode=manual` becomes a connection named `Default` (kind from the URL's
+scheme, login split into `username` + the secret file), `mode=wireguard` becomes
+a `wireguard` row when `wg0.conf` exists, and every other key is ignored. A
+marker in `settings` (`egress.migrated`) makes the next start a no-op, so a row
+you delete does not come back. Until the page itself is replaced, the old form
+keeps editing that one `Default` connection.
+
 ## Environment
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `KOYURA_DASHBOARD_URL` | *(empty)* | Panel address the engine asks for the rule. Wins over `DASHBOARD_URL`. |
+| `KOYURA_DASHBOARD_URL` | *(empty)* | Panel address the engine asks for the list. Wins over `DASHBOARD_URL`. |
 | `DASHBOARD_URL` | `http://dashboard:8080` | Panel address, shared with the bot. Native runs must set it (`http://127.0.0.1:8090`). |
-| `EGRESS_PATH` | `/var/lib/koyura2/egress` | Where `wg0.conf` is written and `status.json` is read. Shared by the panel and the engine, and mounted by the host watcher. |
+| `EGRESS_PATH` | `/var/lib/koyura2/egress` | Where `wg0.conf` and `secrets/<id>.txt` are written and `status.json` is read. Shared by the panel and the engine, and mounted by the host watcher. |
 
-The egress *rule* itself lives in the panel's database (`egress.*` in the
-`settings` table), not in the environment: it is an operator decision, changed
-from the page. The engine reads it from `GET /api/egress` with the internal
-token.
+The connections live in the panel's database (`proxy_connections`), not in the
+environment: they are an operator decision, changed from the page. The engine
+reads them from `GET /api/egress` with the internal token.

@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 import auth
 import db
 import download_limits as limits_settings
+import proxy_connections
 from logging_setup import configure_logging
 from routes.api import router as api_router
 from routes.pages import router as pages_router
@@ -129,6 +130,9 @@ async def _lifespan(app: FastAPI):
             logger.exception("Could not mark interrupted downloads")
     await _apply_saved_limits()
     await _drop_retired_progress_rows()
+    # The single ``egress.*`` rule predates the connection list: migrate it once
+    # and log what is stored, so a restart names the egress in force.
+    await proxy_connections.apply_saved_connections()
     task = asyncio.create_task(_disk_snapshot_loop())
     try:
         yield

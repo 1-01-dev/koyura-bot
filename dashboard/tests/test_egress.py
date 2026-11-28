@@ -524,28 +524,6 @@ class TestSettings:
         assert settings is not None
         assert settings.services == ("reddit", "youtube")
 
-    def test_the_engine_payload_carries_the_url_in_manual_mode(self):
-        settings = egress.Egress(mode="manual", proxy_url=PROXY_URL, assignment_mode="all")
-        payload = settings.as_engine_payload()
-        assert payload["mode"] == "manual"
-        assert payload["proxy_url"] == PROXY_URL
-        assert payload["wg_socks"] == ""
-        assert payload["assignment"] == {"mode": "all", "services": []}
-
-    def test_the_engine_payload_carries_the_socks_in_wireguard_mode(self):
-        settings = egress.Egress(mode="wireguard", assignment_mode="all")
-        status = egress.parse_status({"state": "up", "socks": "10.8.0.2:11080"})
-        payload = settings.as_engine_payload(status)
-        assert payload["proxy_url"] == ""
-        assert payload["wg_socks"] == "10.8.0.2:11080"
-
-    def test_the_engine_payload_never_leaks_a_stale_url(self):
-        settings = egress.Egress(
-            mode="wireguard", proxy_url=PROXY_URL, assignment_mode="all"
-        )
-        payload = settings.as_engine_payload(egress.parse_status({"state": "down"}))
-        assert PROXY_PASSWORD not in json.dumps(payload)
-
     def test_describe_masks_the_url(self):
         settings = egress.Egress(
             mode="manual", proxy_url=PROXY_URL,
@@ -850,7 +828,7 @@ class TestInternalEndpoint:
         )
         assert response.status_code == 401
 
-    def test_it_answers_the_documented_shape(self, admin, monkeypatch):
+    def test_it_answers_the_connection_list(self, admin, monkeypatch):
         monkeypatch.setenv("INTERNAL_API_TOKEN", "test-token-0123456789abcdef")
         _save(admin, assignment_mode="selected", services=["reddit"])
         response = TestClient(app).get(
@@ -859,33 +837,35 @@ class TestInternalEndpoint:
         )
         assert response.status_code == 200
         payload = response.json()
-        assert set(payload) == {"mode", "proxy_url", "wg_socks", "assignment"}
-        assert payload["mode"] == "manual"
-        assert payload["assignment"] == {"mode": "selected", "services": ["reddit"]}
+        assert set(payload) == {"connections", "test_interval"}
+        connection = payload["connections"][0]
+        assert connection["name"] == "Default"
+        assert connection["kind"] == "socks5h"
+        assert connection["enabled"] is True
+        assert connection["status"] == "unknown"
+        assert connection["assignment"] == {
+            "mode": "selected",
+            "services": ["reddit"],
+        }
 
-    def test_a_fresh_install_answers_off(self, monkeypatch):
+    def test_a_fresh_install_answers_no_connections(self, monkeypatch):
         monkeypatch.setenv("INTERNAL_API_TOKEN", "test-token-0123456789abcdef")
         payload = TestClient(app).get(
             "/api/egress",
             headers={"X-Internal-Token": "test-token-0123456789abcdef"},
         ).json()
-        assert payload["mode"] == "off"
-        assert payload["proxy_url"] == ""
+        assert payload == {"connections": [], "test_interval": 0}
 
-    def test_the_wireguard_mode_answers_the_socks_address(self, admin, monkeypatch):
+    def test_the_wireguard_connection_names_no_url(self, admin, monkeypatch):
+        """The engine reads the tunnel's SOCKS address from status.json."""
         monkeypatch.setenv("INTERNAL_API_TOKEN", "test-token-0123456789abcdef")
         _save(admin, mode="wireguard", proxy_url="")
-        _root().mkdir(parents=True, exist_ok=True)
-        (_root() / "status.json").write_text(
-            json.dumps({"state": "up", "socks": "10.8.0.2:11080"})
-        )
         payload = TestClient(app).get(
             "/api/egress",
             headers={"X-Internal-Token": "test-token-0123456789abcdef"},
         ).json()
-        assert payload["mode"] == "wireguard"
-        assert payload["wg_socks"] == "10.8.0.2:11080"
-        assert payload["proxy_url"] == ""
+        assert payload["connections"][0]["kind"] == "wireguard"
+        assert payload["connections"][0]["url"] == ""
 
 
 # ---------------------------------------------------------------------------

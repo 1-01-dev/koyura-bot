@@ -1763,14 +1763,15 @@ def service_cookies(service: str):
 
 @app.route("/api/egress")
 def egress_rule():
-    """The outbound rule the panel configured (internal, read-only).
+    """The outbound connections the panel configured (internal, read-only).
 
-    ``{mode, proxy_url, wg_socks, assignment: {mode, services[]}}``. The engine
-    polls this and caches it for 45 s; ``proxy_url`` is the only field that can
-    carry a secret, it travels over the shared token on the internal network,
-    and it is never logged (``egress.Rule.describe`` prints the mode and the
-    scope only). A panel that never configured anything answers ``mode: off``,
-    which the engine treats exactly like an unreachable panel: direct.
+    ``{connections: [{id, name, kind, url, assignment: {mode, services[]},
+    enabled, status}], test_interval}``. The engine polls this and caches it for
+    45 s; the panel is the authority on the order and on the rule, so this
+    endpoint only republishes the parsed list. Every URL here is stored without
+    a login — a password lives in ``EGRESS_PATH/secrets/<id>.txt`` on the shared
+    egress tree, which is why nothing secret crosses this endpoint and nothing
+    secret is ever logged.
     """
     return jsonify(egress.rule().as_payload())
 
